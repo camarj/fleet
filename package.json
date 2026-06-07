@@ -15,6 +15,7 @@
     "frontend:dev": "pnpm --filter @inteliside/gateway-frontend dev",
     "frontend:build": "pnpm --filter @inteliside/gateway-frontend build",
     "dev": "pnpm --filter @inteliside/gateway-core --filter @inteliside/gateway-frontend --parallel run dev",
-    "desktop:dev": "pnpm --filter @inteliside/gateway-desktop dev"
+    "desktop:dev": "pnpm --filter @inteliside/gateway-desktop dev",
+    "version:set": "node scripts/bump-version.mjs"
   }
 }
