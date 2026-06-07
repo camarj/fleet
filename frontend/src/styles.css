@@ -1,0 +1,238 @@
+:root {
+  color-scheme: dark;
+  --bg: #0d1117;
+  --panel: #161b22;
+  --border: #30363d;
+  --text: #c9d1d9;
+  --muted: #8b949e;
+  --accent: #2f81f7;
+  --green: #3fb950;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.app {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  height: 100vh;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────────────────── */
+.sidebar {
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+}
+
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.dot.online {
+  background: var(--green);
+}
+.dot.offline {
+  background: #f85149;
+}
+
+.agent-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.agent {
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.agent:hover {
+  background: #1f2630;
+}
+.agent.selected {
+  background: #1f6feb33;
+  outline: 1px solid var(--accent);
+}
+.agent-name {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 600;
+}
+.agent-meta {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.badge {
+  font-size: 10px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 6px;
+  font-weight: 500;
+}
+.badge.online {
+  color: var(--green);
+  border-color: var(--green);
+}
+.badge.kind {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.badge.kind.a2a {
+  color: var(--blue, #58a6ff);
+  border-color: var(--blue, #58a6ff);
+}
+.badge.kind.acp {
+  color: var(--purple, #bc8cff);
+  border-color: var(--purple, #bc8cff);
+}
+.empty {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 10px;
+  text-align: center;
+}
+
+.sidebar-form {
+  border-top: 1px solid var(--border);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sidebar-form label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+.sidebar-form .row {
+  display: flex;
+  gap: 6px;
+}
+.sidebar-form input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── Main ────────────────────────────────────────────────────────────────── */
+.main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.tab {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+}
+.tab.active {
+  color: var(--text);
+  border-color: var(--border);
+  background: var(--panel);
+}
+
+/* ── Terminal panel ──────────────────────────────────────────────────────── */
+.terminal-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.terminal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.terminal-surface {
+  flex: 1;
+  min-height: 0;
+  padding: 6px 10px;
+  background: #0d1117;
+}
+.terminal-input {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+}
+.terminal-input input {
+  flex: 1;
+}
+
+/* ── Canvas stub ─────────────────────────────────────────────────────────── */
+.canvas-stub {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* ── Inputs / buttons ────────────────────────────────────────────────────── */
+input {
+  background: #0d1117;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+button {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: white;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

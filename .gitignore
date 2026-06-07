@@ -1,0 +1,23 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Core state (SQLite) — runtime data, never committed
+*.sqlite
+*.sqlite-journal
+*.db
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Tauri build output
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/binaries/
+apps/desktop/.sidecar-build/
+
+# Local skill-registry (leaks absolute paths / personal skills)
+.atl/

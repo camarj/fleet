@@ -1,0 +1,7 @@
+{
+  "name": "@inteliside/gateway-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Web delivery of the same Gateway frontend (Phase 3). Structure only for now — no build."
+}

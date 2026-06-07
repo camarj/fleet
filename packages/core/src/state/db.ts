@@ -1,0 +1,226 @@
+/**
+ * Gateway state — its own SQLite store (agents, configs, sessions, usage).
+ *
+ * Uses Node's built-in `node:sqlite` (Node 22.5+/24): zero native build, zero
+ * dependencies. Stores a NEUTRAL agent descriptor (the Gateway no longer
+ * consumes the Scaffolding manifest — it discovers agents via the A2A Agent
+ * Card / ACP initialize and keeps only what it needs).
+ */
+
+import { DatabaseSync } from "node:sqlite";
+import { randomUUID } from "node:crypto";
+import type { AgentInfo, AgentKind } from "../adapters/agent-adapter.js";
+import type { ModelParameters, Usage } from "../neutral.js";
+
+export type SessionStatus = "running" | "completed" | "aborted" | "error";
+
+export interface StoredAgent {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  model: string;
+  kind: AgentKind;
+  /** A2A: base URL. ACP: launch cwd. */
+  sourceRef: string;
+  updatedAt: string;
+}
+
+export interface AgentConfig {
+  agentId: string;
+  modelSpecifier: string | null;
+  parameters: ModelParameters | null;
+  updatedAt: string;
+}
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS agents (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  version     TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  model       TEXT NOT NULL DEFAULT '',
+  kind        TEXT NOT NULL,
+  source_ref  TEXT NOT NULL,
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS configs (
+  agent_id        TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+  model_specifier TEXT,
+  parameters_json TEXT,
+  updated_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  id         TEXT PRIMARY KEY,
+  agent_id   TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  run_id     TEXT,
+  status     TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  ended_at   TEXT
+);
+
+CREATE TABLE IF NOT EXISTS usage (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id    TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  run_id        TEXT,
+  input_tokens  INTEGER NOT NULL,
+  output_tokens INTEGER NOT NULL,
+  total_tokens  INTEGER NOT NULL,
+  model         TEXT NOT NULL,
+  cost_usd      REAL,
+  duration_ms   INTEGER,
+  recorded_at   TEXT NOT NULL
+);
+`;
+
+export class GatewayState {
+  readonly #db: DatabaseSync;
+
+  /** @param path File path, or ":memory:" for an ephemeral store. */
+  constructor(path: string) {
+    this.#db = new DatabaseSync(path);
+    this.#db.exec("PRAGMA journal_mode = WAL;");
+    this.#db.exec("PRAGMA foreign_keys = ON;");
+    this.#db.exec(SCHEMA);
+  }
+
+  close(): void {
+    this.#db.close();
+  }
+
+  // ── Agents ───────────────────────────────────────────────────────────────
+
+  upsertAgent(info: AgentInfo, kind: AgentKind, sourceRef: string): StoredAgent {
+    const now = new Date().toISOString();
+    this.#db
+      .prepare(
+        `INSERT INTO agents (id, name, version, description, model, kind, source_ref, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           name = excluded.name,
+           version = excluded.version,
+           description = excluded.description,
+           model = excluded.model,
+           kind = excluded.kind,
+           source_ref = excluded.source_ref,
+           updated_at = excluded.updated_at`,
+      )
+      .run(info.id, info.name, info.version, info.description, info.model ?? "", kind, sourceRef, now, now);
+    const stored = this.getAgent(info.id);
+    if (!stored) throw new Error(`failed to persist agent ${info.id}`);
+    return stored;
+  }
+
+  getAgent(id: string): StoredAgent | null {
+    const row = this.#db.prepare(`SELECT * FROM agents WHERE id = ?`).get(id) as unknown as
+      | AgentDbRow
+      | undefined;
+    return row ? rowToAgent(row) : null;
+  }
+
+  listAgents(): StoredAgent[] {
+    const rows = this.#db.prepare(`SELECT * FROM agents ORDER BY name`).all() as unknown as AgentDbRow[];
+    return rows.map(rowToAgent);
+  }
+
+  // ── Per-agent config (model override; MVP = model only) ────────────────────
+
+  getConfig(agentId: string): AgentConfig | null {
+    const row = this.#db.prepare(`SELECT * FROM configs WHERE agent_id = ?`).get(agentId) as unknown as
+      | ConfigDbRow
+      | undefined;
+    if (!row) return null;
+    return {
+      agentId: row.agent_id,
+      modelSpecifier: row.model_specifier,
+      parameters: row.parameters_json ? (JSON.parse(row.parameters_json) as ModelParameters) : null,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  setConfig(agentId: string, modelSpecifier: string | null, parameters: ModelParameters | null): void {
+    const now = new Date().toISOString();
+    this.#db
+      .prepare(
+        `INSERT INTO configs (agent_id, model_specifier, parameters_json, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(agent_id) DO UPDATE SET
+           model_specifier = excluded.model_specifier,
+           parameters_json = excluded.parameters_json,
+           updated_at = excluded.updated_at`,
+      )
+      .run(agentId, modelSpecifier, parameters ? JSON.stringify(parameters) : null, now);
+  }
+
+  // ── Sessions ───────────────────────────────────────────────────────────────
+
+  createSession(agentId: string): string {
+    const id = `sess_${randomUUID()}`;
+    this.#db
+      .prepare(`INSERT INTO sessions (id, agent_id, run_id, status, started_at) VALUES (?, ?, NULL, 'running', ?)`)
+      .run(id, agentId, new Date().toISOString());
+    return id;
+  }
+
+  endSession(sessionId: string, status: SessionStatus): void {
+    this.#db
+      .prepare(`UPDATE sessions SET status = ?, ended_at = ? WHERE id = ?`)
+      .run(status, new Date().toISOString(), sessionId);
+  }
+
+  // ── Usage / metrics ──────────────────────────────────────────────────────
+
+  recordUsage(sessionId: string, runId: string | null, usage: Usage, costUsd: number | null): void {
+    this.#db
+      .prepare(
+        `INSERT INTO usage (session_id, run_id, input_tokens, output_tokens, total_tokens, model, cost_usd, duration_ms, recorded_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        sessionId,
+        runId,
+        usage.inputTokens,
+        usage.outputTokens,
+        usage.totalTokens,
+        usage.model,
+        costUsd,
+        usage.durationMs ?? null,
+        new Date().toISOString(),
+      );
+  }
+}
+
+interface AgentDbRow {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  model: string;
+  kind: string;
+  source_ref: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ConfigDbRow {
+  agent_id: string;
+  model_specifier: string | null;
+  parameters_json: string | null;
+  updated_at: string;
+}
+
+function rowToAgent(row: AgentDbRow): StoredAgent {
+  return {
+    id: row.id,
+    name: row.name,
+    version: row.version,
+    description: row.description,
+    model: row.model,
+    kind: row.kind as AgentKind,
+    sourceRef: row.source_ref,
+    updatedAt: row.updated_at,
+  };
+}
