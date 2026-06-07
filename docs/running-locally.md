@@ -111,11 +111,13 @@ above.
 
 ### Icons
 
-The icon set in `src-tauri/icons/` is a generated **placeholder** (brand-colored
-mark). Replace it with the real logo any time:
+The Fleet icon — a hub-and-spoke mark (command center + agent fleet) on a blue
+squircle — lives at `apps/desktop/icon-source.png` (1024×1024). The icon set in
+`src-tauri/icons/` is generated from it. To change the logo, replace the source
+and regenerate (pass an **absolute** path — Tauri runs from `apps/desktop`):
 
 ```bash
-pnpm --filter @inteliside/gateway-desktop exec tauri icon path/to/logo.png   # 1024×1024 PNG
+pnpm --filter @inteliside/gateway-desktop exec tauri icon "$(pwd)/apps/desktop/icon-source.png"
 ```
 
 ### Notes / fixes applied while wiring the first build
