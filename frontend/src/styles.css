@@ -153,6 +153,19 @@ body {
   font-size: 12px;
   font-weight: 600;
 }
+.folder-drop {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  transition: border-color 0.15s, background 0.15s;
+}
+.folder-drop.drag-active {
+  border-color: var(--accent, #58a6ff);
+  background: rgba(88, 166, 255, 0.08);
+}
 .folder-btn {
   display: flex;
   align-items: center;
@@ -160,7 +173,7 @@ body {
   gap: 6px;
   width: 100%;
   padding: 8px;
-  border: 1px dashed var(--border);
+  border: 1px solid var(--border);
   border-radius: 6px;
   background: transparent;
   cursor: pointer;
@@ -179,8 +192,10 @@ body {
   border-radius: 4px;
   padding: 4px 6px;
 }
-.folder-input {
-  width: 100%;
+.folder-hint {
+  font-size: 10px;
+  color: var(--muted);
+  text-align: center;
 }
 .target-select {
   width: 100%;

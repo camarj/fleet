@@ -5,9 +5,9 @@
  * holds the provider API-key settings (stored server-side, never persisted here).
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { AgentSummary, DeployTarget } from "../../lib/api";
-import { isTauri, pickDirectory } from "../../lib/dialog";
+import { isTauri, onDirectoryDrop, pickDirectory } from "../../lib/dialog";
 
 const PROVIDERS = ["anthropic", "openai", "openrouter", "cloudflare"] as const;
 
@@ -49,7 +49,25 @@ export function Sidebar({
   const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
   const [target, setTarget] = useState<DeployTarget>("docker-local");
+  const [dragActive, setDragActive] = useState(false);
   const deploying = deployStatus !== null;
+
+  // Folder drag-and-drop (desktop shell only — yields a real filesystem path).
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    onDirectoryDrop({
+      onHover: setDragActive,
+      onDrop: (path) => setSourceDir(path),
+    }).then((fn) => {
+      if (cancelled) fn?.();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   // Settings form
   const [keyProvider, setKeyProvider] = useState<string>("anthropic");
@@ -112,25 +130,21 @@ export function Sidebar({
         <div className="deploy-card">
           <div className="deploy-title">Deploy a Claude Code agent</div>
 
-          {/* Step 1 — choose the project folder */}
-          <button className="folder-btn" onClick={browse} disabled={deploying}>
-            <span className="folder-icon">📁</span>
-            {sourceDir ? "Change folder" : "Choose project folder"}
-          </button>
-          {sourceDir && (
-            <code className="folder-path" title={sourceDir}>
-              {sourceDir}
-            </code>
-          )}
-          {!isTauri() && (
-            <input
-              className="folder-input"
-              value={sourceDir}
-              onChange={(e) => setSourceDir(e.target.value)}
-              placeholder="…or type the project path"
-              disabled={deploying}
-            />
-          )}
+          {/* Step 1 — choose the project folder (native dialog or drag-and-drop) */}
+          <div className={`folder-drop${dragActive ? " drag-active" : ""}`}>
+            <button className="folder-btn" onClick={browse} disabled={deploying}>
+              <span className="folder-icon">📁</span>
+              {sourceDir ? "Change folder" : "Choose project folder"}
+            </button>
+            {sourceDir && (
+              <code className="folder-path" title={sourceDir}>
+                {sourceDir}
+              </code>
+            )}
+            <div className="folder-hint">
+              {isTauri() ? "…or drag a project folder here" : "Folder selection works in the desktop app."}
+            </div>
+          </div>
 
           {/* Step 2 — provider / model (optional) */}
           <div className="row">
