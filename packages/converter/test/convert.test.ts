@@ -117,14 +117,21 @@ function main(): void {
     "swap reports dropped subagent model overrides",
   );
 
-  // ── unknown provider rejected ──
+  // ── extended provider catalog (pi-ai) ──
+  const gemini = convert(FIXTURE, { provider: "google", model: "gemini-2.5-pro" });
+  assert(gemini.report.modelSpecifier === "google/gemini-2.5-pro", "google provider accepted (pi-ai catalog)");
+  assert(gemini.report.apiKeyEnv === "GEMINI_API_KEY", "google → GEMINI_API_KEY env");
+  const grok = convert(FIXTURE, { provider: "xai" });
+  assert(grok.report.apiKeyEnv === "XAI_API_KEY", "xai → XAI_API_KEY env (default model applied)");
+
+  // ── truly unknown provider rejected ──
   let threw = false;
   try {
-    convert(FIXTURE, { provider: "google" });
+    convert(FIXTURE, { provider: "totally-not-a-provider" });
   } catch (e) {
     threw = e instanceof ConvertError;
   }
-  assert(threw, "unknown provider (google) → ConvertError");
+  assert(threw, "unknown provider → ConvertError");
 
   console.log(process.exitCode ? "\nFAILED" : "\nALL GOOD");
 }
