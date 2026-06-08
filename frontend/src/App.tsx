@@ -21,6 +21,9 @@ export function App(): React.JSX.Element {
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [view, setView] = useState<"terminal" | "canvas">("terminal");
+  const [secretsProviders, setSecretsProviders] = useState<string[]>([]);
+  const [deployStatus, setDeployStatus] = useState<string | null>(null);
+  const [deployError, setDeployError] = useState<string | null>(null);
 
   useEffect(() => {
     let off = (): void => {};
@@ -35,9 +38,20 @@ export function App(): React.JSX.Element {
           } else if (e.type === "agent.registered") {
             setAgents((prev) => upsertAgent(prev, e.agent));
             setSelectedId((cur) => cur ?? e.agent.id);
+            setDeployStatus(null); // a deploy that just finished
+            setDeployError(null);
+          } else if (e.type === "secrets.status") {
+            setSecretsProviders(e.providers);
+          } else if (e.type === "deploy.progress") {
+            setDeployStatus(e.detail ? `${e.step} — ${e.detail}` : e.step);
+            setDeployError(null);
+          } else if (e.type === "deploy.error") {
+            setDeployStatus(null);
+            setDeployError(e.message);
           }
         });
         client.send({ type: "agents.list" });
+        client.send({ type: "secrets.list" });
       })
       .catch(() => setConnected(false));
     return () => off();
@@ -51,9 +65,18 @@ export function App(): React.JSX.Element {
         agents={agents}
         selectedId={selectedId}
         connected={connected}
+        secretsProviders={secretsProviders}
+        deployStatus={deployStatus}
+        deployError={deployError}
         onSelect={setSelectedId}
         onConnectA2A={(url) => client.send({ type: "agent.connectA2A", url })}
         onLaunchAcp={(cwd) => client.send({ type: "agent.launchAcp", cwd })}
+        onDeploy={(req) => {
+          setDeployStatus("starting");
+          setDeployError(null);
+          client.send({ type: "agent.deployFlue", ...req });
+        }}
+        onSetSecret={(provider, apiKey) => client.send({ type: "secrets.set", provider, apiKey })}
       />
       <main className="main">
         <div className="tabs">
@@ -64,7 +87,11 @@ export function App(): React.JSX.Element {
             Workflows
           </button>
         </div>
-        {view === "terminal" ? <TerminalPanel client={client} agent={selected} /> : <WorkflowCanvas />}
+        {view === "terminal" ? (
+          <TerminalPanel client={client} agent={selected} connected={connected} />
+        ) : (
+          <WorkflowCanvas />
+        )}
       </main>
     </div>
   );
