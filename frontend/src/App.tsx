@@ -9,6 +9,8 @@ import type { AgentSummary, ServerEvent } from "./lib/api";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { TerminalPanel } from "./components/TerminalPanel/TerminalPanel";
 import { WorkflowCanvas } from "./components/WorkflowCanvas/WorkflowCanvas";
+import { DeployWizard } from "./components/DeployWizard/DeployWizard";
+import { Settings } from "./components/Settings/Settings";
 
 const GATEWAY_URL = import.meta.env.VITE_GATEWAY_URL ?? "ws://127.0.0.1:4179";
 
@@ -25,6 +27,14 @@ export function App(): React.JSX.Element {
   const [deployStatus, setDeployStatus] = useState<string | null>(null);
   const [deployError, setDeployError] = useState<string | null>(null);
   const [deployArtifact, setDeployArtifact] = useState<{ url: string; message: string } | null>(null);
+  const [deployOpen, setDeployOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  function resetDeploy(): void {
+    setDeployStatus(null);
+    setDeployError(null);
+    setDeployArtifact(null);
+  }
 
   useEffect(() => {
     let off = (): void => {};
@@ -73,17 +83,12 @@ export function App(): React.JSX.Element {
         selectedId={selectedId}
         connected={connected}
         secretsProviders={secretsProviders}
-        deployStatus={deployStatus}
-        deployError={deployError}
-        deployArtifact={deployArtifact}
         onSelect={setSelectedId}
-        onDeploy={(req) => {
-          setDeployStatus("starting");
-          setDeployError(null);
-          setDeployArtifact(null);
-          client.send({ type: "agent.deployFlue", ...req });
+        onOpenDeploy={() => {
+          resetDeploy();
+          setDeployOpen(true);
         }}
-        onSetSecret={(provider, apiKey) => client.send({ type: "secrets.set", provider, apiKey })}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
       <main className="main">
         <div className="tabs">
@@ -100,6 +105,34 @@ export function App(): React.JSX.Element {
           <WorkflowCanvas />
         )}
       </main>
+
+      {deployOpen && (
+        <DeployWizard
+          connected={connected}
+          deployStatus={deployStatus}
+          deployError={deployError}
+          deployArtifact={deployArtifact}
+          onDeploy={(req) => {
+            setDeployStatus("starting");
+            setDeployError(null);
+            setDeployArtifact(null);
+            client.send({ type: "agent.deployFlue", ...req });
+          }}
+          onClose={() => {
+            setDeployOpen(false);
+            resetDeploy();
+          }}
+        />
+      )}
+
+      {settingsOpen && (
+        <Settings
+          connected={connected}
+          secretsProviders={secretsProviders}
+          onSetSecret={(provider, apiKey) => client.send({ type: "secrets.set", provider, apiKey })}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
     </div>
   );
 }
