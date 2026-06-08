@@ -5,14 +5,15 @@
  * implementations:
  *   - A2AAdapter  — remote agents over A2A (HTTP+SSE), `@a2a-js/sdk`
  *   - AcpAdapter  — local agents over ACP (stdio subprocess), `@agentclientprotocol/sdk`
+ *   - FlueAdapter — Flue agents over Flue's HTTP+WebSocket API, `@flue/sdk`
  *
- * Both map their standard's events INTO the neutral run model (`neutral.ts`),
- * so the rest of the Core never sees A2A or ACP.
+ * Each maps its standard's events INTO the neutral run model (`neutral.ts`),
+ * so the rest of the Core never sees A2A, ACP, or Flue.
  */
 
 import type { RunInput, RunOptions, RunSink } from "../neutral.js";
 
-export type AgentKind = "a2a" | "acp";
+export type AgentKind = "a2a" | "acp" | "flue";
 
 export interface AgentInfo {
   id: string;
@@ -26,7 +27,7 @@ export interface AgentInfo {
 export interface RunHandle {
   /** Resolves when the run reaches a terminal state (done|error). */
   readonly done: Promise<void>;
-  /** Abort the in-flight run (A2A: tasks/cancel; ACP: session/cancel). */
+  /** Abort the in-flight run (A2A: tasks/cancel; ACP: session/cancel; Flue: socket.close). */
   abort(): Promise<void>;
 }
 

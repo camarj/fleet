@@ -6,7 +6,10 @@
 
 import { A2AAdapter } from "./adapters/a2a.js";
 import { AcpAdapter } from "./adapters/acp.js";
+import { FlueAdapter } from "./adapters/flue.js";
 import type { AgentAdapter, AgentKind, RunHandle } from "./adapters/agent-adapter.js";
+import { FlueDeployer } from "./deploy/flue-deployer.js";
+import { SecretsStore } from "./secrets/store.js";
 import { computeCostUsd } from "./pricing/pricing.js";
 import { GatewayState, type StoredAgent } from "./state/index.js";
 import type { ModelOverride, RunOptions, RunSink } from "./neutral.js";
@@ -29,6 +32,8 @@ export class GatewayCore {
   readonly #state: GatewayState;
   readonly #agents = new Map<string, RegisteredAgent>();
   readonly #sessions = new Map<string, RunHandle>();
+  readonly #secrets = new SecretsStore();
+  readonly #deployer = new FlueDeployer(this.#secrets);
 
   constructor(options: GatewayCoreOptions = {}) {
     this.#state = new GatewayState(options.dbPath ?? ":memory:");
@@ -44,6 +49,17 @@ export class GatewayCore {
           return await this.#connectA2A(req.url, emit);
         case "agent.launchAcp":
           return await this.#launchAcp(req, emit);
+        case "agent.connectFlue":
+          return await this.#connectFlue(req, emit);
+        case "agent.deployFlue":
+          return await this.#deployFlue(req, emit);
+        case "secrets.set":
+          this.#secrets.set(req.provider, req.apiKey);
+          emit({ type: "secrets.status", providers: this.#secrets.list() });
+          return;
+        case "secrets.list":
+          emit({ type: "secrets.status", providers: this.#secrets.list() });
+          return;
         case "session.start":
           return await this.#startSession(req, emit);
         case "session.abort":
@@ -62,11 +78,12 @@ export class GatewayCore {
     }
   }
 
-  /** Close every adapter (ACP: kills subprocesses) and the store. */
+  /** Close every adapter (ACP: kills subprocesses), kill deployed agents, close the store. */
   async shutdown(): Promise<void> {
     for (const reg of this.#agents.values()) {
       await reg.adapter.close().catch(() => {});
     }
+    await this.#deployer.shutdown().catch(() => {});
     this.#agents.clear();
     this.#state.close();
   }
@@ -96,6 +113,32 @@ export class GatewayCore {
     const stored = this.#state.upsertAgent(adapter.info(), "acp", req.cwd);
     this.#agents.set(stored.id, { adapter, kind: "acp", sourceRef: req.cwd });
     emit({ type: "agent.registered", agent: this.#summary(stored, true) });
+  }
+
+  async #connectFlue(req: Extract<ClientRequest, { type: "agent.connectFlue" }>, emit: Emit): Promise<void> {
+    const adapter = await FlueAdapter.connect({
+      baseUrl: req.baseUrl,
+      agentName: req.agentName,
+      instanceId: req.instanceId,
+      token: req.token,
+    });
+    const stored = this.#state.upsertAgent(adapter.info(), "flue", req.baseUrl);
+    this.#agents.set(stored.id, { adapter, kind: "flue", sourceRef: req.baseUrl });
+    emit({ type: "agent.registered", agent: this.#summary(stored, true) });
+  }
+
+  async #deployFlue(req: Extract<ClientRequest, { type: "agent.deployFlue" }>, emit: Emit): Promise<void> {
+    try {
+      const { adapter, baseUrl } = await this.#deployer.deploy(
+        { sourceDir: req.sourceDir, provider: req.provider, model: req.model, target: req.target },
+        (step, detail) => emit({ type: "deploy.progress", step, detail }),
+      );
+      const stored = this.#state.upsertAgent(adapter.info(), "flue", baseUrl);
+      this.#agents.set(stored.id, { adapter, kind: "flue", sourceRef: baseUrl });
+      emit({ type: "agent.registered", agent: this.#summary(stored, true) });
+    } catch (err) {
+      emit({ type: "deploy.error", message: (err as Error).message });
+    }
   }
 
   // ── Sessions ───────────────────────────────────────────────────────────────

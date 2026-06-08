@@ -1,0 +1,10 @@
+---
+name: refund-policy
+description: The store's refund policy and the steps to process a refund.
+---
+
+# Refund policy
+
+- Refunds are allowed within 30 days of delivery.
+- Items must be unused and in original packaging.
+- Refunds over $100 require human approval.

@@ -1,0 +1,97 @@
+/**
+ * Intermediate representation for the Claude Code → Flue converter.
+ *
+ * The reader (`read.ts`) parses a Claude Code project into a `ClaudeProject`.
+ * The emitter (`emit.ts`) turns that — plus `ConvertOptions` (the choosable
+ * provider/model) — into a deterministic `FlueProject` (a set of files).
+ */
+
+/** A Claude Code project parsed into a neutral, engine-agnostic shape. */
+export interface ClaudeProject {
+  /** Agent name — the project directory's basename, slugified. */
+  name: string;
+  /** CLAUDE.md content → the main agent's instructions. */
+  instructions: string;
+  /** Model from `.claude/settings.json` (Claude Code id/alias), if any. */
+  sourceModel?: string;
+  /** `.claude/agents/*.md` → reusable subagent profiles. */
+  subagents: ClaudeSubagent[];
+  /** `.claude/skills/<name>/` → skills (SKILL.md + sibling files). */
+  skills: ClaudeSkill[];
+  /** MCP servers from `.mcp.json` / settings — only HTTP ones map to Flue. */
+  mcpServers: McpServerSpec[];
+  /** Human-readable notes about anything that did NOT map (see emit report). */
+  unmapped: string[];
+}
+
+export interface ClaudeSubagent {
+  name: string;
+  description: string;
+  /** The markdown body — becomes the profile's instructions. */
+  instructions: string;
+  /** Optional model override declared in the subagent's frontmatter. */
+  model?: string;
+}
+
+export interface ClaudeSkill {
+  /** Skill directory name. */
+  name: string;
+  /** Every file under the skill dir, path relative to the skill dir. */
+  files: SkillFile[];
+}
+
+export interface SkillFile {
+  relPath: string;
+  content: string;
+}
+
+/** An MCP server. Only `http` servers map to Flue's `connectMcpServer` (HTTP-only). */
+export type McpServerSpec =
+  | {
+      name: string;
+      kind: "http";
+      url: string;
+      headers?: Record<string, string>;
+      transport?: "streamable-http" | "sse";
+    }
+  | {
+      name: string;
+      kind: "stdio";
+      command: string;
+      args?: string[];
+      env?: Record<string, string>;
+    };
+
+/** The choosable provider/model — the converter's central feature. */
+export interface ConvertOptions {
+  /** Target provider id (e.g. "anthropic", "openai", "openrouter", "cloudflare"). */
+  provider?: string;
+  /** Target model id under that provider. */
+  model?: string;
+}
+
+/** The emitted, deployable Flue project — a deterministic set of files. */
+export interface FlueProject {
+  /** Output files, each path relative to the output root. Sorted by path. */
+  files: FlueFile[];
+  report: ConvertReport;
+}
+
+export interface FlueFile {
+  path: string;
+  content: string;
+}
+
+export interface ConvertReport {
+  agentName: string;
+  /** Final Flue model specifier, e.g. "anthropic/claude-sonnet-4-6". */
+  modelSpecifier: string;
+  /** Env var the chosen provider reads its key from. */
+  apiKeyEnv: string;
+  subagents: string[];
+  skills: string[];
+  /** HTTP MCP servers that were wired. */
+  mcpHttp: string[];
+  /** Things that did not map (stdio MCP, hooks, permissions, …). */
+  unmapped: string[];
+}

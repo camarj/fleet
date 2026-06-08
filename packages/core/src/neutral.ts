@@ -42,8 +42,13 @@ export interface RunOptions {
 }
 
 /**
- * Neutral streaming event catalog. A2A artifact/status updates and ACP
- * session/update notifications both map onto these.
+ * Neutral streaming event catalog. A2A artifact/status updates, ACP
+ * session/update notifications, and Flue's FlueEvent stream all map onto these.
+ *
+ * The first block is the original cross-standard core. The second block was
+ * added for Flue, whose richer stream surfaces reasoning, MCP tool calls,
+ * skill invocations, and context compaction as first-class events. A2A/ACP
+ * simply never emit the Flue-only variants.
  */
 export type RunEvent =
   | { type: "message.delta"; role: MessageRole; content: string }
@@ -52,7 +57,20 @@ export type RunEvent =
   | { type: "tool.result"; id: string; name: string; output: unknown }
   | { type: "subagent.start"; name: string }
   | { type: "subagent.end"; name: string }
-  | { type: "interrupt"; id: string; reason: string; payload?: Record<string, unknown> };
+  | { type: "interrupt"; id: string; reason: string; payload?: Record<string, unknown> }
+  // ── reasoning (Flue thinking_* — activates the frontend ThinkingBlock) ──
+  | { type: "thinking.start" }
+  | { type: "thinking.delta"; content: string }
+  | { type: "thinking.end"; content: string }
+  // ── MCP tool calls (derived from Flue tool_* named `mcp__<server>__<tool>`) ──
+  | { type: "mcp.call"; id: string; server: string; name: string; input: Record<string, unknown> }
+  | { type: "mcp.result"; id: string; server: string; name: string; output: unknown; isError: boolean }
+  // ── skills (Flue operation_* with operationKind "skill") ──
+  | { type: "skill.start"; id: string; name: string }
+  | { type: "skill.end"; id: string; name: string; isError: boolean; durationMs: number }
+  // ── memory / context compaction (Flue compaction_*) ──
+  | { type: "memory.start"; reason: string; estimatedTokens?: number }
+  | { type: "memory.end"; messagesBefore: number; messagesAfter: number; durationMs: number };
 
 /** Token usage — carried by both standards via agreed metadata keys. */
 export interface Usage {

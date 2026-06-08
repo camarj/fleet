@@ -14,15 +14,22 @@
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
-    "test": "tsx test/acp.test.ts && tsx test/a2a.test.ts"
+    "test": "tsx test/acp.test.ts && tsx test/a2a.test.ts && tsx test/flue.test.ts"
+  },
+  "engines": {
+    "node": ">=22.18"
   },
   "dependencies": {
     "@a2a-js/sdk": "1.0.0-alpha.0",
     "@agentclientprotocol/sdk": "^0.25.0",
+    "@flue/sdk": "0.10.1",
+    "@inteliside/gateway-converter": "workspace:*",
     "ws": "^8.18.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@flue/cli": "0.10.1",
+    "@flue/runtime": "0.10.1",
     "@types/express": "^5.0.6",
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.12",
