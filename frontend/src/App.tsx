@@ -77,8 +77,6 @@ export function App(): React.JSX.Element {
         deployError={deployError}
         deployArtifact={deployArtifact}
         onSelect={setSelectedId}
-        onConnectA2A={(url) => client.send({ type: "agent.connectA2A", url })}
-        onLaunchAcp={(cwd) => client.send({ type: "agent.launchAcp", cwd })}
         onDeploy={(req) => {
           setDeployStatus("starting");
           setDeployError(null);

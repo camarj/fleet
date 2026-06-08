@@ -17,8 +17,8 @@ export interface ModelOverride {
   parameters?: ModelParameters;
 }
 
-/** Which standard reaches an agent: A2A (remote), ACP (local), or Flue (TS harness). */
-export type AgentKind = "a2a" | "acp" | "flue";
+/** The agent kind. Fleet is Flue-only. */
+export type AgentKind = "flue";
 
 export interface AgentSummary {
   id: string;
@@ -73,16 +73,15 @@ export type RuntimeErrorCode =
 
 // ── Frontend → Core ──────────────────────────────────────────────────────────
 
+/** Where a converted agent is deployed (the four offered in the UI). */
+export type DeployTarget = "docker-local" | "fly" | "github" | "cloudflare";
+
 export type ClientRequest =
   | { type: "agents.list" }
-  /** Connect a REMOTE agent over A2A by its base URL (Agent Card auto-discovered). */
-  | { type: "agent.connectA2A"; url: string }
-  /** Launch a LOCAL agent over ACP — the Core spawns it as a subprocess. */
-  | { type: "agent.launchAcp"; cwd: string; command?: string; args?: string[]; id?: string; name?: string }
   /** Connect a served Flue agent over its HTTP+WebSocket API. */
   | { type: "agent.connectFlue"; baseUrl: string; agentName: string; instanceId?: string; token?: string }
   /** Convert a local Claude Code project to a Flue agent, deploy it, and connect. */
-  | { type: "agent.deployFlue"; sourceDir: string; provider?: string; model?: string; target?: "docker-local" | "local-process" | "github" | "cloudflare" }
+  | { type: "agent.deployFlue"; sourceDir: string; provider?: string; model?: string; target?: DeployTarget }
   /** Store a provider API key server-side (the value never persists in the frontend). */
   | { type: "secrets.set"; provider: string; apiKey: string }
   | { type: "secrets.list" }

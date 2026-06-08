@@ -107,18 +107,6 @@ body {
   color: var(--green);
   border-color: var(--green);
 }
-.badge.kind {
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-.badge.kind.a2a {
-  color: var(--blue, #58a6ff);
-  border-color: var(--blue, #58a6ff);
-}
-.badge.kind.acp {
-  color: var(--purple, #bc8cff);
-  border-color: var(--purple, #bc8cff);
-}
 .empty {
   color: var(--muted);
   font-size: 12px;
@@ -152,8 +140,57 @@ body {
 }
 
 /* ── Deploy + settings ─────────────────────────────────────────────────────── */
+.deploy-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--panel, rgba(255, 255, 255, 0.02));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+.deploy-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+.folder-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+.folder-btn:hover:not(:disabled) {
+  border-color: var(--accent, #58a6ff);
+}
+.folder-icon {
+  font-size: 14px;
+}
+.folder-path {
+  font-size: 10px;
+  color: var(--muted);
+  word-break: break-all;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 4px;
+  padding: 4px 6px;
+}
+.folder-input {
+  width: 100%;
+}
+.target-select {
+  width: 100%;
+}
+.target-hint {
+  font-size: 10px;
+  color: var(--muted);
+}
 .deploy-btn {
-  margin-top: 4px;
+  margin-top: 2px;
 }
 .deploy-status {
   font-size: 11px;
