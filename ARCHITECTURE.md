@@ -2,89 +2,93 @@
 
 ## What it is (and isn't)
 
-The Gateway is a **multiplexer + operations center** (Orca/cmux-style) for a fleet
-of agents. It **connects to** agents that are already built and deployed, to
-consume, configure, and (Phase 2) orchestrate them.
+Fleet is a **converter + deployer + operations center** for a fleet of agents.
+It converts a local Claude Code project into a deployable **Flue** (TypeScript)
+agent, deploys it to a target environment, and then connects to it to consume,
+configure, and (Phase 2) orchestrate it.
 
-It is **not** a CLI, **not** an agent framework, and it does **not** create
-agents — the Scaffolding (Component 1) does that. The Gateway reaches every agent through a neutral `AgentAdapter` interface with
-two native implementations: **A2AAdapter** for remote agents (Agent2Agent
-standard, HTTP+SSE) and **AcpAdapter** for local agents (Agent Client Protocol,
-stdio subprocess). Lifecycle nuance: the Gateway MAY launch and supervise a
-*local* agent as a subprocess (ACP), but it never creates or edits agent code.
+It is **not** a CLI, **not** an agent framework, and it does **not** run LLMs
+inline. The converter (`packages/converter`) is deterministic: no LLM is invoked
+during conversion. The Core reaches every deployed agent through `FlueAdapter` —
+the only adapter in the system.
 
-## Two layers, two protocols
+## Two layers, one protocol
 
 ```
-┌────────────┐   Gateway API (WS)   ┌────────────┐  A2A (HTTP+SSE) or   ┌─────────┐
-│  Frontend  │ ───────────────────▶ │    Core    │  ACP (stdio) ──────▶ │  Agent  │
-│  (React)   │ ◀─────────────────── │  (TS/Node) │ ◀─────────────────── │ (Python)│
-└────────────┘                      └────────────┘                      └─────────┘
+┌────────────┐   Gateway API (WS)   ┌────────────┐  Flue (HTTP+WS)   ┌─────────┐
+│  Frontend  │ ───────────────────▶ │    Core    │ ─────────────────▶ │  Agent  │
+│  (React)   │ ◀─────────────────── │  (TS/Node) │ ◀───────────────── │ (Flue)  │
+└────────────┘                      └────────────┘                    └─────────┘
 ```
 
 - **Frontend** (`frontend/`): React, shared across desktop and web. It **never**
   connects to an agent — only to the Core, over WebSocket. It speaks the
-  **Gateway API** (`packages/core/src/api.ts`), never A2A or ACP.
-- **Core** (`packages/core/`): the brain. Reaches agents via A2A or ACP and
-  exposes the Gateway API to the frontend. All connection logic lives here (TS),
-  reused verbatim by both the desktop and web deliveries.
+  **Gateway API** (`packages/core/src/api.ts`), never Flue.
+- **Core** (`packages/core/`): the brain. Reaches agents via Flue and exposes the
+  Gateway API to the frontend. All connection logic lives here (TS), reused
+  verbatim by both the desktop and web deliveries.
 
 Keeping these two boundaries distinct is the central design rule: the frontend is
-insulated from A2A and ACP; the Core is the only translator.
+insulated from Flue; the Core is the only translator.
 
-## Two orthogonal axes
+## The Adapter
 
-| Axis | Question | Implementation |
+| Component | Responsibility |
+| --- | --- |
+| **FlueAdapter** (`packages/core/src/adapters/flue.ts`) | Speaks Flue's HTTP+WebSocket API; maps Flue events into the neutral run model |
+| **neutral.ts** (`packages/core/src/neutral.ts`) | Fleet's own protocol — carries the full conversation lifecycle: thinking, tool, MCP, skill, memory, subagent |
+
+`FlueAdapter` is the only adapter in the system. It connects to a deployed Flue
+agent by its base URL and maps each Flue event into a neutral `RunEvent`, so the
+rest of the Core — state, pricing, the Gateway API, the frontend — stays
+agent-agnostic.
+
+- **Abort:** `handle.abort()` on the neutral `RunHandle`, translated by the adapter to Flue's cancellation wire.
+- **Usage:** carried in Flue event metadata; constants in `neutral.ts`.
+- **Model overrides:** passed as `RunOptions.model` (neutral specifier) into the adapter; the adapter maps it to Flue's wire.
+- **Cost:** tokens only on the wire; the Core computes USD from a price table keyed by the neutral model specifier (`pricing/`).
+
+## The Converter
+
+`packages/converter` (`@inteliside/gateway-converter`) — converts a local Claude
+Code project into a deployable Flue (TypeScript) agent. It is:
+
+- **Deterministic** — no LLM is invoked; the same input always produces the same output.
+- **Multi-provider** — provider and model are chosen at convert time; the output is not locked to Anthropic.
+
+The converter is a separate tool from the Core; the Core calls it as a library to
+drive the convert → deploy → connect flow.
+
+## Deploy targets
+
+`packages/core/src/deploy/flue-deployer.ts` manages four production-ready deploy
+targets:
+
+| Target | Description | Requirement |
 | --- | --- | --- |
-| **Adapter** (protocol) | *How* do we invoke this agent? | `adapters/` — `A2AAdapter` (remote, HTTP+SSE, `@a2a-js/sdk`) and `AcpAdapter` (local, stdio subprocess, `@agentclientprotocol/sdk`); `foreign/` is a placeholder for future non-standard agents |
-| **Transport** (location) | *Where* is the endpoint? | Implicit in the connection parameters: A2A takes a base URL; ACP takes a working directory + command. |
+| `docker-local` | Build and run a local Docker container | Docker installed |
+| `fly` | Deploy to Fly.io | `FLY_API_TOKEN` env var |
+| `cloudflare` | Deploy to Cloudflare Workers | `CLOUDFLARE_API_TOKEN` env var |
+| `github` | Push a Git repo with its Dockerfile — user self-deploys on Coolify/Dokploy | Git + remote repo |
 
-Adapter and Transport are conceptually orthogonal. The Adapter determines the wire
-protocol; location details (URL, path) are resolved before the adapter is created.
-
-## Agent Standards (Core ↔ Agent)
-
-The Core reaches every agent through the neutral `AgentAdapter` interface
-(`packages/core/src/adapters/agent-adapter.ts`). Two native implementations:
-
-| Standard | `AgentKind` | Transport | Use when |
-| --- | --- | --- | --- |
-| **A2A** (`@a2a-js/sdk`) | `"a2a"` | HTTP + SSE | Remote agents — connect by base URL; Agent Card auto-discovered at `/.well-known/agent-card.json` |
-| **ACP** (`@agentclientprotocol/sdk`) | `"acp"` | stdio subprocess | Local agents — the Core spawns the process via `child_process.spawn` |
-
-Both adapters map each standard's events into the neutral run model (`neutral.ts`),
-so the rest of the Core — state, pricing, the Gateway API, the frontend — stays
-protocol-agnostic.
-
-- **Abort:** A2A → `client.cancelTask({ id })`; ACP → `connection.cancel({ sessionId })`. Both surface as `handle.abort()` on the neutral `RunHandle`.
-- **Usage:** A2A carries it in `metadata['inteliside/usage']`; ACP in
-  `_meta['inteliside_usage']` on `PromptResponse`. Constants in `neutral.ts`.
-- **Model overrides:** passed as `RunOptions.model` (neutral specifier + optional
-  parameters) into the adapter; each adapter maps it to its standard's wire.
-- **Cost:** tokens only on the wire; the Core computes USD from a price table
-  keyed by the neutral model specifier (`pricing/`).
-
-Authoritative client references: `docs/gateway-clients/sdk-reference.md` (A2A + ACP
-SDK usage) and `docs/acp/wire-reference.md` (ACP wire detail).
+A `local-process` target also exists for Docker-free tests; it is **not** offered
+in the UI and is not considered a production deploy path.
 
 ## The Gateway API (Frontend ↔ Core)
 
 `packages/core/src/api.ts` — the Core's own WebSocket protocol. Requests:
-`agents.list`, `agent.connectA2A` (remote by URL), `agent.launchAcp` (local
-subprocess), `session.start`, `session.abort`, `config.set`. Events: `agents`,
-`agent.registered`, `session.started/event/usage/done/error`, `error`. The Core
-translates `session.start` into the appropriate A2A or ACP call and relays
-streamed neutral events back as `session.*` events.
+`agents.list`, `agent.connect` (by URL after deploy), `session.start`,
+`session.abort`, `config.set`. Events: `agents`, `agent.registered`,
+`session.started/event/usage/done/error`, `error`. The Core translates
+`session.start` into a Flue invocation and relays streamed neutral events back as
+`session.*` events.
 
-## Endpoint discovery & lifecycle
+## Endpoint lifecycle
 
-The Core connects to agents in two ways:
-
-- **launchAcp** (local): the Core spawns the agent as a stdio subprocess
-  (`child_process.spawn`) and connects via ACP. Agent identity is resolved during
-  the ACP `initialize` handshake — no external manifest file needed.
-- **connectA2A** (remote): connect to an already-running A2A agent by its base
-  URL. The Agent Card is auto-discovered at `/.well-known/agent-card.json`.
+After the converter produces a Flue agent and the deployer pushes it to a target,
+the Core registers the agent's URL and creates a `FlueAdapter` for it. On
+`session.start`, the adapter opens a streaming connection to the agent and maps
+events into the neutral run model.
 
 ## Per-agent configuration
 
@@ -111,22 +115,24 @@ toolchain.
 
 | # | Decision | Choice |
 | --- | --- | --- |
-| 1 | Agent wire standards | A2A (`@a2a-js/sdk`) for remote (HTTP+SSE); ACP (`@agentclientprotocol/sdk`) for local (stdio subprocess) |
-| 2 | Connection model | A2A and ACP are both native; neutral `AgentAdapter` interface insulates the rest of the Core; `foreign/` placeholder for future non-standard agents |
-| 3 | Endpoint/lifecycle | `launchAcp` (Core spawns subprocess) + `connectA2A` (connect to running agent by URL) |
-| 4 | Per-agent config | `RunOptions.model` neutral override per session (MVP) |
-| 5 | Core on desktop | TS/Node sidecar launched by Tauri; WS to frontend |
+| 1 | Agent wire standard | Flue (HTTP+WebSocket); `FlueAdapter` is the only adapter |
+| 2 | Connection model | Neutral `AgentAdapter` interface with `FlueAdapter` |
+| 3 | Convert → Deploy → Connect | Converter produces Flue agent; deployer pushes to target; Core registers and connects |
+| 4 | Deploy targets | `docker-local`, `fly`, `cloudflare`, `github`; `local-process` for tests only |
+| 5 | Per-agent config | `RunOptions.model` neutral override per session (MVP) |
+| 6 | Core on desktop | TS/Node sidecar launched by Tauri; WS to frontend |
 | — | SQLite | Built-in `node:sqlite` (better-sqlite3 failed to compile) |
 
 ## Module map (`packages/core/src`)
 
 ```
-adapters/     AgentAdapter interface + A2AAdapter (remote, HTTP+SSE) + AcpAdapter (local, stdio) + foreign/ (placeholder)
-state/        SQLite store (node:sqlite)
-pricing/      tokens → cost
+adapters/      AgentAdapter interface + FlueAdapter (HTTP+WebSocket)
+deploy/        flue-deployer.ts — docker-local / fly / cloudflare / github targets
+state/         SQLite store (node:sqlite)
+pricing/       tokens → cost
 orchestration/ Phase 2 skeleton
-neutral.ts    Neutral run model — events, usage, types (the Core's lingua franca)
-api.ts        Gateway API (Frontend ↔ Core) types
-core.ts       GatewayCore — wires it all together
-server.ts     WebSocket server (the sidecar entrypoint)
+neutral.ts     Neutral run model — events, usage, types (Fleet's lingua franca)
+api.ts         Gateway API (Frontend ↔ Core) types
+core.ts        GatewayCore — wires it all together
+server.ts      WebSocket server (the sidecar entrypoint)
 ```

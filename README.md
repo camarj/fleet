@@ -1,8 +1,8 @@
 # Fleet
 
-The operations center for a fleet of agents — a multiplexer (Orca/cmux-style)
-that **connects to** already-deployed agents to consume, configure, and (Phase 2)
-orchestrate them. It does not build agents; the Scaffolding (Component 1) does.
+The operations center for a fleet of agents — converts a local Claude Code
+project into a deployable **Flue** (TypeScript) agent, deploys it, and connects
+to it to consume, configure, and (Phase 2) orchestrate it.
 
 See **[ARCHITECTURE.md](./ARCHITECTURE.md)** for the design and
 **[CLAUDE.md](./CLAUDE.md)** for the development rules.
@@ -10,20 +10,21 @@ See **[ARCHITECTURE.md](./ARCHITECTURE.md)** for the design and
 ## Layout
 
 ```
-packages/core/    Gateway Core (TS/Node) — the brain
-frontend/         React app (shared by desktop + web)
-apps/desktop/     Tauri v2 shell (macOS first) — runs the Core as a sidecar
-apps/web/         Web delivery (Phase 3 — structure only)
-.claude/skills/   Skills that make Claude expert at developing the Gateway
+packages/core/      Gateway Core (TS/Node) — the brain
+packages/converter/ Converter — Claude Code project → Flue agent (deterministic, no LLM)
+frontend/           React app (shared by desktop + web)
+apps/desktop/       Tauri v2 shell (macOS first) — runs the Core as a sidecar
+apps/web/           Web delivery (Phase 3 — structure only)
+.claude/skills/     Skills that make Claude expert at developing the Gateway
 ```
 
-The Core reaches agents via **A2A** (remote, HTTP+SSE) or **ACP** (local, stdio
-subprocess) and exposes a **Gateway API** (WebSocket) to the frontend. The
+The Core converts and deploys agents via the **Flue** protocol, then connects via
+`FlueAdapter` and exposes a **Gateway API** (WebSocket) to the frontend. The
 frontend never talks to agents directly.
 
 ## Prerequisites
 
-- Node ≥ 20 (24 recommended — the Core uses the built-in `node:sqlite`)
+- Node ≥ 22.18 (Flue requires it; 24 recommended — the Core uses the built-in `node:sqlite`)
 - pnpm 9
 - For the desktop **build** only: the Rust toolchain (`rustup`).
 
@@ -43,12 +44,9 @@ pnpm core:dev
 pnpm frontend:dev
 ```
 
-Open http://localhost:1420. In the Sidebar:
-
-- **A2A (remote):** enter the agent's base URL (`agent.connectA2A`). The Agent
-  Card is auto-discovered. See the Scaffolding repo for agent startup instructions.
-- **ACP (local):** provide a working directory and start command
-  (`agent.launchAcp`). The Core spawns the subprocess automatically.
+Open http://localhost:1420. Use the Sidebar to convert a local Claude Code
+project, choose a deploy target (`docker-local`, `fly`, `cloudflare`, or
+`github`), and start a session once the agent is deployed.
 
 ## Test
 
@@ -68,4 +66,4 @@ pnpm desktop:dev     # tauri dev (run `pnpm core:dev` alongside it)
 
 ## Status
 
-Phase 1 (multiplexer). See [ROADMAP.md](./ROADMAP.md).
+Phase 1 (convert + deploy + connect). See [ROADMAP.md](./ROADMAP.md).
