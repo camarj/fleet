@@ -24,6 +24,7 @@ export function App(): React.JSX.Element {
   const [secretsProviders, setSecretsProviders] = useState<string[]>([]);
   const [deployStatus, setDeployStatus] = useState<string | null>(null);
   const [deployError, setDeployError] = useState<string | null>(null);
+  const [deployArtifact, setDeployArtifact] = useState<{ url: string; message: string } | null>(null);
 
   useEffect(() => {
     let off = (): void => {};
@@ -40,11 +41,17 @@ export function App(): React.JSX.Element {
             setSelectedId((cur) => cur ?? e.agent.id);
             setDeployStatus(null); // a deploy that just finished
             setDeployError(null);
+            setDeployArtifact(null);
           } else if (e.type === "secrets.status") {
             setSecretsProviders(e.providers);
           } else if (e.type === "deploy.progress") {
             setDeployStatus(e.detail ? `${e.step} — ${e.detail}` : e.step);
             setDeployError(null);
+          } else if (e.type === "deploy.artifact") {
+            // A deploy with no running agent (e.g. github) — surface the artifact URL.
+            setDeployStatus(null);
+            setDeployError(null);
+            setDeployArtifact({ url: e.url, message: e.message });
           } else if (e.type === "deploy.error") {
             setDeployStatus(null);
             setDeployError(e.message);
@@ -68,12 +75,14 @@ export function App(): React.JSX.Element {
         secretsProviders={secretsProviders}
         deployStatus={deployStatus}
         deployError={deployError}
+        deployArtifact={deployArtifact}
         onSelect={setSelectedId}
         onConnectA2A={(url) => client.send({ type: "agent.connectA2A", url })}
         onLaunchAcp={(cwd) => client.send({ type: "agent.launchAcp", cwd })}
         onDeploy={(req) => {
           setDeployStatus("starting");
           setDeployError(null);
+          setDeployArtifact(null);
           client.send({ type: "agent.deployFlue", ...req });
         }}
         onSetSecret={(provider, apiKey) => client.send({ type: "secrets.set", provider, apiKey })}

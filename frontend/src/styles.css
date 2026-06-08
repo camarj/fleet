@@ -167,6 +167,20 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
 }
+.deploy-artifact {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  margin-top: 4px;
+  word-break: break-word;
+}
+.deploy-artifact a {
+  color: var(--accent, #58a6ff);
+}
+.deploy-artifact span {
+  color: var(--muted);
+}
 .settings-toggle {
   margin-top: 8px;
   background: transparent;

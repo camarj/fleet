@@ -18,10 +18,11 @@ interface Props {
   secretsProviders: string[];
   deployStatus: string | null;
   deployError: string | null;
+  deployArtifact: { url: string; message: string } | null;
   onSelect: (id: string) => void;
   onConnectA2A: (url: string) => void;
   onLaunchAcp: (cwd: string) => void;
-  onDeploy: (req: { sourceDir: string; provider?: string; model?: string; target?: "docker-local" | "local-process" }) => void;
+  onDeploy: (req: { sourceDir: string; provider?: string; model?: string; target?: "docker-local" | "local-process" | "github" | "cloudflare" }) => void;
   onSetSecret: (provider: string, apiKey: string) => void;
 }
 
@@ -32,6 +33,7 @@ export function Sidebar({
   secretsProviders,
   deployStatus,
   deployError,
+  deployArtifact,
   onSelect,
   onConnectA2A,
   onLaunchAcp,
@@ -45,7 +47,7 @@ export function Sidebar({
   const [sourceDir, setSourceDir] = useState("");
   const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
-  const [target, setTarget] = useState<"docker-local" | "local-process">("docker-local");
+  const [target, setTarget] = useState<"docker-local" | "local-process" | "github" | "cloudflare">("docker-local");
   const deploying = deployStatus !== null;
 
   // Settings form
@@ -135,11 +137,13 @@ export function Sidebar({
         <div className="row">
           <select
             value={target}
-            onChange={(e) => setTarget(e.target.value as "docker-local" | "local-process")}
+            onChange={(e) => setTarget(e.target.value as "docker-local" | "local-process" | "github" | "cloudflare")}
             disabled={deploying}
           >
             <option value="docker-local">Docker (local container)</option>
             <option value="local-process">Local process (dev, no Docker)</option>
+            <option value="github">GitHub repo + CI (publish to GHCR)</option>
+            <option value="cloudflare">Cloudflare Workers (wrangler deploy)</option>
           </select>
         </div>
         <button className="deploy-btn" onClick={deploy} disabled={!connected || deploying || !sourceDir.trim()}>
@@ -147,6 +151,14 @@ export function Sidebar({
         </button>
         {deployStatus && <div className="deploy-status">{deployStatus}</div>}
         {deployError && <div className="deploy-error">{deployError}</div>}
+        {deployArtifact && (
+          <div className="deploy-artifact">
+            <a href={deployArtifact.url} target="_blank" rel="noreferrer">
+              {deployArtifact.url}
+            </a>
+            <span>{deployArtifact.message}</span>
+          </div>
+        )}
 
         {/* ── Provider API keys (stored server-side) ── */}
         <button className="settings-toggle" onClick={() => setShowSettings((s) => !s)}>

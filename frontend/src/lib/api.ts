@@ -82,7 +82,7 @@ export type ClientRequest =
   /** Connect a served Flue agent over its HTTP+WebSocket API. */
   | { type: "agent.connectFlue"; baseUrl: string; agentName: string; instanceId?: string; token?: string }
   /** Convert a local Claude Code project to a Flue agent, deploy it, and connect. */
-  | { type: "agent.deployFlue"; sourceDir: string; provider?: string; model?: string; target?: "docker-local" | "local-process" }
+  | { type: "agent.deployFlue"; sourceDir: string; provider?: string; model?: string; target?: "docker-local" | "local-process" | "github" | "cloudflare" }
   /** Store a provider API key server-side (the value never persists in the frontend). */
   | { type: "secrets.set"; provider: string; apiKey: string }
   | { type: "secrets.list" }
@@ -97,6 +97,8 @@ export type ServerEvent =
   | { type: "agent.registered"; agent: AgentSummary }
   | { type: "secrets.status"; providers: string[] }
   | { type: "deploy.progress"; step: string; detail?: string }
+  /** A deploy that produced an artifact (e.g. a published GitHub repo) instead of a running agent. */
+  | { type: "deploy.artifact"; target: string; url: string; message: string }
   | { type: "deploy.error"; message: string }
   | { type: "config.updated"; agentId: string }
   | { type: "session.started"; sessionId: string; agentId: string }
