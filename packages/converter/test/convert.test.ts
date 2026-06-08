@@ -65,10 +65,31 @@ function main(): void {
   assert(skill.includes("Refund policy"), "skill SKILL.md copied verbatim");
 
   // scaffold present
-  for (const f of ["flue.config.ts", "package.json", "Dockerfile", ".env.example", "README.md"]) {
+  for (const f of ["flue.config.ts", "package.json", "Dockerfile", ".env.example", "README.md", "wrangler.jsonc", ".github/workflows/deploy.yml"]) {
     assert(out.files.some((x) => x.path === f), `scaffold file ${f} emitted`);
   }
   assert(fileContent(out, ".env.example").includes("ANTHROPIC_API_KEY="), ".env.example has the provider key var");
+
+  // package.json carries the Cloudflare peer dep + build/deploy scripts
+  const pkg = JSON.parse(fileContent(out, "package.json"));
+  assert(typeof pkg.dependencies.agents === "string", "package.json includes the 'agents' CF peer dependency");
+  assert(pkg.scripts["build:cloudflare"] === "flue build --target cloudflare", "package.json has build:cloudflare script");
+  assert(pkg.scripts["deploy:cloudflare"] === "wrangler deploy", "package.json has deploy:cloudflare script");
+
+  // ── Cloudflare wrangler config (real, not a stub) ──
+  const wrangler = fileContent(out, "wrangler.jsonc");
+  const wjson = JSON.parse(wrangler.replace(/^\/\/.*$/gm, "")); // strip jsonc comments
+  assert(wjson.name === "claude-project", "wrangler name = CF-valid worker name");
+  assert(wjson.compatibility_date >= "2026-04-01", "wrangler compatibility_date >= 2026-04-01 (SQLite DO)");
+  assert(wjson.compatibility_flags.includes("nodejs_compat"), "wrangler enables nodejs_compat");
+  const classes = wjson.migrations[0].new_sqlite_classes;
+  assert(classes.includes("FlueClaudeProjectAgent"), "migrations declare the derived DO class name (matches Flue)");
+  assert(classes.includes("FlueRegistry"), "migrations declare the FlueRegistry DO class");
+
+  // ── GitHub Actions deploy workflow ──
+  const wf = fileContent(out, ".github/workflows/deploy.yml");
+  assert(wf.includes("ghcr.io/${{ github.repository }}"), "deploy workflow pushes the image to GHCR");
+  assert(wf.includes("build-push-action"), "deploy workflow builds + pushes the Docker image");
 
   // ── determinism ──
   const a = JSON.stringify(convert(FIXTURE).files);
