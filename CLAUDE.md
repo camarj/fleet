@@ -31,8 +31,12 @@ separate tool, not the Core. See `ARCHITECTURE.md` for the full picture.
    there first, then ask.
 5. **ACP agents communicate over stdio (subprocess); A2A agents over HTTP+SSE.**
    Don't mix up the two wire models.
-6. **Cloudflare is out of the MVP** (agent runtime is Python; CF Workers run
-   JS/Wasm). Cloudflare stays a documented stub.
+6. **Cloudflare is a supported deploy target** (since the agent runtime is now
+   Flue/TypeScript, which runs on Workers). The converter emits a real
+   `wrangler.jsonc` and the deployer's `cloudflare` target runs
+   `flue build --target cloudflare` + `wrangler deploy`. Never invent the Flue CF
+   wire (DO class/binding names, compat date) — verify against `@flue/cli` or the
+   `flue-client` skill. `wrangler deploy` needs `CLOUDFLARE_API_TOKEN`.
 7. **Abort is per-standard.** A2A: `client.cancelTask({ id })`. ACP:
    `connection.cancel({ sessionId })`. Both surface as `handle.abort()` on the
    neutral `RunHandle`.
