@@ -13,7 +13,7 @@
  */
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -23,15 +23,23 @@ import { deployedDir } from "../paths.js";
 import type { SecretsStore } from "../secrets/store.js";
 
 const FLUE_VERSION = "0.10.1";
+const AGENTS_VERSION = "0.15.0"; // Cloudflare Agents SDK — peer dep of the CF Worker build
+const WRANGLER_VERSION = "4.98.0"; // Cloudflare deploy + secrets CLI
 
 /**
- * Where to run the converted agent. `docker-local` is the default: each agent is
- * a real Docker container, and each gets its OWN free host port (mapped to the
- * container's fixed internal 8080) so many agents run side by side without
- * collisions. `local-process` runs the built server as a bare Node subprocess —
- * handy for fast dev/tests, no Docker required.
+ * Where to run the converted agent.
+ *
+ * - `docker-local` (default): a real Docker container, each on its OWN free host
+ *   port (mapped to the container's fixed internal 8080) so many agents coexist.
+ * - `local-process`: the built server as a bare Node subprocess — fast dev/tests,
+ *   no Docker.
+ * - `github`: publish the project as a GitHub repo whose CI (`.github/workflows/
+ *   deploy.yml`) builds the image to GHCR. Produces an ARTIFACT (a repo URL), not
+ *   a running agent — deploy the image on a host and connect Fleet by URL.
+ * - `cloudflare`: `flue build --target cloudflare` + `wrangler deploy` to a Workers
+ *   `*.workers.dev` URL, then connect. Needs `CLOUDFLARE_API_TOKEN`.
  */
-export type DeployTarget = "docker-local" | "local-process";
+export type DeployTarget = "docker-local" | "local-process" | "github" | "cloudflare";
 
 export interface DeployRequest {
   sourceDir: string;
@@ -40,15 +48,38 @@ export interface DeployRequest {
   target?: DeployTarget;
 }
 
-export type DeployStep = "converting" | "installing" | "building" | "starting" | "connecting" | "done";
+export type DeployStep =
+  | "converting"
+  | "installing"
+  | "building"
+  | "starting"
+  | "pushing"
+  | "deploying"
+  | "connecting"
+  | "done";
 export type DeployProgress = (step: DeployStep, detail?: string) => void;
 
+/** A deployed, connected agent the Core can talk to. */
 export interface DeployedAgent {
+  kind: "connected";
   adapter: FlueAdapter;
   agentName: string;
   baseUrl: string;
   target: DeployTarget;
 }
+
+/** A produced artifact that is not (yet) a running agent — e.g. a published repo. */
+export interface DeployArtifact {
+  kind: "artifact";
+  agentName: string;
+  target: DeployTarget;
+  /** Where the artifact lives (e.g. the GitHub repo URL). */
+  url: string;
+  /** Human-readable next step for the user. */
+  message: string;
+}
+
+export type DeployResult = DeployedAgent | DeployArtifact;
 
 const INTERNAL_PORT = 8080; // the port the Flue server listens on inside the container
 
@@ -61,7 +92,7 @@ export class FlueDeployer {
     this.#secrets = secrets;
   }
 
-  async deploy(req: DeployRequest, onProgress: DeployProgress): Promise<DeployedAgent> {
+  async deploy(req: DeployRequest, onProgress: DeployProgress): Promise<DeployResult> {
     const target: DeployTarget = req.target ?? "docker-local";
 
     // Convert the Claude Code project to a Flue project (deterministic).
@@ -72,19 +103,31 @@ export class FlueDeployer {
     rmSync(agentDir, { recursive: true, force: true });
     writeFlueProject(project, agentDir);
 
+    // `github` publishes a repo for CI to build — there is nothing to connect to yet.
+    if (target === "github") {
+      return await this.#runGithub(agentName, agentDir, onProgress);
+    }
+
     const apiKeyEnv = project.report.apiKeyEnv;
     const provider = req.provider ?? "anthropic";
     const key = this.#secrets.get(provider) ?? process.env[apiKeyEnv];
 
-    const baseUrl =
-      target === "docker-local"
-        ? await this.#runDockerLocal(agentName, agentDir, apiKeyEnv, key, onProgress)
-        : await this.#runLocalProcess(agentName, agentDir, apiKeyEnv, key, onProgress);
+    let baseUrl: string;
+    switch (target) {
+      case "docker-local":
+        baseUrl = await this.#runDockerLocal(agentName, agentDir, apiKeyEnv, key, onProgress);
+        break;
+      case "cloudflare":
+        baseUrl = await this.#runCloudflare(agentName, agentDir, apiKeyEnv, key, onProgress);
+        break;
+      default:
+        baseUrl = await this.#runLocalProcess(agentName, agentDir, apiKeyEnv, key, onProgress);
+    }
 
     onProgress("connecting");
     const adapter = await FlueAdapter.connect({ baseUrl, agentName });
     onProgress("done");
-    return { adapter, agentName, baseUrl, target };
+    return { kind: "connected", adapter, agentName, baseUrl, target };
   }
 
   /** Build a Docker image for the agent and run it on its own host port. */
@@ -141,7 +184,7 @@ export class FlueDeployer {
     ensureSharedFlue(base, onProgress);
 
     onProgress("building");
-    const flueBin = findFlueBin(base);
+    const flueBin = findBin(base, "flue");
     if (!flueBin) throw new DeployError("could not find the flue CLI in any node_modules/.bin up the tree.");
     const build = spawnSync(flueBin, ["build", "--root", agentDir, "--target", "node"], {
       cwd: base,
@@ -162,6 +205,116 @@ export class FlueDeployer {
     child.on("exit", () => this.#processes.delete(child));
 
     const baseUrl = `http://127.0.0.1:${port}`;
+    await waitReady(baseUrl);
+    return baseUrl;
+  }
+
+  /**
+   * Publish the converted project as a GitHub repo whose CI builds the image to
+   * GHCR. Returns the repo URL (an artifact — nothing is running yet). The user
+   * deploys the published image on a host and connects Fleet by URL.
+   */
+  async #runGithub(agentName: string, agentDir: string, onProgress: DeployProgress): Promise<DeployArtifact> {
+    ensureCli("git", "Git is not available. Install Git, then retry.");
+    ensureCli("gh", "The GitHub CLI is not available. Install `gh` and run `gh auth login`, then retry.");
+
+    onProgress("building", "git repository");
+    git(agentDir, ["init", "-q", "-b", "main"]);
+    git(agentDir, ["add", "-A"]);
+    git(agentDir, [
+      "-c",
+      "user.email=fleet@inteliside.local",
+      "-c",
+      "user.name=Fleet",
+      "commit", "-q", "-m", "chore: initial Flue agent (generated by Fleet)",
+    ]);
+
+    onProgress("pushing", "GitHub repository");
+    const repo = `fleet-agent-${agentName}`;
+    const res = spawnSync("gh", ["repo", "create", repo, "--private", "--source", ".", "--push"], {
+      cwd: agentDir,
+      stdio: "pipe",
+      encoding: "utf8",
+    });
+    if (res.status !== 0) throw new DeployError(`gh repo create failed:\n${res.stderr || res.stdout}`);
+    const url = parseRepoUrl(`${res.stdout}\n${res.stderr}`) ?? `https://github.com/<your-account>/${repo}`;
+
+    onProgress("done");
+    return {
+      kind: "artifact",
+      agentName,
+      target: "github",
+      url,
+      message:
+        "Repo published. Its CI builds the image to GHCR on push — deploy that image on any " +
+        "container host and connect Fleet to the running URL.",
+    };
+  }
+
+  /**
+   * Build the agent for Cloudflare Workers and `wrangler deploy` it. Needs
+   * `CLOUDFLARE_API_TOKEN` (and a Cloudflare account). The model provider key is
+   * stored as a Worker secret after deploy — never in the repo. Returns the live
+   * `*.workers.dev` base URL.
+   */
+  async #runCloudflare(
+    agentName: string,
+    agentDir: string,
+    apiKeyEnv: string,
+    key: string | undefined,
+    onProgress: DeployProgress,
+  ): Promise<string> {
+    const token = process.env.CLOUDFLARE_API_TOKEN;
+    if (!token) {
+      throw new DeployError(
+        "Cloudflare deploy needs CLOUDFLARE_API_TOKEN (and a Cloudflare account). Set it in the environment, then retry.",
+      );
+    }
+    const base = deployedDir();
+    ensureCloudflareDeps(base, onProgress);
+
+    onProgress("building", "cloudflare worker");
+    const flueBin = findBin(base, "flue");
+    if (!flueBin) throw new DeployError("could not find the flue CLI after installing the Cloudflare build deps.");
+    const build = spawnSync(flueBin, ["build", "--target", "cloudflare", "--root", agentDir], {
+      cwd: agentDir,
+      stdio: "pipe",
+      encoding: "utf8",
+    });
+    if (build.status !== 0) {
+      throw new DeployError(`flue build --target cloudflare failed:\n${build.stderr || build.stdout}`);
+    }
+
+    const outDir = findCfOutputDir(join(agentDir, "dist"));
+    if (!outDir) throw new DeployError("the Cloudflare build did not produce a deployable dist/<worker>/ directory.");
+
+    const wranglerBin = findBin(base, "wrangler");
+    if (!wranglerBin) throw new DeployError("could not find wrangler after installing the Cloudflare build deps.");
+    const cfEnv = { ...process.env, CLOUDFLARE_API_TOKEN: token };
+
+    onProgress("deploying", "wrangler deploy");
+    const deploy = spawnSync(wranglerBin, ["deploy"], { cwd: outDir, stdio: "pipe", encoding: "utf8", env: cfEnv });
+    if (deploy.status !== 0) throw new DeployError(`wrangler deploy failed:\n${deploy.stderr || deploy.stdout}`);
+
+    const baseUrl = parseWorkersUrl(`${deploy.stdout}\n${deploy.stderr}`);
+    if (!baseUrl) {
+      throw new DeployError(`could not determine the deployed Worker URL from wrangler output:\n${deploy.stdout}`);
+    }
+
+    // Store the model provider key as a Worker secret (stdin → never in argv/repo).
+    if (key) {
+      const secret = spawnSync(wranglerBin, ["secret", "put", apiKeyEnv], {
+        cwd: outDir,
+        input: key,
+        stdio: ["pipe", "pipe", "pipe"],
+        encoding: "utf8",
+        env: cfEnv,
+      });
+      if (secret.status !== 0) {
+        throw new DeployError(`wrangler secret put ${apiKeyEnv} failed:\n${secret.stderr || secret.stdout}`);
+      }
+    }
+
     await waitReady(baseUrl);
     return baseUrl;
   }
@@ -244,19 +397,81 @@ function ensureSharedFlue(base: string, onProgress: DeployProgress): void {
  * @flue/runtime: it is ESM-only and has no CJS "require" export.)
  */
 function canResolveFlue(base: string): boolean {
-  return findFlueBin(base) !== null;
+  return findBin(base, "flue") !== null;
 }
 
-/** Find the `flue` CLI shim in any node_modules/.bin up the tree from `base`. */
-function findFlueBin(base: string): string | null {
+/** Find a CLI shim (`flue`, `wrangler`, …) in any node_modules/.bin up the tree from `base`. */
+function findBin(base: string, name: string): string | null {
   let dir = base;
   for (;;) {
-    const bin = join(dir, "node_modules", ".bin", "flue");
+    const bin = join(dir, "node_modules", ".bin", name);
     if (existsSync(bin)) return bin;
     const parent = dirname(dir);
     if (parent === dir) return null;
     dir = parent;
   }
+}
+
+// ── Cloudflare build deps + GitHub helpers ────────────────────────────────────
+
+/**
+ * Cloudflare builds run on the HOST (not in Docker), so the build deps must be
+ * resolvable from `<base>`: @flue, the `agents` peer (CF Worker entry imports it),
+ * and `wrangler` (deploy + secrets). Installed once; skipped if already present.
+ */
+function ensureCloudflareDeps(base: string, onProgress: DeployProgress): void {
+  if (findBin(base, "flue") && findBin(base, "wrangler")) return;
+  onProgress("installing", "Cloudflare build tools (first cloudflare deploy — this can take a minute)");
+  writeFileSync(
+    join(base, "package.json"),
+    JSON.stringify(
+      {
+        name: "fleet-deployed",
+        private: true,
+        dependencies: { "@flue/runtime": FLUE_VERSION, agents: AGENTS_VERSION },
+        devDependencies: { "@flue/cli": FLUE_VERSION, wrangler: WRANGLER_VERSION },
+      },
+      null,
+      2,
+    ),
+  );
+  const install = spawnSync("npm", ["install"], { cwd: base, stdio: "pipe", encoding: "utf8" });
+  if (install.status !== 0) {
+    throw new DeployError(`installing the Cloudflare build tools failed:\n${install.stderr || install.stdout}`);
+  }
+}
+
+/** Find the `flue build --target cloudflare` output dir (the one holding wrangler.json). */
+function findCfOutputDir(distDir: string): string | null {
+  if (!existsSync(distDir)) return null;
+  for (const entry of readdirSync(distDir, { withFileTypes: true })) {
+    if (entry.isDirectory() && existsSync(join(distDir, entry.name, "wrangler.json"))) {
+      return join(distDir, entry.name);
+    }
+  }
+  return null;
+}
+
+/** Assert a CLI is on PATH (`cmd --version` succeeds). */
+function ensureCli(cmd: string, message: string): void {
+  const probe = spawnSync(cmd, ["--version"], { stdio: "ignore" });
+  if (probe.status !== 0) throw new DeployError(message);
+}
+
+/** Run a git command in `dir`, throwing on failure. */
+function git(dir: string, args: string[]): void {
+  const res = spawnSync("git", args, { cwd: dir, stdio: "pipe", encoding: "utf8" });
+  if (res.status !== 0) throw new DeployError(`git ${args.join(" ")} failed:\n${res.stderr || res.stdout}`);
+}
+
+/** Extract the first GitHub repo URL from `gh` output. */
+function parseRepoUrl(out: string): string | null {
+  return out.match(/https:\/\/github\.com\/[^\s]+/)?.[0] ?? null;
+}
+
+/** Extract the first `*.workers.dev` URL from wrangler output. */
+function parseWorkersUrl(out: string): string | null {
+  return out.match(/https:\/\/[^\s]+\.workers\.dev/)?.[0] ?? null;
 }
 
 // ── process helpers ──────────────────────────────────────────────────────────

@@ -33,7 +33,7 @@ export type ClientRequest =
   /** Connect a served Flue agent over its HTTP+WebSocket API. */
   | { type: "agent.connectFlue"; baseUrl: string; agentName: string; instanceId?: string; token?: string }
   /** Convert a local Claude Code project to a Flue agent, deploy it, and connect. */
-  | { type: "agent.deployFlue"; sourceDir: string; provider?: string; model?: string; target?: "docker-local" | "local-process" }
+  | { type: "agent.deployFlue"; sourceDir: string; provider?: string; model?: string; target?: "docker-local" | "local-process" | "github" | "cloudflare" }
   /** Store a provider API key server-side (secure store). The value never persists in the frontend. */
   | { type: "secrets.set"; provider: string; apiKey: string }
   /** Ask which providers currently have a key set (values are never returned). */
@@ -49,8 +49,10 @@ export type ServerEvent =
   | { type: "agent.registered"; agent: AgentSummary }
   /** Which providers have an API key set (ids only, never the values). */
   | { type: "secrets.status"; providers: string[] }
-  /** A step in an in-flight deploy: converting → installing → building → starting → connecting → done. */
+  /** A step in an in-flight deploy: converting → installing → building → starting/pushing/deploying → connecting → done. */
   | { type: "deploy.progress"; step: string; detail?: string }
+  /** A deploy that produced an artifact instead of a running agent (e.g. a published GitHub repo). */
+  | { type: "deploy.artifact"; target: string; url: string; message: string }
   | { type: "deploy.error"; message: string }
   | { type: "config.updated"; agentId: string }
   | { type: "session.started"; sessionId: string; agentId: string }

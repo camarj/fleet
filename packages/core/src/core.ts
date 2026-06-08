@@ -129,12 +129,17 @@ export class GatewayCore {
 
   async #deployFlue(req: Extract<ClientRequest, { type: "agent.deployFlue" }>, emit: Emit): Promise<void> {
     try {
-      const { adapter, baseUrl } = await this.#deployer.deploy(
+      const result = await this.#deployer.deploy(
         { sourceDir: req.sourceDir, provider: req.provider, model: req.model, target: req.target },
         (step, detail) => emit({ type: "deploy.progress", step, detail }),
       );
-      const stored = this.#state.upsertAgent(adapter.info(), "flue", baseUrl);
-      this.#agents.set(stored.id, { adapter, kind: "flue", sourceRef: baseUrl });
+      // `github` yields an artifact (a published repo), not a running agent.
+      if (result.kind === "artifact") {
+        emit({ type: "deploy.artifact", target: result.target, url: result.url, message: result.message });
+        return;
+      }
+      const stored = this.#state.upsertAgent(result.adapter.info(), "flue", result.baseUrl);
+      this.#agents.set(stored.id, { adapter: result.adapter, kind: "flue", sourceRef: result.baseUrl });
       emit({ type: "agent.registered", agent: this.#summary(stored, true) });
     } catch (err) {
       emit({ type: "deploy.error", message: (err as Error).message });
