@@ -1,0 +1,28 @@
+{
+  "name": "@inteliside/gateway-converter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Converter — reads a Claude Code agent project and emits a standalone, deployable Flue (TypeScript) agent. Deterministic, no LLM. Provider/model are choosable at convert time.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "claude-to-flue": "./dist/cli.js"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx test/convert.test.ts"
+  },
+  "dependencies": {
+    "yaml": "^2.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

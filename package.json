@@ -6,12 +6,15 @@
   "description": "Fleet — multiplexer and operations center for a fleet of agents (Component 2)",
   "packageManager": "pnpm@9.0.0",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.18"
   },
   "scripts": {
     "core:build": "pnpm --filter @inteliside/gateway-core build",
     "core:dev": "pnpm --filter @inteliside/gateway-core dev",
     "core:typecheck": "pnpm --filter @inteliside/gateway-core typecheck",
+    "converter:build": "pnpm --filter @inteliside/gateway-converter build",
+    "converter:typecheck": "pnpm --filter @inteliside/gateway-converter typecheck",
+    "converter:test": "pnpm --filter @inteliside/gateway-converter test",
     "frontend:dev": "pnpm --filter @inteliside/gateway-frontend dev",
     "frontend:build": "pnpm --filter @inteliside/gateway-frontend build",
     "dev": "pnpm --filter @inteliside/gateway-core --filter @inteliside/gateway-frontend --parallel run dev",
