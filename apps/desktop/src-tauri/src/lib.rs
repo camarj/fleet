@@ -5,6 +5,7 @@ use tauri_plugin_shell::ShellExt;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // In a RELEASE bundle the Core ships as a sidecar binary, and the
             // shell launches it here. In DEV (`tauri dev`) run the Core
