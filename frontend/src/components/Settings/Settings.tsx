@@ -6,8 +6,9 @@
 
 import { useState } from "react";
 import { Modal } from "../Modal/Modal";
+import { PROVIDER_IDS } from "../../lib/providers";
 
-const PROVIDERS = ["anthropic", "openai", "openrouter", "cloudflare"] as const;
+const PROVIDERS = PROVIDER_IDS;
 
 interface Props {
   connected: boolean;

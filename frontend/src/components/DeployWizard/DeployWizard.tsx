@@ -9,25 +9,8 @@ import { useEffect, useState } from "react";
 import type { DeployTarget } from "../../lib/api";
 import { Modal } from "../Modal/Modal";
 import { isTauri, onDirectoryDrop, pickDirectory } from "../../lib/dialog";
+import { PROVIDER_CATALOG, modelsFor } from "../../lib/providers";
 
-const PROVIDERS = ["anthropic", "openai", "openrouter", "cloudflare"] as const;
-
-/**
- * Curated model catalog per provider (the converter's built-in providers). Pick
- * from the list or choose “Custom…” to type any model id. Kept here as a
- * convenience; the converter accepts any model string.
- */
-const MODELS: Record<string, string[]> = {
-  anthropic: ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"],
-  openai: ["gpt-5.5", "gpt-5", "gpt-5-mini"],
-  openrouter: [
-    "anthropic/claude-sonnet-4-6",
-    "openai/gpt-5.5",
-    "google/gemini-2.5-pro",
-    "meta-llama/llama-3.3-70b-instruct",
-  ],
-  cloudflare: ["@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/meta/llama-3.1-8b-instruct"],
-};
 const CUSTOM = "__custom__";
 
 const DEPLOY_TARGETS: { value: DeployTarget; label: string; hint: string }[] = [
@@ -64,8 +47,10 @@ export function DeployWizard({
 
   function changeProvider(p: string): void {
     setProvider(p);
-    setCustomModel(false);
-    setModel(p ? (MODELS[p]?.[0] ?? "") : ""); // default to the provider's first model
+    const models = p ? modelsFor(p) : [];
+    // Providers with no curated models (e.g. OpenCode Go) start in Custom mode.
+    setCustomModel(p !== "" && models.length === 0);
+    setModel(models[0] ?? "");
   }
 
   function changeModel(value: string): void {
@@ -173,9 +158,9 @@ export function DeployWizard({
             <label>Provider</label>
             <select value={provider} onChange={(e) => changeProvider(e.target.value)}>
               <option value="">Keep source model (no change)</option>
-              {PROVIDERS.map((p) => (
-                <option key={p} value={p}>
-                  {p}
+              {PROVIDER_CATALOG.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
                 </option>
               ))}
             </select>
@@ -184,7 +169,7 @@ export function DeployWizard({
               <>
                 <label>Model</label>
                 <select value={customModel ? CUSTOM : model} onChange={(e) => changeModel(e.target.value)}>
-                  {(MODELS[provider] ?? []).map((m) => (
+                  {modelsFor(provider).map((m) => (
                     <option key={m} value={m}>
                       {m}
                     </option>
@@ -195,7 +180,7 @@ export function DeployWizard({
                   <input
                     value={model}
                     onChange={(e) => setModel(e.target.value)}
-                    placeholder="provider model id (e.g. gpt-5.5)"
+                    placeholder="model id (e.g. gpt-5.5)"
                     autoFocus
                   />
                 )}
