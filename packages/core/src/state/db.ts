@@ -2,9 +2,8 @@
  * Gateway state — its own SQLite store (agents, configs, sessions, usage).
  *
  * Uses Node's built-in `node:sqlite` (Node 22.5+/24): zero native build, zero
- * dependencies. Stores a NEUTRAL agent descriptor (the Gateway no longer
- * consumes the Scaffolding manifest — it discovers agents via the A2A Agent
- * Card / ACP initialize and keeps only what it needs).
+ * dependencies. Stores a NEUTRAL agent descriptor — Fleet discovers each Flue
+ * agent on connect and keeps only what it needs.
  */
 
 import { DatabaseSync } from "node:sqlite";
@@ -21,7 +20,7 @@ export interface StoredAgent {
   description: string;
   model: string;
   kind: AgentKind;
-  /** A2A: base URL. ACP: launch cwd. */
+  /** The Flue agent's base URL. */
   sourceRef: string;
   updatedAt: string;
 }

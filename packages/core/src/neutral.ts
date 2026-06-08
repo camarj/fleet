@@ -1,14 +1,13 @@
 /**
- * The Gateway's NEUTRAL run model — its internal lingua franca.
+ * The Gateway's NEUTRAL run model — its internal lingua franca, and Fleet's own
+ * protocol.
  *
- * Agents now speak open standards (A2A for remote, ACP for local), not our old
- * custom Runtime Protocol. The protocol-specific clients map each standard's
- * events INTO these neutral shapes, so the rest of the Core (state, pricing,
- * the Gateway API, the frontend) stays protocol-agnostic and unchanged.
- *
- * These types used to live in `@inteliside/agent-contract` (protocol.ts). That
- * was retired in the migration, so the vocabulary now lives here — owned by the
- * Gateway, shared with the frontend (which mirrors it in its own api.ts).
+ * Fleet is Flue-only: `FlueAdapter` maps the Flue agent's event stream INTO
+ * these neutral shapes, so the rest of the Core (state, pricing, the Gateway
+ * API, the frontend) stays protocol-agnostic. This vocabulary is owned by the
+ * Gateway and mirrored by the frontend (in its own api.ts) — it is what carries
+ * the full conversation lifecycle (thinking, tool, MCP, skill, memory, subagent)
+ * to the client.
  */
 
 export type MessageRole = "user" | "assistant" | "system";
@@ -42,13 +41,11 @@ export interface RunOptions {
 }
 
 /**
- * Neutral streaming event catalog. A2A artifact/status updates, ACP
- * session/update notifications, and Flue's FlueEvent stream all map onto these.
+ * Neutral streaming event catalog — Flue's FlueEvent stream maps onto these.
  *
- * The first block is the original cross-standard core. The second block was
- * added for Flue, whose richer stream surfaces reasoning, MCP tool calls,
- * skill invocations, and context compaction as first-class events. A2A/ACP
- * simply never emit the Flue-only variants.
+ * The first block is the message/tool/subagent core; the second surfaces Flue's
+ * richer stream — reasoning, MCP tool calls, skill invocations, and context
+ * compaction — as first-class events the client renders.
  */
 export type RunEvent =
   | { type: "message.delta"; role: MessageRole; content: string }
@@ -92,13 +89,6 @@ export type RuntimeErrorCode =
   | "timeout"
   | "model_error"
   | "internal_error";
-
-/**
- * Where the agent's usage rides on each standard's wire (agreed with the
- * Scaffolding — these keys are the binding compatibility contract).
- */
-export const A2A_USAGE_METADATA_KEY = "inteliside/usage";
-export const ACP_USAGE_META_KEY = "inteliside_usage";
 
 /** Callback sink an adapter drives as a run streams. */
 export interface RunSink {

@@ -1,11 +1,9 @@
 /**
- * GatewayCore — the brain. Connects to agents over open standards (A2A for
- * remote, ACP for local), maps their events into the neutral run model, and
- * exposes high-level operations the WebSocket server relays to the frontend.
+ * GatewayCore — the brain. Connects to Flue agents over Flue's HTTP+WebSocket
+ * API, maps their events into the neutral run model, and exposes high-level
+ * operations the WebSocket server relays to the frontend.
  */
 
-import { A2AAdapter } from "./adapters/a2a.js";
-import { AcpAdapter } from "./adapters/acp.js";
 import { FlueAdapter } from "./adapters/flue.js";
 import type { AgentAdapter, AgentKind, RunHandle } from "./adapters/agent-adapter.js";
 import { FlueDeployer } from "./deploy/flue-deployer.js";
@@ -45,10 +43,6 @@ export class GatewayCore {
       switch (req.type) {
         case "agents.list":
           return this.#listAgents(emit);
-        case "agent.connectA2A":
-          return await this.#connectA2A(req.url, emit);
-        case "agent.launchAcp":
-          return await this.#launchAcp(req, emit);
         case "agent.connectFlue":
           return await this.#connectFlue(req, emit);
         case "agent.deployFlue":
@@ -78,7 +72,7 @@ export class GatewayCore {
     }
   }
 
-  /** Close every adapter (ACP: kills subprocesses), kill deployed agents, close the store. */
+  /** Close every adapter, kill deployed agents, close the store. */
   async shutdown(): Promise<void> {
     for (const reg of this.#agents.values()) {
       await reg.adapter.close().catch(() => {});
@@ -93,26 +87,6 @@ export class GatewayCore {
   #listAgents(emit: Emit): void {
     const agents = this.#state.listAgents().map((a) => this.#summary(a, this.#agents.has(a.id)));
     emit({ type: "agents", agents });
-  }
-
-  async #connectA2A(url: string, emit: Emit): Promise<void> {
-    const adapter = await A2AAdapter.connect(url);
-    const stored = this.#state.upsertAgent(adapter.info(), "a2a", url);
-    this.#agents.set(stored.id, { adapter, kind: "a2a", sourceRef: url });
-    emit({ type: "agent.registered", agent: this.#summary(stored, true) });
-  }
-
-  async #launchAcp(req: Extract<ClientRequest, { type: "agent.launchAcp" }>, emit: Emit): Promise<void> {
-    const adapter = await AcpAdapter.launch({
-      cwd: req.cwd,
-      command: req.command ?? "python",
-      args: req.args ?? ["-m", "runtime.acp_server"],
-      id: req.id,
-      name: req.name,
-    });
-    const stored = this.#state.upsertAgent(adapter.info(), "acp", req.cwd);
-    this.#agents.set(stored.id, { adapter, kind: "acp", sourceRef: req.cwd });
-    emit({ type: "agent.registered", agent: this.#summary(stored, true) });
   }
 
   async #connectFlue(req: Extract<ClientRequest, { type: "agent.connectFlue" }>, emit: Emit): Promise<void> {

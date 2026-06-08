@@ -1,13 +1,20 @@
 /**
  * Gateway API — the Core's OWN protocol toward the frontend (over WebSocket).
  *
- * NOT a standard. Agents speak A2A (remote), ACP (local), or Flue (TS harness);
- * the Core translates their events into the neutral run model and relays them
- * here. The frontend never speaks A2A, ACP, or Flue.
+ * Fleet is Flue-only: agents are Flue agents the Core reaches over Flue's
+ * HTTP+WebSocket API. The Core translates their events into the neutral run
+ * model and relays them here. The frontend never speaks Flue — only this API.
  */
 
 import type { AgentKind } from "./adapters/agent-adapter.js";
 import type { ModelOverride, ModelParameters, RunEvent, RunStatus, RuntimeErrorCode, Usage } from "./neutral.js";
+
+/**
+ * Where a converted agent is deployed (wire copy of DeployTarget). The four the
+ * UI offers are docker-local, fly, cloudflare, and github (repo for self-hosted
+ * Docker — Coolify/Dokploy). `local-process` stays for Docker-free tests only.
+ */
+export type DeployTargetWire = "docker-local" | "local-process" | "fly" | "cloudflare" | "github";
 
 /** Compact view of an agent for the Sidebar. */
 export interface AgentSummary {
@@ -15,7 +22,7 @@ export interface AgentSummary {
   name: string;
   version: string;
   description: string;
-  /** Which open standard reaches this agent. */
+  /** The agent kind (Flue). */
   kind: AgentKind;
   /** True while the Core holds a live adapter for it. */
   online: boolean;
@@ -26,14 +33,10 @@ export interface AgentSummary {
 
 export type ClientRequest =
   | { type: "agents.list" }
-  /** Connect a REMOTE agent over A2A by its base URL (Agent Card auto-discovered). */
-  | { type: "agent.connectA2A"; url: string }
-  /** Launch a LOCAL agent over ACP — the Core spawns it as a subprocess. */
-  | { type: "agent.launchAcp"; cwd: string; command?: string; args?: string[]; id?: string; name?: string }
   /** Connect a served Flue agent over its HTTP+WebSocket API. */
   | { type: "agent.connectFlue"; baseUrl: string; agentName: string; instanceId?: string; token?: string }
   /** Convert a local Claude Code project to a Flue agent, deploy it, and connect. */
-  | { type: "agent.deployFlue"; sourceDir: string; provider?: string; model?: string; target?: "docker-local" | "local-process" | "github" | "cloudflare" }
+  | { type: "agent.deployFlue"; sourceDir: string; provider?: string; model?: string; target?: DeployTargetWire }
   /** Store a provider API key server-side (secure store). The value never persists in the frontend. */
   | { type: "secrets.set"; provider: string; apiKey: string }
   /** Ask which providers currently have a key set (values are never returned). */

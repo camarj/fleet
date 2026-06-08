@@ -1,7 +1,7 @@
 /**
- * Cost computation. A2A and ACP carry usage as TOKENS ONLY — never money.
- * The Gateway turns tokens into cost using this price table, keyed by the
- * neutral model specifier the agent actually used (after overrides).
+ * Cost computation. Agents carry usage as TOKENS ONLY — never money. The
+ * Gateway turns tokens into cost using this price table, keyed by the neutral
+ * model specifier the agent actually used (after overrides).
  *
  * Prices are indicative USD per 1M tokens and meant to be configurable later
  * (e.g. loaded from a file or the per-agent config). Unknown specifiers return

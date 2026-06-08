@@ -33,13 +33,15 @@ const WRANGLER_VERSION = "4.98.0"; // Cloudflare deploy + secrets CLI
  *   port (mapped to the container's fixed internal 8080) so many agents coexist.
  * - `local-process`: the built server as a bare Node subprocess — fast dev/tests,
  *   no Docker.
- * - `github`: publish the project as a GitHub repo whose CI (`.github/workflows/
- *   deploy.yml`) builds the image to GHCR. Produces an ARTIFACT (a repo URL), not
- *   a running agent — deploy the image on a host and connect Fleet by URL.
+ * - `fly`: `flyctl deploy` builds the Dockerfile on Fly.io and runs it; Fleet
+ *   reads the `*.fly.dev` URL and connects. Needs `FLY_API_TOKEN`.
+ * - `github`: publish the project as a Git repo (with its Dockerfile) so you can
+ *   wire it to a self-hosted Docker PaaS (Coolify, Dokploy, …). Produces an
+ *   ARTIFACT (a repo URL), not a running agent — connect Fleet by URL once it runs.
  * - `cloudflare`: `flue build --target cloudflare` + `wrangler deploy` to a Workers
  *   `*.workers.dev` URL, then connect. Needs `CLOUDFLARE_API_TOKEN`.
  */
-export type DeployTarget = "docker-local" | "local-process" | "github" | "cloudflare";
+export type DeployTarget = "docker-local" | "local-process" | "fly" | "github" | "cloudflare";
 
 export interface DeployRequest {
   sourceDir: string;
@@ -116,6 +118,9 @@ export class FlueDeployer {
     switch (target) {
       case "docker-local":
         baseUrl = await this.#runDockerLocal(agentName, agentDir, apiKeyEnv, key, onProgress);
+        break;
+      case "fly":
+        baseUrl = await this.#runFly(agentName, agentDir, apiKeyEnv, key, onProgress);
         break;
       case "cloudflare":
         baseUrl = await this.#runCloudflare(agentName, agentDir, apiKeyEnv, key, onProgress);
@@ -246,8 +251,8 @@ export class FlueDeployer {
       target: "github",
       url,
       message:
-        "Repo published. Its CI builds the image to GHCR on push — deploy that image on any " +
-        "container host and connect Fleet to the running URL.",
+        "Repo published with its Dockerfile. Point a self-hosted Docker PaaS (Coolify, Dokploy, …) " +
+        "at it to build and run the agent, then connect Fleet to the running URL.",
     };
   }
 
@@ -315,6 +320,61 @@ export class FlueDeployer {
       }
     }
 
+    await waitReady(baseUrl);
+    return baseUrl;
+  }
+
+  /**
+   * Deploy to Fly.io: build the Dockerfile on Fly's remote builders and run it,
+   * then connect to the `*.fly.dev` URL. Needs `FLY_API_TOKEN` + `flyctl`. The
+   * model provider key is staged as a Fly secret (stdin → never in argv/repo).
+   * fly.toml is written here (not by the converter) because the app name must be
+   * globally unique, so it is chosen at deploy time.
+   */
+  async #runFly(
+    agentName: string,
+    agentDir: string,
+    apiKeyEnv: string,
+    key: string | undefined,
+    onProgress: DeployProgress,
+  ): Promise<string> {
+    const token = process.env.FLY_API_TOKEN;
+    if (!token) {
+      throw new DeployError(
+        "Fly.io deploy needs FLY_API_TOKEN (and a Fly.io account). Set it in the environment, then retry.",
+      );
+    }
+    ensureCli("flyctl", "The Fly.io CLI (flyctl) is not available. Install flyctl, then retry.");
+    const flyEnv = { ...process.env, FLY_API_TOKEN: token };
+    const app = flyAppName(agentName);
+    writeFileSync(join(agentDir, "fly.toml"), flyToml(app));
+
+    onProgress("building", `fly app ${app}`);
+    // Create the app (idempotent — a duplicate just errors, which we ignore).
+    spawnSync("flyctl", ["apps", "create", app, "--org", "personal"], { stdio: "pipe", encoding: "utf8", env: flyEnv });
+
+    // Stage the provider key as a Fly secret (applied on the next deploy).
+    if (key) {
+      const sec = spawnSync("flyctl", ["secrets", "import", "--app", app, "--stage"], {
+        cwd: agentDir,
+        input: `${apiKeyEnv}=${key}\n`,
+        stdio: ["pipe", "pipe", "pipe"],
+        encoding: "utf8",
+        env: flyEnv,
+      });
+      if (sec.status !== 0) throw new DeployError(`flyctl secrets import failed:\n${sec.stderr || sec.stdout}`);
+    }
+
+    onProgress("deploying", "flyctl deploy");
+    const deploy = spawnSync("flyctl", ["deploy", "--app", app, "--remote-only", "--yes"], {
+      cwd: agentDir,
+      stdio: "pipe",
+      encoding: "utf8",
+      env: flyEnv,
+    });
+    if (deploy.status !== 0) throw new DeployError(`flyctl deploy failed:\n${deploy.stderr || deploy.stdout}`);
+
+    const baseUrl = `https://${app}.fly.dev`;
     await waitReady(baseUrl);
     return baseUrl;
   }
@@ -472,6 +532,31 @@ function parseRepoUrl(out: string): string | null {
 /** Extract the first `*.workers.dev` URL from wrangler output. */
 function parseWorkersUrl(out: string): string | null {
   return out.match(/https:\/\/[^\s]+\.workers\.dev/)?.[0] ?? null;
+}
+
+/** A globally-unique, Fly-valid app name: lowercase-alnum-dashes + a short suffix. */
+function flyAppName(name: string): string {
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "agent";
+  const suffix = Math.random().toString(36).slice(2, 8);
+  return `fleet-${slug}-${suffix}`.slice(0, 30).replace(/-+$/g, "");
+}
+
+/** Minimal fly.toml for the agent container (the Dockerfile EXPOSEs 8080). */
+function flyToml(app: string): string {
+  return `# Generated by Fleet at deploy time.
+app = "${app}"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+`;
 }
 
 // ── process helpers ──────────────────────────────────────────────────────────

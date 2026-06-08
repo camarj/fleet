@@ -1,19 +1,16 @@
 /**
- * Neutral AgentAdapter — axis 1 (FRAMEWORK), now over open standards.
+ * Neutral AgentAdapter — the single interface the Core uses to talk to agents.
  *
- * The Core talks to every agent through this neutral interface. Two
- * implementations:
- *   - A2AAdapter  — remote agents over A2A (HTTP+SSE), `@a2a-js/sdk`
- *   - AcpAdapter  — local agents over ACP (stdio subprocess), `@agentclientprotocol/sdk`
- *   - FlueAdapter — Flue agents over Flue's HTTP+WebSocket API, `@flue/sdk`
- *
- * Each maps its standard's events INTO the neutral run model (`neutral.ts`),
- * so the rest of the Core never sees A2A, ACP, or Flue.
+ * Fleet is Flue-only: every agent is a Flue agent (converted from a Claude Code
+ * project and deployed by Fleet), reached through `FlueAdapter` over Flue's
+ * HTTP+WebSocket API. The adapter maps Flue's events INTO the neutral run model
+ * (`neutral.ts`) so the rest of the Core never sees the wire protocol. The
+ * `foreign/` placeholder remains for future non-Flue agents.
  */
 
 import type { RunInput, RunOptions, RunSink } from "../neutral.js";
 
-export type AgentKind = "a2a" | "acp" | "flue";
+export type AgentKind = "flue";
 
 export interface AgentInfo {
   id: string;
@@ -27,7 +24,7 @@ export interface AgentInfo {
 export interface RunHandle {
   /** Resolves when the run reaches a terminal state (done|error). */
   readonly done: Promise<void>;
-  /** Abort the in-flight run (A2A: tasks/cancel; ACP: session/cancel; Flue: socket.close). */
+  /** Abort the in-flight run (Flue: best-effort socket close / signal). */
   abort(): Promise<void>;
 }
 
@@ -37,6 +34,6 @@ export interface AgentAdapter {
   info(): AgentInfo;
   /** Start a run; stream neutral events into `sink`. */
   run(input: RunInput, options: RunOptions, sink: RunSink): RunHandle;
-  /** Release resources (ACP: kill the subprocess; A2A: no-op). */
+  /** Release resources held for this agent. */
   close(): Promise<void>;
 }
