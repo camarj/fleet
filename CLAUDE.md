@@ -6,16 +6,19 @@ non-negotiable. Detail lives in `.claude/skills/` and `ARCHITECTURE.md`.
 ## What this is
 
 A multiplexer + operations center (Orca/cmux-style) that **connects to** already
-deployed agents to consume, configure, and (Phase 2) orchestrate them. It does
-**not** create agents — that's the Scaffolding (Component 1). See
-`ARCHITECTURE.md` for the full picture.
+deployed agents to consume, configure, and (Phase 2) orchestrate them. The
+**Core never creates agents**. The repo additionally hosts a **converter**
+workspace (`packages/converter`, `@inteliside/gateway-converter`) that turns a
+Claude Code project into a deployable **Flue** (TypeScript) agent — that is a
+separate tool, not the Core. See `ARCHITECTURE.md` for the full picture.
 
 ## Non-negotiable rules
 
 1. **The Gateway never talks to an agent directly — only through an adapter.**
-   Use `A2AAdapter` for remote agents and `AcpAdapter` for local agents
-   (`packages/core/src/adapters/`). The `foreign/` directory is a placeholder
-   for future non-standard agents. → skill `adapter-interface`.
+   Use `A2AAdapter` for remote agents, `AcpAdapter` for local agents, and
+   `FlueAdapter` for served Flue agents (`packages/core/src/adapters/`). The
+   `foreign/` directory is a placeholder for future non-standard agents.
+   → skills `adapter-interface`, `flue-client`.
 2. **The frontend never connects to an agent.** It always goes through the Core
    over WebSocket (the Gateway API in `packages/core/src/api.ts`). Two distinct
    boundaries: Core↔Agent = A2A (remote) or ACP (local); Frontend↔Core = Gateway API.
@@ -45,7 +48,8 @@ deployed agents to consume, configure, and (Phase 2) orchestrate them. It does
 | --- | --- |
 | `a2a-client` | Working with `A2AAdapter` — `@a2a-js/sdk`, streaming, cancellation |
 | `acp-client` | Working with `AcpAdapter` — `@agentclientprotocol/sdk`, subprocess, session lifecycle |
-| `adapter-interface` | The neutral `AgentAdapter` interface and both implementations |
+| `adapter-interface` | The neutral `AgentAdapter` interface and its implementations |
+| `flue-client` | Working with `FlueAdapter` and the Claude Code→Flue converter — `@flue/sdk`, invoke-stream, mapping |
 | `transport-local-docker` | Reaching A2A agents by location (local/docker mapped port) |
 | `xterm-terminal` | The terminal panel (xterm.js) |
 | `react-flow-canvas` | The workflow canvas (Phase 2) |
@@ -53,9 +57,10 @@ deployed agents to consume, configure, and (Phase 2) orchestrate them. It does
 
 ## Stack
 
-pnpm monorepo · `packages/core` (TS/Node, the brain) · `frontend` (React 19 +
+pnpm monorepo · `packages/core` (TS/Node, the brain) · `packages/converter`
+(Claude Code → Flue agent emitter, deterministic, no LLM) · `frontend` (React 19 +
 Vite) · `apps/desktop` (Tauri v2, macOS first) · `apps/web` (Phase 3). SQLite via
-built-in `node:sqlite`. Node ≥ 20 (24 recommended).
+built-in `node:sqlite`. Node ≥ 22.18 (Flue requires it; 24 recommended).
 
 ## Verify before claiming done
 
