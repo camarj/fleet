@@ -12,6 +12,24 @@ import { isTauri, onDirectoryDrop, pickDirectory } from "../../lib/dialog";
 
 const PROVIDERS = ["anthropic", "openai", "openrouter", "cloudflare"] as const;
 
+/**
+ * Curated model catalog per provider (the converter's built-in providers). Pick
+ * from the list or choose “Custom…” to type any model id. Kept here as a
+ * convenience; the converter accepts any model string.
+ */
+const MODELS: Record<string, string[]> = {
+  anthropic: ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"],
+  openai: ["gpt-5.5", "gpt-5", "gpt-5-mini"],
+  openrouter: [
+    "anthropic/claude-sonnet-4-6",
+    "openai/gpt-5.5",
+    "google/gemini-2.5-pro",
+    "meta-llama/llama-3.3-70b-instruct",
+  ],
+  cloudflare: ["@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/meta/llama-3.1-8b-instruct"],
+};
+const CUSTOM = "__custom__";
+
 const DEPLOY_TARGETS: { value: DeployTarget; label: string; hint: string }[] = [
   { value: "docker-local", label: "Docker — local", hint: "Run a container on this machine." },
   { value: "fly", label: "Docker — Fly.io", hint: "Deploy to Fly.io (needs FLY_API_TOKEN)." },
@@ -42,6 +60,23 @@ export function DeployWizard({
   const [sourceDir, setSourceDir] = useState("");
   const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
+  const [customModel, setCustomModel] = useState(false);
+
+  function changeProvider(p: string): void {
+    setProvider(p);
+    setCustomModel(false);
+    setModel(p ? (MODELS[p]?.[0] ?? "") : ""); // default to the provider's first model
+  }
+
+  function changeModel(value: string): void {
+    if (value === CUSTOM) {
+      setCustomModel(true);
+      setModel("");
+    } else {
+      setCustomModel(false);
+      setModel(value);
+    }
+  }
   const [target, setTarget] = useState<DeployTarget>("docker-local");
   const [dragActive, setDragActive] = useState(false);
   const [started, setStarted] = useState(false);
@@ -132,22 +167,46 @@ export function DeployWizard({
           </div>
         )}
 
-        {/* Step 2 — Model */}
+        {/* Step 2 — Provider & model */}
         {step === 1 && !started && (
           <div className="wizard-field">
-            <label>Provider &amp; model (optional)</label>
-            <div className="row">
-              <select value={provider} onChange={(e) => setProvider(e.target.value)}>
-                <option value="">Keep source model</option>
-                {PROVIDERS.map((p) => (
-                  <option key={p} value={p}>
-                    {p}
-                  </option>
-                ))}
-              </select>
-              <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="model id (optional)" />
+            <label>Provider</label>
+            <select value={provider} onChange={(e) => changeProvider(e.target.value)}>
+              <option value="">Keep source model (no change)</option>
+              {PROVIDERS.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
+
+            {provider && (
+              <>
+                <label>Model</label>
+                <select value={customModel ? CUSTOM : model} onChange={(e) => changeModel(e.target.value)}>
+                  {(MODELS[provider] ?? []).map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                  <option value={CUSTOM}>Custom…</option>
+                </select>
+                {customModel && (
+                  <input
+                    value={model}
+                    onChange={(e) => setModel(e.target.value)}
+                    placeholder="provider model id (e.g. gpt-5.5)"
+                    autoFocus
+                  />
+                )}
+              </>
+            )}
+
+            <div className="folder-hint">
+              {provider
+                ? "The converted agent will use this provider + model."
+                : "Leave as “keep source” to use the project’s original model."}
             </div>
-            <div className="folder-hint">Leave as “keep source” to use the project’s original model.</div>
           </div>
         )}
 
