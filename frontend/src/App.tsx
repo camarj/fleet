@@ -157,6 +157,12 @@ export function App(): React.JSX.Element {
         onOpenSettings={() => setSettingsOpen(true)}
       />
       <main className="main">
+        {!connected && (
+          <div className="connection-banner" role="status" aria-live="polite">
+            <span className="connection-banner-dot" aria-hidden="true" />
+            Reconnecting to Fleet Core…
+          </div>
+        )}
         <div className="tabs">
           <button className={`tab ${view === "terminal" ? "active" : ""}`} onClick={() => setView("terminal")}>
             Terminal

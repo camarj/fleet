@@ -793,7 +793,7 @@ export function TerminalPanel({ client, agent, connected, onRedeploy }: Props): 
   }, [client]);
 
   function submit(): void {
-    if (!agent || !input.trim() || busy || !agent.online) return;
+    if (!agent || !input.trim() || busy || !agent.online || !connected) return;
     const message = input.trim();
     setInput("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
@@ -959,27 +959,29 @@ export function TerminalPanel({ client, agent, connected, onRedeploy }: Props): 
             className="transcript-textarea"
             value={input}
             placeholder={
-              agent
-                ? agent.online
-                  ? historyMode
-                    ? "Send a message to start a new conversation…"
-                    : "Type a message…"
-                  : "Agent is offline"
-                : "Select an agent first"
+              !connected
+                ? "Reconnecting to Core…"
+                : agent
+                  ? agent.online
+                    ? historyMode
+                      ? "Send a message to start a new conversation…"
+                      : "Type a message…"
+                    : "Agent is offline"
+                  : "Select an agent first"
             }
-            disabled={!agent || busy || !agent.online}
+            disabled={!agent || busy || !agent.online || !connected}
             rows={2}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
           />
           {busy ? (
-            <button className="btn-secondary" onClick={abort}>
+            <button className="btn-secondary" onClick={abort} disabled={!connected}>
               Abort
             </button>
           ) : (
             <button
               onClick={submit}
-              disabled={!agent || !input.trim() || !agent.online}
+              disabled={!agent || !input.trim() || !agent.online || !connected}
             >
               Send
             </button>
