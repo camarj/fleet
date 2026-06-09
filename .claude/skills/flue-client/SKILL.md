@@ -24,8 +24,8 @@ connects by URL via `@flue/sdk`, consumes the granular `FlueEvent` stream, and
 maps it to the neutral run model (`neutral.ts`) so the rest of the Core never
 sees Flue.
 
-This sits alongside `A2AAdapter` (remote, A2A) and `AcpAdapter` (local, ACP) and
-implements the same `AgentAdapter` interface. See skill `adapter-interface`.
+Fleet is **Flue-only** — `FlueAdapter` is the single implementation of the
+`AgentAdapter` interface (A2A/ACP were removed). See skill `adapter-interface`.
 
 ## When to use
 
@@ -105,8 +105,8 @@ for await (const ev of stream) mapFlueEvent(ev, sink, accum); // → neutral Run
 | `turn_*`,`message_*`,`log` | no-op |
 
 `OperationKind = 'prompt' | 'skill' | 'task' | 'shell' | 'compact'`.
-Keep `mapFlueEvent` pure and exported (unit-testable without a socket), mirroring
-`consumeStream` in `a2a.ts`.
+Keep `mapFlueEvent` pure and exported — it is unit-tested without a socket in
+`packages/core/test/flue.test.ts`.
 
 ## Aborting a run
 

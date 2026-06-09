@@ -33,7 +33,16 @@ Official docs: https://reactflow.dev/
 
 ## Phase status
 
-Phase 2 — not yet implemented. The canvas component does not exist in the current repo. This skill documents how to build it correctly when Phase 2 begins.
+A placeholder stub EXISTS at `frontend/src/components/WorkflowCanvas/WorkflowCanvas.tsx`
+(static text, no React Flow yet). `@xyflow/react` is NOT installed — install it
+when the canvas work starts (handoff WU-18).
+
+**The orchestrator contract is already decided** — do NOT design your own:
+`docs/handoff-implementacion-gaps.md` §7 fixes the workflow model (DAG,
+node kinds `input | agent | output`, `promptTemplate`, persisted `position`),
+the Gateway API messages (`workflow.save/list/delete/run/abort`,
+`workflow.node.status`, `workflow.run.done`) and the rule that the frontend
+only edits/visualizes — execution lives in the Core (`orchestration/`).
 
 ## Core concepts
 
@@ -103,16 +112,19 @@ setNodes(graph.nodes);
 setEdges(graph.edges);
 ```
 
-The Gateway API will need a new `ClientRequest` type (e.g. `workflow.save`) to persist graphs. That is out of scope for Phase 1 — verify the API extension in `packages/core/src/api.ts` before implementing.
+The `ClientRequest`/`ServerEvent` shapes for workflows are specified in
+`docs/handoff-implementacion-gaps.md` §7.5 — implement those, mirrored in
+`packages/core/src/api.ts` and `frontend/src/lib/api.ts`.
 
-## Steps for Phase 2 implementation
+## Steps for the canvas implementation (handoff WU-18/WU-19)
 
-1. Install: `pnpm add @xyflow/react` in the frontend package
+1. Install: `pnpm --filter @inteliside/gateway-frontend add @xyflow/react`
 2. Import CSS: `import "@xyflow/react/dist/style.css"`
-3. Create `frontend/src/components/WorkflowCanvas/WorkflowCanvas.tsx`
-4. Define custom node types for each agent card type
-5. Wire save/load to the Gateway API (requires new `ClientRequest` / `ServerEvent` entries in `api.ts`)
-6. Integrate with the agent list from the sidebar (use `AgentSummary` from `api.ts`)
+3. Replace the stub in `frontend/src/components/WorkflowCanvas/WorkflowCanvas.tsx`
+4. Custom node types for the three node kinds: `input`, `agent`, `output`
+5. Wire save/load/run to the Gateway API messages from the handoff §7.5
+6. Agent picker fed from the registered agents list (`AgentSummary` in `api.ts`)
+7. Persist node `position` inside the workflow graph JSON (round-trips through `workflow.save`)
 
 ## References
 
