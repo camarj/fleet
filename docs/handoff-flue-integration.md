@@ -156,3 +156,96 @@ desde Fleet queda fuera de v1 (deploy manual/CI; Fleet conecta por URL).
 ## Fuera de alcance (futuro)
 Lectores Codex y Pi. A2A para orquestación agente-a-agente. Gestión de contenedores
 desde Fleet. Memoria vectorial (Flue solo da persistencia de sesión; memoria por MCP).
+
+---
+
+# Estado actual — Sesión 2026-06-08 (rama `feat/flue-migration`, PR #1)
+
+> Lo de arriba es el plan original. Esto es lo que ESTÁ implementado y verificado.
+> Todo en la rama `feat/flue-migration`; los commits de esta sesión **NO están
+> pusheados** todavía.
+
+## Cambios grandes de esta sesión
+
+1. **Fleet es Flue-only.** Se eliminaron A2A y ACP de raíz: adapters (`a2a.ts`,
+   `acp.ts`), sus tests, deps (`@a2a-js/sdk`, `@agentclientprotocol/sdk`), wiring
+   en `core.ts`/`api.ts`/`db.ts`, skills (`a2a-client`, `acp-client`,
+   `transport-local-docker`) y docs de referencia. `AgentKind = "flue"`.
+   `neutral.ts` es **el protocolo propio de Fleet** (lleva el ciclo de vida
+   completo: thinking/tool/mcp/skill/memory/subagent).
+2. **4 formas de deploy** (`packages/core/src/deploy/flue-deployer.ts`):
+   - `docker-local` — contenedor local (VERIFICADO en vivo).
+   - `fly` — `flyctl deploy` → `*.fly.dev` (necesita `FLY_API_TOKEN`).
+   - `cloudflare` — `flue build --target cloudflare` + `wrangler deploy` (necesita
+     `CLOUDFLARE_API_TOKEN`).
+   - `github` — push de repo con Dockerfile para self-host (Coolify/Dokploy).
+   - `local-process` queda **solo para tests** (no se ofrece en la UI).
+3. **Convertidor — proveedores y modelos reales (pi-ai).** Flue resuelve modelos
+   vía el catálogo de `@earendil-works/pi-ai`, así que se aceptan TODOS sus
+   proveedores sin `registerProvider` (anthropic, openai, openrouter, google,
+   deepseek, xai, groq, cerebras, mistral, moonshotai, fireworks, together,
+   nvidia, opencode, **opencode-go**, cloudflare). El catálogo de modelos del UI se
+   **genera** desde pi-ai: `frontend/scripts/generate-models.mjs` →
+   `frontend/src/lib/models.generated.ts` (16 proveedores, 523 modelos). Regenerar
+   tras bump de Flue.
+4. **UI rediseñada:** sidebar = lista + botones; **wizard modal** de deploy
+   (Project → Model → Target → Deploy) con selector de carpeta (diálogo nativo +
+   drag-and-drop, solo Tauri), dropdowns de modelo + "Custom…", **log en vivo** del
+   build, y no se cierra al clickear afuera. **Settings modal** para API keys.
+5. **Infra de feedback:** evento `deploy.log` (streaming de `docker build`/`npm
+   install`/`flue build`/`wrangler|flyctl deploy`); cliente WS con **reconexión
+   automática** y estado de conexión real.
+
+## Fixes/learnings clave (NO re-romper)
+
+- **Skills SKILL.md → Flue:** el frontmatter debe ser amigable a Flue. El converter
+  lo normaliza (`read.ts: normalizeSkillFrontmatter`): `metadata` queda objeto con
+  TODOS los valores string; `allowed-tools` se aplana a string separado por
+  espacios; y **se fuerzan comillas dobles** porque YAML re-parsea
+  `updated: 2026-03-10` como Date y `1.0` como número (Flue los rechaza).
+- **Cloudflare build (pi-ai/Flue):** necesita el peer `agents`; clases Durable
+  Object derivadas del nombre (`Flue<Pascal>Agent` + `FlueRegistry`);
+  `compatibility_date >= 2026-04-01`; Flue auto-mergea `durable_objects`.
+- **Gotcha de dev:** el Core importa el converter desde su `dist`; `tsx watch` NO
+  vigila `node_modules`, así que tras cambiar el converter hay que
+  `pnpm --filter @inteliside/gateway-converter build` **y reiniciar el Core**.
+  (Pendiente: hacer que dev resuelva el converter desde `src` para hot-reload.)
+- **Verificación dura:** los builds de Flue (node/cloudflare) y la normalización de
+  skills se prueban corriendo `flue build` real, no solo unit tests.
+
+## Cómo levantarlo (dev)
+
+- Desktop dev: cerrar la `Fleet.app` empaquetada (libera 4179) → en `apps/desktop`
+  con `~/.cargo/bin` en PATH: `pnpm tauri dev`. En dev el shell **no** spawnea el
+  sidecar (`lib.rs`: `start_core` es release-only) → correr el Core aparte:
+  `pnpm --filter @inteliside/gateway-core dev` (puerto 4179). Recargar la ventana
+  (Cmd+R) tras reiniciar el Core.
+- Gates: core `typecheck`+`test`, converter `test`+`typecheck`, frontend `build`.
+
+## Sesión 2026-06-08 (cont.) — chat E2E verificado + 2 features
+
+- **Chat end-to-end VERIFICADO en vivo** (docker-local): el agente `contenido`
+  responde con su modelo real (`opencode-go/kimi-k2.6`). El bug inicial era una
+  API key faltante en el contenedor, NO código de Fleet (el deploy se reportaba
+  "done" sin poder hablar con ningún modelo).
+- **Guard de API key en deploy** (`flue-deployer.ts`): antes del build, deriva el
+  proveedor del `modelSpecifier` y **frena con `DeployError` claro** si no hay key
+  (`secrets.get(provider) ?? process.env[apiKeyEnv]`). `github` queda exento.
+- **Redeploy de un click**: nueva tabla `deploys` persiste los params originales
+  (`db.ts`); `core.ts` refactorizó a `#runDeploy` compartido + handler
+  `agent.redeploy`; `AgentSummary.redeployable`; botón **↻ Redeploy** por agente
+  en el Sidebar + modal `DeployProgress`. Caveat: agentes deployados ANTES de este
+  cambio no tienen params guardados → sin botón hasta re-deployarlos una vez.
+
+## Próxima sesión — continuar acá
+
+1. **Verificar en vivo los otros targets** con credenciales reales: Fly.io
+   (`FLY_API_TOKEN`), Cloudflare (`CLOUDFLARE_API_TOKEN`), y el repo self-host
+   (Coolify/Dokploy). Hasta ahora solo `docker-local` está verificado end-to-end.
+2. **Provider/model swap real:** deployar el mismo agente cambiando proveedor
+   (ej. anthropic→openai/google) y confirmar que corre.
+3. **Dev DX:** resolver el converter desde `src` en dev (tsconfig paths / export
+   condition) para evitar el rebuild+restart manual.
+4. **Limpieza opcional:** revisar `ROADMAP.md`/`ARCHITECTURE.md` por menciones
+   residuales; considerar el `packages/protocol` formal (hoy el protocolo vive en
+   `neutral.ts`).

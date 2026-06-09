@@ -1,14 +1,12 @@
 /**
- * GatewayCore — the brain. Connects to agents over open standards (A2A for
- * remote, ACP for local), maps their events into the neutral run model, and
- * exposes high-level operations the WebSocket server relays to the frontend.
+ * GatewayCore — the brain. Connects to Flue agents over Flue's HTTP+WebSocket
+ * API, maps their events into the neutral run model, and exposes high-level
+ * operations the WebSocket server relays to the frontend.
  */
 
-import { A2AAdapter } from "./adapters/a2a.js";
-import { AcpAdapter } from "./adapters/acp.js";
 import { FlueAdapter } from "./adapters/flue.js";
 import type { AgentAdapter, AgentKind, RunHandle } from "./adapters/agent-adapter.js";
-import { FlueDeployer } from "./deploy/flue-deployer.js";
+import { FlueDeployer, type DeployTarget } from "./deploy/flue-deployer.js";
 import { SecretsStore } from "./secrets/store.js";
 import { computeCostUsd } from "./pricing/pricing.js";
 import { GatewayState, type StoredAgent } from "./state/index.js";
@@ -45,14 +43,12 @@ export class GatewayCore {
       switch (req.type) {
         case "agents.list":
           return this.#listAgents(emit);
-        case "agent.connectA2A":
-          return await this.#connectA2A(req.url, emit);
-        case "agent.launchAcp":
-          return await this.#launchAcp(req, emit);
         case "agent.connectFlue":
           return await this.#connectFlue(req, emit);
         case "agent.deployFlue":
           return await this.#deployFlue(req, emit);
+        case "agent.redeploy":
+          return await this.#redeploy(req, emit);
         case "secrets.set":
           this.#secrets.set(req.provider, req.apiKey);
           emit({ type: "secrets.status", providers: this.#secrets.list() });
@@ -78,7 +74,7 @@ export class GatewayCore {
     }
   }
 
-  /** Close every adapter (ACP: kills subprocesses), kill deployed agents, close the store. */
+  /** Close every adapter, kill deployed agents, close the store. */
   async shutdown(): Promise<void> {
     for (const reg of this.#agents.values()) {
       await reg.adapter.close().catch(() => {});
@@ -95,26 +91,6 @@ export class GatewayCore {
     emit({ type: "agents", agents });
   }
 
-  async #connectA2A(url: string, emit: Emit): Promise<void> {
-    const adapter = await A2AAdapter.connect(url);
-    const stored = this.#state.upsertAgent(adapter.info(), "a2a", url);
-    this.#agents.set(stored.id, { adapter, kind: "a2a", sourceRef: url });
-    emit({ type: "agent.registered", agent: this.#summary(stored, true) });
-  }
-
-  async #launchAcp(req: Extract<ClientRequest, { type: "agent.launchAcp" }>, emit: Emit): Promise<void> {
-    const adapter = await AcpAdapter.launch({
-      cwd: req.cwd,
-      command: req.command ?? "python",
-      args: req.args ?? ["-m", "runtime.acp_server"],
-      id: req.id,
-      name: req.name,
-    });
-    const stored = this.#state.upsertAgent(adapter.info(), "acp", req.cwd);
-    this.#agents.set(stored.id, { adapter, kind: "acp", sourceRef: req.cwd });
-    emit({ type: "agent.registered", agent: this.#summary(stored, true) });
-  }
-
   async #connectFlue(req: Extract<ClientRequest, { type: "agent.connectFlue" }>, emit: Emit): Promise<void> {
     const adapter = await FlueAdapter.connect({
       baseUrl: req.baseUrl,
@@ -128,13 +104,52 @@ export class GatewayCore {
   }
 
   async #deployFlue(req: Extract<ClientRequest, { type: "agent.deployFlue" }>, emit: Emit): Promise<void> {
+    await this.#runDeploy(
+      { sourceDir: req.sourceDir, provider: req.provider, model: req.model, target: req.target ?? "docker-local" },
+      emit,
+    );
+  }
+
+  /** Redeploy an agent using the params persisted from its original deploy. */
+  async #redeploy(req: Extract<ClientRequest, { type: "agent.redeploy" }>, emit: Emit): Promise<void> {
+    const params = this.#state.getDeploy(req.agentId);
+    if (!params) {
+      emit({ type: "deploy.error", message: `Agent "${req.agentId}" has no stored deploy to repeat.` });
+      return;
+    }
+    await this.#runDeploy(params, emit);
+  }
+
+  /** Shared convert+deploy+connect flow for both first deploy and redeploy. */
+  async #runDeploy(
+    params: { sourceDir: string; provider?: string | null; model?: string | null; target: string },
+    emit: Emit,
+  ): Promise<void> {
     try {
-      const { adapter, baseUrl } = await this.#deployer.deploy(
-        { sourceDir: req.sourceDir, provider: req.provider, model: req.model, target: req.target },
+      const result = await this.#deployer.deploy(
+        {
+          sourceDir: params.sourceDir,
+          provider: params.provider ?? undefined,
+          model: params.model ?? undefined,
+          target: params.target as DeployTarget,
+        },
         (step, detail) => emit({ type: "deploy.progress", step, detail }),
+        (lines) => emit({ type: "deploy.log", lines }),
       );
-      const stored = this.#state.upsertAgent(adapter.info(), "flue", baseUrl);
-      this.#agents.set(stored.id, { adapter, kind: "flue", sourceRef: baseUrl });
+      // `github` yields an artifact (a published repo), not a running agent.
+      if (result.kind === "artifact") {
+        emit({ type: "deploy.artifact", target: result.target, url: result.url, message: result.message });
+        return;
+      }
+      const stored = this.#state.upsertAgent(result.adapter.info(), "flue", result.baseUrl);
+      this.#agents.set(stored.id, { adapter: result.adapter, kind: "flue", sourceRef: result.baseUrl });
+      // Persist the inputs so this agent can be redeployed in one click later.
+      this.#state.setDeploy(stored.id, {
+        sourceDir: params.sourceDir,
+        provider: params.provider ?? null,
+        model: params.model ?? null,
+        target: params.target,
+      });
       emit({ type: "agent.registered", agent: this.#summary(stored, true) });
     } catch (err) {
       emit({ type: "deploy.error", message: (err as Error).message });
@@ -204,6 +219,7 @@ export class GatewayCore {
       kind: a.kind,
       online,
       model: a.model,
+      redeployable: this.#state.hasDeploy(a.id),
     };
   }
 }

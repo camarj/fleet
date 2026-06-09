@@ -13,7 +13,7 @@
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, relative } from "node:path";
-import { parse as parseYaml } from "yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { ConvertError } from "./providers.js";
 import type { ClaudeProject, ClaudeSkill, ClaudeSubagent, McpServerSpec, SkillFile } from "./types.js";
 
@@ -88,7 +88,14 @@ function readSkills(skillsDir: string): ClaudeSkill[] {
     const skillPath = join(skillsDir, entry);
     if (!statSync(skillPath).isDirectory()) continue;
     const files: SkillFile[] = walkFiles(skillPath)
-      .map((abs) => ({ relPath: relative(skillPath, abs), content: readFileSync(abs, "utf8") }))
+      .map((abs) => {
+        const relPath = relative(skillPath, abs);
+        const content = readFileSync(abs, "utf8");
+        // Flue requires SKILL.md frontmatter to be a flat string→string map;
+        // Claude Code skills often carry numbers/arrays/nested maps (version: 1.0,
+        // allowed-tools: [...], metadata: {...}). Normalize so the Flue build passes.
+        return { relPath, content: relPath === "SKILL.md" ? normalizeSkillFrontmatter(content) : content };
+      })
       .sort((a, b) => a.relPath.localeCompare(b.relPath));
     if (files.some((f) => f.relPath === "SKILL.md")) out.push({ name: slugify(entry), files });
   }
@@ -136,6 +143,60 @@ function readMcpServers(dir: string, settings: Record<string, unknown> | undefin
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * Rewrite a SKILL.md's frontmatter to satisfy Flue's skill parser:
+ *  - `metadata` must be an OBJECT whose values are all strings (Claude Code often
+ *    nests numbers/booleans here, e.g. `version: 1.0`),
+ *  - `allowed-tools` must be a single space-separated STRING (not a YAML array),
+ *  - other scalar values are coerced to strings; remaining non-scalars are
+ *    JSON-stringified (Flue ignores unknown keys anyway).
+ * Files with no frontmatter are returned unchanged.
+ */
+export function normalizeSkillFrontmatter(content: string): string {
+  const { data, body } = parseFrontmatter(content);
+  const keys = Object.keys(data);
+  if (keys.length === 0) return content; // nothing to normalize
+
+  const out: Record<string, unknown> = {};
+  for (const key of keys) {
+    const v = data[key];
+    if (v === null || v === undefined) continue;
+
+    if (key === "metadata") {
+      out.metadata = isStringRecord(v) || (typeof v === "object" && !Array.isArray(v))
+        ? Object.fromEntries(
+            Object.entries(v as Record<string, unknown>)
+              .filter(([, val]) => val !== null && val !== undefined)
+              .map(([k, val]) => [k, scalarToString(val)]),
+          )
+        : { value: scalarToString(v) };
+    } else if (key === "allowed-tools" || key === "allowed_tools") {
+      out[key] = Array.isArray(v) ? v.map((t) => scalarToString(t)).join(" ") : scalarToString(v);
+    } else if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+      out[key] = scalarToString(v);
+    } else {
+      out[key] = JSON.stringify(v);
+    }
+  }
+  // Force double-quoting on every string value: an unquoted "2026-03-10" or "1.0"
+  // would round-trip back to a Date/number when Flue re-parses the YAML, which it
+  // rejects. Quoting keeps them strings. lineWidth:0 avoids folding long values.
+  const yaml = stringifyYaml(out, { defaultStringType: "QUOTE_DOUBLE", defaultKeyType: "PLAIN", lineWidth: 0 }).trimEnd();
+  return `---\n${yaml}\n---\n${body ? `\n${body}` : ""}`;
+}
+
+/** Stringify a value for skill frontmatter (YAML can parse dates/numbers, which Flue rejects). */
+function scalarToString(v: unknown): string {
+  if (typeof v === "string") return v;
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  if (v instanceof Date) {
+    // Date-only (midnight UTC) → "YYYY-MM-DD"; otherwise full ISO timestamp.
+    const iso = v.toISOString();
+    return iso.endsWith("T00:00:00.000Z") ? iso.slice(0, 10) : iso;
+  }
+  return JSON.stringify(v);
+}
 
 export function parseFrontmatter(md: string): { data: Record<string, unknown>; body: string } {
   if (md.startsWith("---")) {

@@ -1,12 +1,11 @@
 ---
 name: adapter-interface
-description: The neutral AgentAdapter interface — two native implementations (A2AAdapter for remote, AcpAdapter for local) — and when a foreign adapter is needed.
+description: The neutral AgentAdapter interface and its only implementation, FlueAdapter, plus the foreign/ placeholder for future non-Flue agents.
 triggers:
   - adapter interface
   - AgentAdapter
   - AgentKind
-  - A2AAdapter
-  - AcpAdapter
+  - FlueAdapter
   - agent framework
   - adapter kind
   - native adapter
@@ -15,34 +14,30 @@ triggers:
 ## Purpose
 
 `AgentAdapter` (`packages/core/src/adapters/agent-adapter.ts`) is the Core's
-neutral abstraction for talking to one agent. Two native implementations cover
-all standard cases:
+neutral abstraction for talking to one agent. Fleet is **Flue-only**, so there
+is a single implementation:
 
-| `AgentKind` | Adapter | When | Standard |
+| `AgentKind` | Adapter | When | Wire |
 |---|---|---|---|
-| `"a2a"` | `A2AAdapter` | Remote agents | A2A (HTTP+SSE), `@a2a-js/sdk` |
-| `"acp"` | `AcpAdapter` | Local agents | ACP (stdio subprocess), `@agentclientprotocol/sdk` |
+| `"flue"` | `FlueAdapter` | Every agent (converted from Claude Code, deployed by Fleet) | Flue HTTP + WebSocket, `@flue/sdk` |
 
-Both map their standard's events INTO the neutral run model (`neutral.ts`).
-The rest of the Core — state machine, Gateway API, frontend — never sees A2A
-or ACP.
+`FlueAdapter` maps Flue's event stream INTO the neutral run model (`neutral.ts`).
+The rest of the Core — state, Gateway API, frontend — never sees Flue.
 
-There are no "foreign adapters" for standard cases. A2A and ACP ARE the
-native adapters. See `references/foreign-adapters.md` only for the rare case
-of an agent that speaks neither.
+A2A and ACP were removed; the `foreign/` directory is a placeholder for a future
+agent that speaks neither Flue nor a standard Fleet supports.
 
 ## When to use
 
-- Deciding which adapter to use for a new agent
 - Understanding the `AgentAdapter` interface contract
-- Implementing a non-standard adapter for a third-party protocol
+- Implementing a future `foreign` adapter for a non-Flue protocol
 - Debugging adapter initialization or method dispatch
 
 ## AgentAdapter interface
 
 ```ts
 // packages/core/src/adapters/agent-adapter.ts
-export type AgentKind = "a2a" | "acp";
+export type AgentKind = "flue";
 
 export interface AgentAdapter {
   readonly kind: AgentKind;
@@ -53,55 +48,24 @@ export interface AgentAdapter {
 
 export interface RunHandle {
   readonly done: Promise<void>;
-  abort(): Promise<void>;  // A2A: tasks/cancel; ACP: session/cancel
+  abort(): Promise<void>;  // Flue: best-effort socket close / signal
 }
 ```
 
-## Decision: which adapter?
-
-```
-Agent is REMOTE (has a URL, not spawned by us)?
-  YES → A2AAdapter — connects by base URL, auto-discovers Agent Card
-  NO  → Agent is LOCAL (we spawn it as a subprocess)?
-    YES → AcpAdapter — spawns the process, communicates over stdio
-    NO  → Does it speak neither A2A nor ACP?
-           → see references/foreign-adapters.md
-```
-
-## Two axes — adapter vs. protocol
-
-| Axis | Answers |
-|---|---|
-| Adapter (framework) | HOW to talk to the agent — A2A or ACP |
-| Protocol wire | WHERE and HOW the bytes travel — HTTP+SSE (A2A) or stdio JSON-RPC (ACP) |
-
-Adapter and wire are coupled in the new model: `A2AAdapter` owns HTTP+SSE,
-`AcpAdapter` owns the subprocess + stdio. There is no separate "Transport"
-layer — the adapters absorb it.
-
-## Wiring an adapter in the Core (Gateway API)
+## Wiring in the Core (Gateway API)
 
 ```ts
-// Remote agent (A2A) — triggered by "agent.connectA2A" request
-const adapter = await A2AAdapter.connect(req.url);
-
-// Local agent (ACP) — triggered by "agent.launchAcp" request
-const adapter = await AcpAdapter.launch({
-  cwd: req.cwd,
-  command: req.command ?? "python",
-  args: req.args ?? ["-m", "agent"],
-  id: req.id,
-  name: req.name,
-});
+// Connect a served Flue agent — triggered by "agent.connectFlue", or by the
+// deployer after it converts + builds + runs the agent.
+const adapter = await FlueAdapter.connect({ baseUrl, agentName, instanceId, token });
 ```
 
-See `packages/core/src/core.ts` for canonical wiring in `#handleRequest()`.
+See `packages/core/src/core.ts` (`#connectFlue` / `#deployFlue`) for canonical
+wiring, and `packages/core/src/deploy/flue-deployer.ts` for the deploy pipeline.
 
 ## References
 
-- `references/foreign-adapters.md` — only for agents speaking neither A2A nor ACP
 - `packages/core/src/adapters/agent-adapter.ts` — the interface
-- `packages/core/src/adapters/a2a.ts` — A2AAdapter implementation
-- `packages/core/src/adapters/acp.ts` — AcpAdapter implementation
-- Skill `a2a-client` — deep dive on A2A wire details
-- Skill `acp-client` — deep dive on ACP wire details
+- `packages/core/src/adapters/flue.ts` — FlueAdapter implementation
+- `packages/core/src/adapters/foreign/README.md` — placeholder for non-Flue agents
+- Skill `flue-client` — deep dive on the Flue wire + mapping

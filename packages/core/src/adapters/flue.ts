@@ -12,7 +12,7 @@
  * model — the stream yields AttachedAgentEvents (FlueEvent minus
  * run_start/run_resume/run_end), so the terminal signal is the async iterable
  * completing, not a run_end event. Usage rides on `turn`/`operation`/`compaction`
- * payloads (no metadata key like A2A/ACP). Abort = an AbortSignal passed to invoke
+ * payloads. Abort = an AbortSignal passed to invoke
  * (Flue exposes no server-side cancel — best-effort). The WebSocket path
  * (`client.agents.connect`) was NOT used: it failed to connect against a built
  * `node` server in WS0; the HTTP stream is the proven, simpler path.

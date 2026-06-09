@@ -3,7 +3,7 @@
  *
  * This is the process Tauri launches as a sidecar (and the same one the web
  * delivery connects to). The frontend speaks the Gateway API (`api.ts`), never
- * A2A or ACP — those stay between the Core and the agents.
+ * Flue — that stays between the Core and the agents.
  *
  * Env:
  *   GATEWAY_HOST  (default 127.0.0.1)

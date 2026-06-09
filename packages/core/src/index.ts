@@ -1,8 +1,8 @@
 /**
  * @inteliside/gateway-core — public surface.
  *
- * The Core connects to agents over open standards (A2A remote, ACP local) and
- * exposes a neutral Gateway API to the frontend.
+ * Fleet is Flue-only: the Core connects to Flue agents and exposes a neutral
+ * Gateway API to the frontend.
  */
 
 export { GatewayCore, type Emit, type GatewayCoreOptions } from "./core.js";
@@ -16,9 +16,8 @@ export {
   type AgentInfo,
   type AgentKind,
   type RunHandle,
-  A2AAdapter,
-  AcpAdapter,
-  type AcpLaunchSpec,
+  FlueAdapter,
+  type FlueConnectSpec,
 } from "./adapters/index.js";
 export {
   GatewayState,

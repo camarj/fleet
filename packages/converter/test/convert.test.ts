@@ -60,15 +60,46 @@ function main(): void {
   assert(agent.includes("subagents: ["), "subagents wired into config");
   assert(agent.includes(".tools]"), "MCP tools spread into config");
 
-  // skill files copied verbatim
+  // skill body copied; frontmatter normalized to a flat string→string map (Flue requirement)
   const skill = fileContent(out, "src/skills/refund-policy/SKILL.md");
-  assert(skill.includes("Refund policy"), "skill SKILL.md copied verbatim");
+  assert(skill.includes("Refund policy"), "skill SKILL.md body preserved");
+  {
+    const fm = skill.slice(0, skill.indexOf("\n---", 3));
+    // Flue contract: allowed-tools is a space-separated STRING; metadata is an
+    // OBJECT whose values are all strings (numbers like version: 1.0 coerced).
+    assert(/allowed-tools:\s*read grep/.test(fm), "allowed-tools flattened to a space-separated string");
+    assert(/metadata:\s*\r?\n/.test(fm), "metadata stays a nested mapping (not a JSON string)");
+    assert(/version:\s*["']1(\.0)?["']/.test(fm), "metadata.version coerced to a string");
+    assert(/author:\s*store-team/.test(fm), "metadata string values preserved");
+    assert(/updated:\s*["']?2026-03-10["']?/.test(fm) && !/updated:\s*2026-03-10T/.test(fm), "metadata YAML date coerced to a date string");
+  }
 
   // scaffold present
-  for (const f of ["flue.config.ts", "package.json", "Dockerfile", ".env.example", "README.md"]) {
+  for (const f of ["flue.config.ts", "package.json", "Dockerfile", ".env.example", "README.md", "wrangler.jsonc", ".github/workflows/deploy.yml"]) {
     assert(out.files.some((x) => x.path === f), `scaffold file ${f} emitted`);
   }
   assert(fileContent(out, ".env.example").includes("ANTHROPIC_API_KEY="), ".env.example has the provider key var");
+
+  // package.json carries the Cloudflare peer dep + build/deploy scripts
+  const pkg = JSON.parse(fileContent(out, "package.json"));
+  assert(typeof pkg.dependencies.agents === "string", "package.json includes the 'agents' CF peer dependency");
+  assert(pkg.scripts["build:cloudflare"] === "flue build --target cloudflare", "package.json has build:cloudflare script");
+  assert(pkg.scripts["deploy:cloudflare"] === "wrangler deploy", "package.json has deploy:cloudflare script");
+
+  // ── Cloudflare wrangler config (real, not a stub) ──
+  const wrangler = fileContent(out, "wrangler.jsonc");
+  const wjson = JSON.parse(wrangler.replace(/^\/\/.*$/gm, "")); // strip jsonc comments
+  assert(wjson.name === "claude-project", "wrangler name = CF-valid worker name");
+  assert(wjson.compatibility_date >= "2026-04-01", "wrangler compatibility_date >= 2026-04-01 (SQLite DO)");
+  assert(wjson.compatibility_flags.includes("nodejs_compat"), "wrangler enables nodejs_compat");
+  const classes = wjson.migrations[0].new_sqlite_classes;
+  assert(classes.includes("FlueClaudeProjectAgent"), "migrations declare the derived DO class name (matches Flue)");
+  assert(classes.includes("FlueRegistry"), "migrations declare the FlueRegistry DO class");
+
+  // ── GitHub Actions deploy workflow ──
+  const wf = fileContent(out, ".github/workflows/deploy.yml");
+  assert(wf.includes("ghcr.io/${{ github.repository }}"), "deploy workflow pushes the image to GHCR");
+  assert(wf.includes("build-push-action"), "deploy workflow builds + pushes the Docker image");
 
   // ── determinism ──
   const a = JSON.stringify(convert(FIXTURE).files);
@@ -87,14 +118,21 @@ function main(): void {
     "swap reports dropped subagent model overrides",
   );
 
-  // ── unknown provider rejected ──
+  // ── extended provider catalog (pi-ai) ──
+  const gemini = convert(FIXTURE, { provider: "google", model: "gemini-2.5-pro" });
+  assert(gemini.report.modelSpecifier === "google/gemini-2.5-pro", "google provider accepted (pi-ai catalog)");
+  assert(gemini.report.apiKeyEnv === "GEMINI_API_KEY", "google → GEMINI_API_KEY env");
+  const grok = convert(FIXTURE, { provider: "xai" });
+  assert(grok.report.apiKeyEnv === "XAI_API_KEY", "xai → XAI_API_KEY env (default model applied)");
+
+  // ── truly unknown provider rejected ──
   let threw = false;
   try {
-    convert(FIXTURE, { provider: "google" });
+    convert(FIXTURE, { provider: "totally-not-a-provider" });
   } catch (e) {
     threw = e instanceof ConvertError;
   }
-  assert(threw, "unknown provider (google) → ConvertError");
+  assert(threw, "unknown provider → ConvertError");
 
   console.log(process.exitCode ? "\nFAILED" : "\nALL GOOD");
 }

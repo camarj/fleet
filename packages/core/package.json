@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Gateway Core — the brain. Speaks A2A (remote) and ACP (local) to agents and exposes a WebSocket API to the frontend.",
+  "description": "Gateway Core — the brain. Speaks Flue to agents and exposes a WebSocket API to the frontend.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
@@ -14,14 +14,12 @@
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
-    "test": "tsx test/acp.test.ts && tsx test/a2a.test.ts && tsx test/flue.test.ts"
+    "test": "tsx test/flue.test.ts"
   },
   "engines": {
     "node": ">=22.18"
   },
   "dependencies": {
-    "@a2a-js/sdk": "1.0.0-alpha.0",
-    "@agentclientprotocol/sdk": "^0.25.0",
     "@flue/sdk": "0.10.1",
     "@inteliside/gateway-converter": "workspace:*",
     "ws": "^8.18.0",
