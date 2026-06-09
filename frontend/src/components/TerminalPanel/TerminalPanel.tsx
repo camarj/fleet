@@ -141,6 +141,8 @@ interface Props {
   client: GatewayClient;
   agent: AgentSummary | null;
   connected: boolean;
+  /** Called when the user clicks "Redeploy" in the offline banner. Same path as Sidebar's Redeploy. */
+  onRedeploy?: (agentId: string) => void;
 }
 
 // ── Block ID generator ────────────────────────────────────────────────────────
@@ -396,7 +398,7 @@ function CostZone({
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function TerminalPanel({ client, agent, connected }: Props): React.JSX.Element {
+export function TerminalPanel({ client, agent, connected, onRedeploy }: Props): React.JSX.Element {
   const [blocks, setBlocks] = useState<TranscriptBlock[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -743,7 +745,7 @@ export function TerminalPanel({ client, agent, connected }: Props): React.JSX.El
   }, [client]);
 
   function submit(): void {
-    if (!agent || !input.trim() || busy) return;
+    if (!agent || !input.trim() || busy || !agent.online) return;
     const message = input.trim();
     setInput("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
@@ -851,6 +853,21 @@ export function TerminalPanel({ client, agent, connected }: Props): React.JSX.El
         })}
       </div>
 
+      {/* ── Offline banner (shown when agent is registered but not reachable) ── */}
+      {agent && !agent.online && (
+        <div className="offline-banner">
+          <span className="offline-banner-text">This agent is offline.</span>
+          {agent.redeployable && onRedeploy && (
+            <button
+              className="btn-ghost offline-banner-redeploy"
+              onClick={() => onRedeploy(agent.id)}
+            >
+              ↻ Redeploy
+            </button>
+          )}
+        </div>
+      )}
+
       {/* ── Input area ── */}
       <div className="transcript-input-area">
         <div className="transcript-input-row">
@@ -859,9 +876,13 @@ export function TerminalPanel({ client, agent, connected }: Props): React.JSX.El
             className="transcript-textarea"
             value={input}
             placeholder={
-              agent ? "Type a message…" : "Select an agent first"
+              agent
+                ? agent.online
+                  ? "Type a message…"
+                  : "Agent is offline"
+                : "Select an agent first"
             }
-            disabled={!agent || busy}
+            disabled={!agent || busy || !agent.online}
             rows={2}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -873,7 +894,7 @@ export function TerminalPanel({ client, agent, connected }: Props): React.JSX.El
           ) : (
             <button
               onClick={submit}
-              disabled={!agent || !input.trim()}
+              disabled={!agent || !input.trim() || !agent.online}
             >
               Send
             </button>

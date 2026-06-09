@@ -95,12 +95,27 @@ body {
   color: var(--muted);
   margin-top: 2px;
 }
-.agent-redeploy {
+.agent-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
   margin-top: 6px;
+}
+.agent-redeploy,
+.agent-stop,
+.agent-delete {
   font-size: 11px;
   padding: 2px 8px;
 }
-.agent:not(:hover):not(.selected) .agent-redeploy {
+.agent-delete {
+  border-color: transparent;
+  color: var(--muted);
+}
+.agent-delete:hover:not(:disabled) {
+  border-color: #f85149;
+  color: #f85149;
+}
+.agent:not(:hover):not(.selected) .agent-actions {
   opacity: 0.55;
 }
 .badge {
@@ -632,6 +647,25 @@ body {
   font-size: 12px;
 }
 
+/* Offline banner — shown above the input when the selected agent is not reachable */
+.offline-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  background: rgba(248, 81, 73, 0.07);
+  font-size: 13px;
+}
+.offline-banner-text {
+  color: #f85149;
+}
+.offline-banner-redeploy {
+  font-size: 11px;
+  padding: 2px 10px;
+}
+
 /* Input area */
 .transcript-input-area {
   border-top: 1px solid var(--border);
@@ -741,7 +775,7 @@ button:disabled {
   cursor: not-allowed;
 }
 
-/* ── Buttons: primary / ghost ────────────────────────────────────────────── */
+/* ── Buttons: primary / ghost / danger ───────────────────────────────────── */
 .btn-primary {
   background: var(--accent);
   border: 1px solid var(--accent);
@@ -754,6 +788,15 @@ button:disabled {
 }
 .btn-ghost:hover:not(:disabled) {
   border-color: var(--accent);
+}
+.btn-danger {
+  background: #f85149;
+  border: 1px solid #f85149;
+  color: #fff;
+}
+.btn-danger:hover:not(:disabled) {
+  background: #da3633;
+  border-color: #da3633;
 }
 
 /* ── Sidebar actions (footer) ────────────────────────────────────────────── */

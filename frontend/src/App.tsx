@@ -40,6 +40,14 @@ export function App(): React.JSX.Element {
     setDeployLog([]);
   }
 
+  function handleRedeploy(id: string): void {
+    resetDeploy();
+    setDeployStatus("starting");
+    setRedeployingId(id);
+    const sent = client.send({ type: "agent.redeploy", agentId: id });
+    if (!sent) setDeployError("Not connected to the Core — reconnecting. Try again in a moment.");
+  }
+
   useEffect(() => {
     const offMsg = client.on((e: ServerEvent) => {
       if (e.type === "agents") {
@@ -51,6 +59,17 @@ export function App(): React.JSX.Element {
         setDeployStatus(null); // a deploy that just finished
         setDeployError(null);
         setDeployArtifact(null);
+      } else if (e.type === "agent.updated") {
+        setAgents((prev) => upsertAgent(prev, e.agent));
+      } else if (e.type === "agent.removed") {
+        setAgents((prev) => {
+          const next = prev.filter((a) => a.id !== e.agentId);
+          setSelectedId((cur) => {
+            if (cur !== e.agentId) return cur;
+            return next[0]?.id ?? null;
+          });
+          return next;
+        });
       } else if (e.type === "secrets.status") {
         setSecretsProviders(e.providers);
       } else if (e.type === "deploy.progress") {
@@ -97,11 +116,13 @@ export function App(): React.JSX.Element {
           resetDeploy();
           setDeployOpen(true);
         }}
-        onRedeploy={(id) => {
-          resetDeploy();
-          setDeployStatus("starting");
-          setRedeployingId(id);
-          const sent = client.send({ type: "agent.redeploy", agentId: id });
+        onRedeploy={handleRedeploy}
+        onStop={(id) => {
+          const sent = client.send({ type: "agent.stop", agentId: id });
+          if (!sent) setDeployError("Not connected to the Core — reconnecting. Try again in a moment.");
+        }}
+        onDelete={(id) => {
+          const sent = client.send({ type: "agent.delete", agentId: id });
           if (!sent) setDeployError("Not connected to the Core — reconnecting. Try again in a moment.");
         }}
         onOpenSettings={() => setSettingsOpen(true)}
@@ -116,7 +137,7 @@ export function App(): React.JSX.Element {
           </button>
         </div>
         {view === "terminal" ? (
-          <TerminalPanel client={client} agent={selected} connected={connected} />
+          <TerminalPanel client={client} agent={selected} connected={connected} onRedeploy={handleRedeploy} />
         ) : (
           <WorkflowCanvas />
         )}
