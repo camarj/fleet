@@ -222,19 +222,30 @@ desde Fleet. Memoria vectorial (Flue solo da persistencia de sesión; memoria po
   (Cmd+R) tras reiniciar el Core.
 - Gates: core `typecheck`+`test`, converter `test`+`typecheck`, frontend `build`.
 
+## Sesión 2026-06-08 (cont.) — chat E2E verificado + 2 features
+
+- **Chat end-to-end VERIFICADO en vivo** (docker-local): el agente `contenido`
+  responde con su modelo real (`opencode-go/kimi-k2.6`). El bug inicial era una
+  API key faltante en el contenedor, NO código de Fleet (el deploy se reportaba
+  "done" sin poder hablar con ningún modelo).
+- **Guard de API key en deploy** (`flue-deployer.ts`): antes del build, deriva el
+  proveedor del `modelSpecifier` y **frena con `DeployError` claro** si no hay key
+  (`secrets.get(provider) ?? process.env[apiKeyEnv]`). `github` queda exento.
+- **Redeploy de un click**: nueva tabla `deploys` persiste los params originales
+  (`db.ts`); `core.ts` refactorizó a `#runDeploy` compartido + handler
+  `agent.redeploy`; `AgentSummary.redeployable`; botón **↻ Redeploy** por agente
+  en el Sidebar + modal `DeployProgress`. Caveat: agentes deployados ANTES de este
+  cambio no tienen params guardados → sin botón hasta re-deployarlos una vez.
+
 ## Próxima sesión — continuar acá
 
-1. **Pushear** la rama `feat/flue-migration` y actualizar PR #1 (hoy quedó local).
-2. **Verificar en vivo los otros targets** con credenciales reales: Fly.io
+1. **Verificar en vivo los otros targets** con credenciales reales: Fly.io
    (`FLY_API_TOKEN`), Cloudflare (`CLOUDFLARE_API_TOKEN`), y el repo self-host
    (Coolify/Dokploy). Hasta ahora solo `docker-local` está verificado end-to-end.
-2b. Probar **el chat con el agente deployado** (sesión + render de la traza
-   thinking/tool/mcp/skill en `TerminalPanel`) — fue la meta de WS4 y no se
-   reverificó tras los cambios de UI.
-3. **Provider/model swap real:** deployar el mismo agente cambiando proveedor
+2. **Provider/model swap real:** deployar el mismo agente cambiando proveedor
    (ej. anthropic→openai/google) y confirmar que corre.
-4. **Dev DX:** resolver el converter desde `src` en dev (tsconfig paths / export
+3. **Dev DX:** resolver el converter desde `src` en dev (tsconfig paths / export
    condition) para evitar el rebuild+restart manual.
-5. **Limpieza opcional:** revisar `ROADMAP.md`/`ARCHITECTURE.md` por menciones
+4. **Limpieza opcional:** revisar `ROADMAP.md`/`ARCHITECTURE.md` por menciones
    residuales; considerar el `packages/protocol` formal (hoy el protocolo vive en
    `neutral.ts`).
