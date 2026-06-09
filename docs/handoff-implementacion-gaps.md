@@ -19,7 +19,7 @@
 | F0 Persistencia | ✅ DONE (merged) | WU-01 | DB a archivo `fleet.db` |
 | F1 Ciclo de vida | ✅ DONE (merged, verificado en app) | WU-02..05 | stop/delete, health+reconnect, offline guard, connect-by-URL |
 | F2 Día 2 | ✅ DONE (merged, verificado en app) | WU-06..09 | historial, preflight, banner, deploy logs |
-| F3 API honesta + converter | ⏳ SIGUIENTE | WU-10, WU-11 | no necesita credenciales |
+| F3 API honesta + converter | 🔶 EN CURSO | WU-10 ✅, WU-11 ⏳ | WU-10 hecho (config→redeploy honesto); sigue WU-11 |
 | F4 Verificar targets en vivo | 🔒 bloqueado | WU-12..15 | necesita FLY/CLOUDFLARE tokens + Coolify/Dokploy |
 | F5 Orquestador visual | ⏳ pendiente | WU-16..19 | contrato decidido en §7 |
 | F6 Hardening | ⏳ pendiente | WU-20..23 | |
@@ -51,6 +51,15 @@ agregadas en F4/F6:
 
 - WU-09: si un PRIMER deploy falla antes de registrar el agente, el log de
   error se descarta (no hay fila a la cual asociarlo). Aceptado en v1.
+- WU-10 (hecho, rama `feat/wu-10-model-override`, stacked sobre los fixes):
+  el supuesto del handoff de que `AgentSummary.model` reflejaba el modelo
+  corriente era FALSO (siempre `""` para Flue). Se corrigió: `AgentSummary.model`
+  ahora se deriva de la tabla `deploys` (`provider/model`). `config.updated`
+  lleva `requiresRedeploy`; `agent.redeploy` aplica el override de config; se
+  quitó el override muerto de `session.start`. Falta verificación en vivo
+  (cambiar modelo → redeploy → el agente corre el modelo nuevo) — es el
+  criterio de aceptación manual, cubierto por WU-15 cuando haya credenciales,
+  o con un docker-local local.
 - Preflight `cloudflare`: `checkWrangler()` siempre devuelve ok (el deployer
   auto-instala wrangler vía npm); no avisa si npm falta.
 - `findCfOutputDir()` busca `wrangler.json` (no `.jsonc`) en el output de
