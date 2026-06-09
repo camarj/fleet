@@ -114,8 +114,21 @@ export class FlueDeployer {
     }
 
     const apiKeyEnv = project.report.apiKeyEnv;
-    const provider = req.provider ?? "anthropic";
+    // The provider id is the first segment of the resolved specifier (e.g.
+    // "opencode-go/kimi-k2.6" → "opencode-go", "openrouter/anthropic/x" → "openrouter").
+    const provider = project.report.modelSpecifier.split("/")[0] ?? "anthropic";
     const key = this.#secrets.get(provider) ?? process.env[apiKeyEnv];
+
+    // Fail fast: an agent with no provider key would still build and "connect",
+    // then fail on the first message with an opaque model error. Catch it here —
+    // before the slow build — with an actionable message. (`github` returns above:
+    // it publishes a repo and the key is supplied later by CI/the PaaS.)
+    if (!key) {
+      throw new DeployError(
+        `No API key for provider "${provider}" (model ${project.report.modelSpecifier}). ` +
+          `Add a "${provider}" key in Settings (it is read from ${apiKeyEnv}), then deploy again.`,
+      );
+    }
 
     let baseUrl: string;
     switch (target) {
