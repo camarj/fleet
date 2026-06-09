@@ -123,7 +123,7 @@ export function DeployWizard({
   );
 
   return (
-    <Modal title="Deploy a Claude Code agent" onClose={onClose} footer={footer}>
+    <Modal title="Deploy a Claude Code agent" onClose={onClose} footer={footer} dismissable={false}>
       <ol className="wizard-steps">
         {STEPS.map((label, i) => (
           <li key={label} className={`wizard-step${i === step ? " active" : ""}${i < step ? " done" : ""}`}>

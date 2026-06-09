@@ -10,19 +10,23 @@ interface Props {
   onClose: () => void;
   children: React.ReactNode;
   footer?: React.ReactNode;
+  /** When false, clicking the backdrop or pressing Escape does NOT close it
+   * (close only via the ✕ or footer buttons). Prevents accidental loss. */
+  dismissable?: boolean;
 }
 
-export function Modal({ title, onClose, children, footer }: Props): React.JSX.Element {
+export function Modal({ title, onClose, children, footer, dismissable = true }: Props): React.JSX.Element {
   useEffect(() => {
+    if (!dismissable) return;
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, dismissable]);
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onClick={dismissable ? onClose : undefined}>
       <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
         <div className="modal-header">
           <span className="modal-title">{title}</span>
