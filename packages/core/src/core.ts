@@ -92,6 +92,8 @@ export class GatewayCore {
           return;
         case "deploy.preflight":
           return await this.#deployPreflight(req, emit);
+        case "deploy.lastLog":
+          return this.#getLastDeployLog(req, emit);
         default: {
           const _exhaustive: never = req;
           void _exhaustive;
@@ -176,14 +178,24 @@ export class GatewayCore {
       emit({ type: "deploy.error", message: `Agent "${req.agentId}" has no stored deploy to repeat.` });
       return;
     }
-    await this.#runDeploy(params, emit);
+    // Pass the pre-known agentId so the log can be persisted even on error.
+    await this.#runDeploy(params, emit, req.agentId);
   }
 
-  /** Shared convert+deploy+connect flow for both first deploy and redeploy. */
+  /**
+   * Shared convert+deploy+connect flow for both first deploy and redeploy.
+   *
+   * @param knownAgentId  The agentId we're redeploying (if known). Enables log
+   *   persistence on error. For a first deploy the agentId only becomes known
+   *   after the agent registers successfully, so error-path log persistence is
+   *   skipped in that case — acceptable in v1.
+   */
   async #runDeploy(
     params: { sourceDir: string; provider?: string | null; model?: string | null; target: string },
     emit: Emit,
+    knownAgentId?: string,
   ): Promise<void> {
+    const logBuffer: string[] = [];
     try {
       const result = await this.#deployer.deploy(
         {
@@ -193,7 +205,10 @@ export class GatewayCore {
           target: params.target as DeployTarget,
         },
         (step, detail) => emit({ type: "deploy.progress", step, detail }),
-        (lines) => emit({ type: "deploy.log", lines }),
+        (lines) => {
+          logBuffer.push(...lines);
+          emit({ type: "deploy.log", lines });
+        },
       );
       // `github` yields an artifact (a published repo), not a running agent.
       if (result.kind === "artifact") {
@@ -209,8 +224,16 @@ export class GatewayCore {
         model: params.model ?? null,
         target: params.target,
       });
+      // Persist the accumulated log (overwrites any previous log — one per agent in v1).
+      this.#state.setDeployLog(stored.id, logBuffer.join("\n"));
       emit({ type: "agent.registered", agent: this.#summary(stored, true) });
     } catch (err) {
+      // Persist the partial log when redeploying a known agent (agentId was passed in).
+      // For a first deploy that fails before agent registration there is no agentId to key
+      // the log by — the log is intentionally dropped in that case.
+      if (knownAgentId && logBuffer.length > 0) {
+        this.#state.setDeployLog(knownAgentId, logBuffer.join("\n"));
+      }
       emit({ type: "deploy.error", message: (err as Error).message });
     }
   }
@@ -223,6 +246,12 @@ export class GatewayCore {
       target: req.target as DeployTarget,
     });
     emit({ type: "deploy.preflight", checks });
+  }
+
+  /** Return the last deploy log for an agent, or null if none has been stored yet. */
+  #getLastDeployLog(req: Extract<ClientRequest, { type: "deploy.lastLog" }>, emit: Emit): void {
+    const log = this.#state.getDeployLog(req.agentId);
+    emit({ type: "deploy.lastLog", agentId: req.agentId, log });
   }
 
   // ── Stop / Delete ─────────────────────────────────────────────────────────

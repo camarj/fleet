@@ -21,6 +21,7 @@ interface Props {
   onStop: (id: string) => void;
   onDelete: (id: string) => void;
   onOpenSettings: () => void;
+  onViewDeployLog: (id: string) => void;
 }
 
 export function Sidebar({
@@ -35,6 +36,7 @@ export function Sidebar({
   onStop,
   onDelete,
   onOpenSettings,
+  onViewDeployLog,
 }: Props): React.JSX.Element {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
@@ -81,6 +83,19 @@ export function Sidebar({
                   }}
                 >
                   ↻ Redeploy
+                </button>
+              )}
+              {a.redeployable && (
+                <button
+                  className="btn-ghost agent-deploy-log"
+                  disabled={!connected}
+                  title="View the log from the last deploy"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onViewDeployLog(a.id);
+                  }}
+                >
+                  ☰ Deploy log
                 </button>
               )}
               {a.online && (

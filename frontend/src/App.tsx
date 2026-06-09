@@ -13,6 +13,7 @@ import { DeployWizard } from "./components/DeployWizard/DeployWizard";
 import { DeployProgress } from "./components/DeployProgress/DeployProgress";
 import { Settings } from "./components/Settings/Settings";
 import { ConnectAgent } from "./components/ConnectAgent/ConnectAgent";
+import { Modal } from "./components/Modal/Modal";
 
 const GATEWAY_URL = import.meta.env.VITE_GATEWAY_URL ?? "ws://127.0.0.1:4179";
 
@@ -38,6 +39,10 @@ export function App(): React.JSX.Element {
   const [connectError, setConnectError] = useState<string | null>(null);
   /** True while we're waiting for agent.registered or error in response to agent.connectFlue. */
   const connectPendingRef = useRef(false);
+  /** The agentId whose deploy log modal is currently open, or null. */
+  const [deployLogViewId, setDeployLogViewId] = useState<string | null>(null);
+  /** The last deploy log fetched from the Core (null = not yet fetched or no log). */
+  const [deployLastLog, setDeployLastLog] = useState<string | null | undefined>(undefined);
 
   function resetDeploy(): void {
     setDeployStatus(null);
@@ -106,6 +111,8 @@ export function App(): React.JSX.Element {
         setDeployError(e.message);
       } else if (e.type === "deploy.preflight") {
         setPreflightChecks(e.checks);
+      } else if (e.type === "deploy.lastLog") {
+        setDeployLastLog(e.log);
       } else if (e.type === "error" && connectPendingRef.current) {
         // Surface connect failures inside the modal rather than silently dropping them.
         connectPendingRef.current = false;
@@ -155,6 +162,11 @@ export function App(): React.JSX.Element {
           if (!sent) setDeployError("Not connected to the Core — reconnecting. Try again in a moment.");
         }}
         onOpenSettings={() => setSettingsOpen(true)}
+        onViewDeployLog={(id) => {
+          setDeployLastLog(undefined); // reset while loading
+          setDeployLogViewId(id);
+          client.send({ type: "deploy.lastLog", agentId: id });
+        }}
       />
       <main className="main">
         {!connected && (
@@ -240,6 +252,38 @@ export function App(): React.JSX.Element {
           }}
           error={connectError}
         />
+      )}
+
+      {deployLogViewId && (
+        <Modal
+          title={`Last deploy log — ${agents.find((a) => a.id === deployLogViewId)?.name ?? deployLogViewId}`}
+          onClose={() => {
+            setDeployLogViewId(null);
+            setDeployLastLog(undefined);
+          }}
+          dismissable
+          footer={
+            <button
+              className="btn-primary"
+              onClick={() => {
+                setDeployLogViewId(null);
+                setDeployLastLog(undefined);
+              }}
+            >
+              Close
+            </button>
+          }
+        >
+          {deployLastLog === undefined ? (
+            <div className="deploy-running">
+              <span className="spinner" /> Loading…
+            </div>
+          ) : deployLastLog === null ? (
+            <p className="empty">No deploy log available for this agent.</p>
+          ) : (
+            <pre className="deploy-log">{deployLastLog}</pre>
+          )}
+        </Modal>
       )}
     </div>
   );

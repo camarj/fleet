@@ -124,7 +124,9 @@ export type ClientRequest =
   | { type: "session.history"; sessionId: string }
   | { type: "config.set"; agentId: string; modelSpecifier: string | null; parameters?: ModelParameters | null }
   /** Run preflight checks for a deploy target before deploying (no side-effects). */
-  | { type: "deploy.preflight"; provider?: string; model?: string; target: DeployTarget };
+  | { type: "deploy.preflight"; provider?: string; model?: string; target: DeployTarget }
+  /** Retrieve the last deploy log for an agent (persisted at the end of the most recent deploy). */
+  | { type: "deploy.lastLog"; agentId: string };
 
 // ── Core → Frontend ──────────────────────────────────────────────────────────
 
@@ -154,4 +156,6 @@ export type ServerEvent =
   | { type: "session.history"; sessionId: string; events: RunEvent[]; usage: Usage | null; costUsd: number | null }
   | { type: "error"; message: string; requestType?: string }
   /** Results of a deploy.preflight request — one entry per check performed. */
-  | { type: "deploy.preflight"; checks: PreflightCheck[] };
+  | { type: "deploy.preflight"; checks: PreflightCheck[] }
+  /** The last deploy log for an agent. `log` is null if no deploy has been completed yet. */
+  | { type: "deploy.lastLog"; agentId: string; log: string | null };

@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS deploys (
   provider   TEXT,
   model      TEXT,
   target     TEXT NOT NULL,
+  log        TEXT,
   updated_at TEXT NOT NULL
 );
 
@@ -132,6 +133,12 @@ export class GatewayState {
     // older file DBs need the ALTER TABLE path).
     try {
       this.#db.exec(`ALTER TABLE sessions ADD COLUMN preview TEXT NOT NULL DEFAULT ''`);
+    } catch {
+      // Column already exists — migration already applied.
+    }
+    // WU-09: add `log` column to deploys — stores the last deploy log per agent.
+    try {
+      this.#db.exec(`ALTER TABLE deploys ADD COLUMN log TEXT`);
     } catch {
       // Column already exists — migration already applied.
     }
@@ -234,6 +241,19 @@ export class GatewayState {
   hasDeploy(agentId: string): boolean {
     const row = this.#db.prepare(`SELECT 1 FROM deploys WHERE agent_id = ?`).get(agentId);
     return !!row;
+  }
+
+  /** Overwrite the stored deploy log for an agent (one log per agent, intentional in v1). */
+  setDeployLog(agentId: string, log: string): void {
+    this.#db.prepare(`UPDATE deploys SET log = ? WHERE agent_id = ?`).run(log, agentId);
+  }
+
+  /** Return the stored deploy log for an agent, or null if none exists yet. */
+  getDeployLog(agentId: string): string | null {
+    const row = this.#db.prepare(`SELECT log FROM deploys WHERE agent_id = ?`).get(agentId) as unknown as
+      | { log: string | null }
+      | undefined;
+    return row?.log ?? null;
   }
 
   /**
@@ -363,6 +383,7 @@ interface DeployDbRow {
   provider: string | null;
   model: string | null;
   target: string;
+  log: string | null;
   updated_at: string;
 }
 
