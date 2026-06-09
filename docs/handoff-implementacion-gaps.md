@@ -12,6 +12,25 @@
 
 ---
 
+## Estado / Progreso (actualizado 2026-06-09)
+
+| Fase | Estado | WUs | Notas |
+| --- | --- | --- | --- |
+| F0 Persistencia | ✅ DONE (merged) | WU-01 | DB a archivo `fleet.db` |
+| F1 Ciclo de vida | ✅ DONE (merged, verificado en app) | WU-02..05 | stop/delete, health+reconnect, offline guard, connect-by-URL |
+| F2 Día 2 | ✅ DONE (merged, verificado en app) | WU-06..09 | historial, preflight, banner, deploy logs |
+| F3 API honesta + converter | ⏳ SIGUIENTE | WU-10, WU-11 | no necesita credenciales |
+| F4 Verificar targets en vivo | 🔒 bloqueado | WU-12..15 | necesita FLY/CLOUDFLARE tokens + Coolify/Dokploy |
+| F5 Orquestador visual | ⏳ pendiente | WU-16..19 | contrato decidido en §7 |
+| F6 Hardening | ⏳ pendiente | WU-20..23 | |
+
+**Mergeado en `main` vía PR #3** (`feat: agent lifecycle control + day-2 UX (gaps F0–F2)`, merge commit `4b315e3`). 13 commits. Arrancar la próxima sesión por **F3 / WU-10** (§5).
+
+> Nota: el plan original (abajo) decía "Rama base: feat/flue-migration (PR #1)".
+> PR #1 ya está mergeado a `main`; las ramas nuevas salen de `main`.
+
+---
+
 ## 0. Reglas de juego (leer SIEMPRE antes de cualquier WU)
 
 1. **Leé `CLAUDE.md` del repo completo.** Sus reglas son no negociables:
