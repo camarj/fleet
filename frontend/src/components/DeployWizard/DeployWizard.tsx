@@ -5,7 +5,7 @@
  * Tauri desktop shell.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { DeployTarget } from "../../lib/api";
 import { Modal } from "../Modal/Modal";
 import { isTauri, onDirectoryDrop, pickDirectory } from "../../lib/dialog";
@@ -27,6 +27,7 @@ interface Props {
   deployStatus: string | null;
   deployError: string | null;
   deployArtifact: { url: string; message: string } | null;
+  deployLog: string[];
   onDeploy: (req: { sourceDir: string; provider?: string; model?: string; target: DeployTarget }) => void;
   onClose: () => void;
 }
@@ -36,6 +37,7 @@ export function DeployWizard({
   deployStatus,
   deployError,
   deployArtifact,
+  deployLog,
   onDeploy,
   onClose,
 }: Props): React.JSX.Element {
@@ -44,6 +46,12 @@ export function DeployWizard({
   const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
   const [customModel, setCustomModel] = useState(false);
+  const logRef = useRef<HTMLPreElement>(null);
+
+  // Keep the live log scrolled to the newest line.
+  useEffect(() => {
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [deployLog]);
 
   function changeProvider(p: string): void {
     setProvider(p);
@@ -248,6 +256,11 @@ export function DeployWizard({
               <div className="deploy-running">
                 <span className="spinner" /> {deployStatus ?? "starting"}…
               </div>
+            )}
+            {deployLog.length > 0 && (
+              <pre className="deploy-log" ref={logRef}>
+                {deployLog.join("\n")}
+              </pre>
             )}
           </div>
         )}

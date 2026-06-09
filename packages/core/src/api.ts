@@ -54,6 +54,8 @@ export type ServerEvent =
   | { type: "secrets.status"; providers: string[] }
   /** A step in an in-flight deploy: converting → installing → building → starting/pushing/deploying → connecting → done. */
   | { type: "deploy.progress"; step: string; detail?: string }
+  /** Live output lines from the deploy's underlying commands (docker build, npm install, flue build). */
+  | { type: "deploy.log"; lines: string[] }
   /** A deploy that produced an artifact instead of a running agent (e.g. a published GitHub repo). */
   | { type: "deploy.artifact"; target: string; url: string; message: string }
   | { type: "deploy.error"; message: string }

@@ -27,6 +27,7 @@ export function App(): React.JSX.Element {
   const [deployStatus, setDeployStatus] = useState<string | null>(null);
   const [deployError, setDeployError] = useState<string | null>(null);
   const [deployArtifact, setDeployArtifact] = useState<{ url: string; message: string } | null>(null);
+  const [deployLog, setDeployLog] = useState<string[]>([]);
   const [deployOpen, setDeployOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -34,44 +35,50 @@ export function App(): React.JSX.Element {
     setDeployStatus(null);
     setDeployError(null);
     setDeployArtifact(null);
+    setDeployLog([]);
   }
 
   useEffect(() => {
-    let off = (): void => {};
-    client
-      .connect()
-      .then(() => {
-        setConnected(true);
-        off = client.on((e: ServerEvent) => {
-          if (e.type === "agents") {
-            setAgents(e.agents);
-            setSelectedId((cur) => cur ?? e.agents[0]?.id ?? null);
-          } else if (e.type === "agent.registered") {
-            setAgents((prev) => upsertAgent(prev, e.agent));
-            setSelectedId((cur) => cur ?? e.agent.id);
-            setDeployStatus(null); // a deploy that just finished
-            setDeployError(null);
-            setDeployArtifact(null);
-          } else if (e.type === "secrets.status") {
-            setSecretsProviders(e.providers);
-          } else if (e.type === "deploy.progress") {
-            setDeployStatus(e.detail ? `${e.step} — ${e.detail}` : e.step);
-            setDeployError(null);
-          } else if (e.type === "deploy.artifact") {
-            // A deploy with no running agent (e.g. github) — surface the artifact URL.
-            setDeployStatus(null);
-            setDeployError(null);
-            setDeployArtifact({ url: e.url, message: e.message });
-          } else if (e.type === "deploy.error") {
-            setDeployStatus(null);
-            setDeployError(e.message);
-          }
-        });
+    const offMsg = client.on((e: ServerEvent) => {
+      if (e.type === "agents") {
+        setAgents(e.agents);
+        setSelectedId((cur) => cur ?? e.agents[0]?.id ?? null);
+      } else if (e.type === "agent.registered") {
+        setAgents((prev) => upsertAgent(prev, e.agent));
+        setSelectedId((cur) => cur ?? e.agent.id);
+        setDeployStatus(null); // a deploy that just finished
+        setDeployError(null);
+        setDeployArtifact(null);
+      } else if (e.type === "secrets.status") {
+        setSecretsProviders(e.providers);
+      } else if (e.type === "deploy.progress") {
+        setDeployStatus(e.detail ? `${e.step} — ${e.detail}` : e.step);
+        setDeployError(null);
+      } else if (e.type === "deploy.log") {
+        setDeployLog((prev) => [...prev.slice(-400), ...e.lines]);
+      } else if (e.type === "deploy.artifact") {
+        // A deploy with no running agent (e.g. github) — surface the artifact URL.
+        setDeployStatus(null);
+        setDeployError(null);
+        setDeployArtifact({ url: e.url, message: e.message });
+      } else if (e.type === "deploy.error") {
+        setDeployStatus(null);
+        setDeployError(e.message);
+      }
+    });
+    // Refresh lists on every (re)connect; reflect live connection state.
+    const offStatus = client.onStatus((c) => {
+      setConnected(c);
+      if (c) {
         client.send({ type: "agents.list" });
         client.send({ type: "secrets.list" });
-      })
-      .catch(() => setConnected(false));
-    return () => off();
+      }
+    });
+    client.connect();
+    return () => {
+      offMsg();
+      offStatus();
+    };
   }, [client]);
 
   const selected = agents.find((a) => a.id === selectedId) ?? null;
@@ -112,11 +119,14 @@ export function App(): React.JSX.Element {
           deployStatus={deployStatus}
           deployError={deployError}
           deployArtifact={deployArtifact}
+          deployLog={deployLog}
           onDeploy={(req) => {
             setDeployStatus("starting");
             setDeployError(null);
             setDeployArtifact(null);
-            client.send({ type: "agent.deployFlue", ...req });
+            setDeployLog([]);
+            const sent = client.send({ type: "agent.deployFlue", ...req });
+            if (!sent) setDeployError("Not connected to the Core — reconnecting. Try again in a moment.");
           }}
           onClose={() => {
             setDeployOpen(false);

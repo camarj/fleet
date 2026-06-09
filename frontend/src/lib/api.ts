@@ -96,6 +96,8 @@ export type ServerEvent =
   | { type: "agent.registered"; agent: AgentSummary }
   | { type: "secrets.status"; providers: string[] }
   | { type: "deploy.progress"; step: string; detail?: string }
+  /** Live output lines from the deploy's underlying commands (docker build, etc.). */
+  | { type: "deploy.log"; lines: string[] }
   /** A deploy that produced an artifact (e.g. a published GitHub repo) instead of a running agent. */
   | { type: "deploy.artifact"; target: string; url: string; message: string }
   | { type: "deploy.error"; message: string }

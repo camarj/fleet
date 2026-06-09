@@ -60,6 +60,9 @@ export type DeployStep =
   | "connecting"
   | "done";
 export type DeployProgress = (step: DeployStep, detail?: string) => void;
+/** Live output lines from the deploy's underlying commands. */
+export type DeployLog = (lines: string[]) => void;
+const NO_LOG: DeployLog = () => {};
 
 /** A deployed, connected agent the Core can talk to. */
 export interface DeployedAgent {
@@ -94,7 +97,7 @@ export class FlueDeployer {
     this.#secrets = secrets;
   }
 
-  async deploy(req: DeployRequest, onProgress: DeployProgress): Promise<DeployResult> {
+  async deploy(req: DeployRequest, onProgress: DeployProgress, onLog: DeployLog = NO_LOG): Promise<DeployResult> {
     const target: DeployTarget = req.target ?? "docker-local";
 
     // Convert the Claude Code project to a Flue project (deterministic).
@@ -107,7 +110,7 @@ export class FlueDeployer {
 
     // `github` publishes a repo for CI to build — there is nothing to connect to yet.
     if (target === "github") {
-      return await this.#runGithub(agentName, agentDir, onProgress);
+      return await this.#runGithub(agentName, agentDir, onProgress, onLog);
     }
 
     const apiKeyEnv = project.report.apiKeyEnv;
@@ -117,16 +120,16 @@ export class FlueDeployer {
     let baseUrl: string;
     switch (target) {
       case "docker-local":
-        baseUrl = await this.#runDockerLocal(agentName, agentDir, apiKeyEnv, key, onProgress);
+        baseUrl = await this.#runDockerLocal(agentName, agentDir, apiKeyEnv, key, onProgress, onLog);
         break;
       case "fly":
-        baseUrl = await this.#runFly(agentName, agentDir, apiKeyEnv, key, onProgress);
+        baseUrl = await this.#runFly(agentName, agentDir, apiKeyEnv, key, onProgress, onLog);
         break;
       case "cloudflare":
-        baseUrl = await this.#runCloudflare(agentName, agentDir, apiKeyEnv, key, onProgress);
+        baseUrl = await this.#runCloudflare(agentName, agentDir, apiKeyEnv, key, onProgress, onLog);
         break;
       default:
-        baseUrl = await this.#runLocalProcess(agentName, agentDir, apiKeyEnv, key, onProgress);
+        baseUrl = await this.#runLocalProcess(agentName, agentDir, apiKeyEnv, key, onProgress, onLog);
     }
 
     onProgress("connecting");
@@ -142,14 +145,16 @@ export class FlueDeployer {
     apiKeyEnv: string,
     key: string | undefined,
     onProgress: DeployProgress,
+    onLog: DeployLog,
   ): Promise<string> {
     ensureDockerRunning();
     const image = `fleet-agent-${agentName}`;
     const container = `fleet-${agentName}`;
 
     onProgress("building", "docker image");
-    const build = spawnSync("docker", ["build", "-t", image, agentDir], { stdio: "pipe", encoding: "utf8" });
-    if (build.status !== 0) throw new DeployError(`docker build failed:\n${build.stderr || build.stdout}`);
+    // Stream the build (npm install + flue build happen inside) so the UI shows progress.
+    const build = await spawnStreaming("docker", ["build", "--progress=plain", "-t", image, agentDir], {}, onLog);
+    if (build.status !== 0) throw new DeployError(`docker build failed:\n${build.output}`);
 
     // Replace any previous container of the same agent.
     spawnSync("docker", ["rm", "-f", container], { stdio: "ignore" });
@@ -184,19 +189,16 @@ export class FlueDeployer {
     apiKeyEnv: string,
     key: string | undefined,
     onProgress: DeployProgress,
+    onLog: DeployLog,
   ): Promise<string> {
     const base = deployedDir();
-    ensureSharedFlue(base, onProgress);
+    await ensureSharedFlue(base, onProgress, onLog);
 
     onProgress("building");
     const flueBin = findBin(base, "flue");
     if (!flueBin) throw new DeployError("could not find the flue CLI in any node_modules/.bin up the tree.");
-    const build = spawnSync(flueBin, ["build", "--root", agentDir, "--target", "node"], {
-      cwd: base,
-      stdio: "pipe",
-      encoding: "utf8",
-    });
-    if (build.status !== 0) throw new DeployError(`flue build failed:\n${build.stderr || build.stdout}`);
+    const build = await spawnStreaming(flueBin, ["build", "--root", agentDir, "--target", "node"], { cwd: base }, onLog);
+    if (build.status !== 0) throw new DeployError(`flue build failed:\n${build.output}`);
 
     const port = await freePort();
     onProgress("starting", `process on port ${port}`);
@@ -219,11 +221,17 @@ export class FlueDeployer {
    * GHCR. Returns the repo URL (an artifact — nothing is running yet). The user
    * deploys the published image on a host and connects Fleet by URL.
    */
-  async #runGithub(agentName: string, agentDir: string, onProgress: DeployProgress): Promise<DeployArtifact> {
+  async #runGithub(
+    agentName: string,
+    agentDir: string,
+    onProgress: DeployProgress,
+    onLog: DeployLog,
+  ): Promise<DeployArtifact> {
     ensureCli("git", "Git is not available. Install Git, then retry.");
     ensureCli("gh", "The GitHub CLI is not available. Install `gh` and run `gh auth login`, then retry.");
 
     onProgress("building", "git repository");
+    onLog(["Initializing git repository…"]);
     git(agentDir, ["init", "-q", "-b", "main"]);
     git(agentDir, ["add", "-A"]);
     git(agentDir, [
@@ -236,13 +244,14 @@ export class FlueDeployer {
 
     onProgress("pushing", "GitHub repository");
     const repo = `fleet-agent-${agentName}`;
-    const res = spawnSync("gh", ["repo", "create", repo, "--private", "--source", ".", "--push"], {
-      cwd: agentDir,
-      stdio: "pipe",
-      encoding: "utf8",
-    });
-    if (res.status !== 0) throw new DeployError(`gh repo create failed:\n${res.stderr || res.stdout}`);
-    const url = parseRepoUrl(`${res.stdout}\n${res.stderr}`) ?? `https://github.com/<your-account>/${repo}`;
+    const res = await spawnStreaming(
+      "gh",
+      ["repo", "create", repo, "--private", "--source", ".", "--push"],
+      { cwd: agentDir },
+      onLog,
+    );
+    if (res.status !== 0) throw new DeployError(`gh repo create failed:\n${res.output}`);
+    const url = parseRepoUrl(res.output) ?? `https://github.com/<your-account>/${repo}`;
 
     onProgress("done");
     return {
@@ -268,6 +277,7 @@ export class FlueDeployer {
     apiKeyEnv: string,
     key: string | undefined,
     onProgress: DeployProgress,
+    onLog: DeployLog,
   ): Promise<string> {
     const token = process.env.CLOUDFLARE_API_TOKEN;
     if (!token) {
@@ -276,19 +286,18 @@ export class FlueDeployer {
       );
     }
     const base = deployedDir();
-    ensureCloudflareDeps(base, onProgress);
+    await ensureCloudflareDeps(base, onProgress, onLog);
 
     onProgress("building", "cloudflare worker");
     const flueBin = findBin(base, "flue");
     if (!flueBin) throw new DeployError("could not find the flue CLI after installing the Cloudflare build deps.");
-    const build = spawnSync(flueBin, ["build", "--target", "cloudflare", "--root", agentDir], {
-      cwd: agentDir,
-      stdio: "pipe",
-      encoding: "utf8",
-    });
-    if (build.status !== 0) {
-      throw new DeployError(`flue build --target cloudflare failed:\n${build.stderr || build.stdout}`);
-    }
+    const build = await spawnStreaming(
+      flueBin,
+      ["build", "--target", "cloudflare", "--root", agentDir],
+      { cwd: agentDir },
+      onLog,
+    );
+    if (build.status !== 0) throw new DeployError(`flue build --target cloudflare failed:\n${build.output}`);
 
     const outDir = findCfOutputDir(join(agentDir, "dist"));
     if (!outDir) throw new DeployError("the Cloudflare build did not produce a deployable dist/<worker>/ directory.");
@@ -298,12 +307,12 @@ export class FlueDeployer {
     const cfEnv = { ...process.env, CLOUDFLARE_API_TOKEN: token };
 
     onProgress("deploying", "wrangler deploy");
-    const deploy = spawnSync(wranglerBin, ["deploy"], { cwd: outDir, stdio: "pipe", encoding: "utf8", env: cfEnv });
-    if (deploy.status !== 0) throw new DeployError(`wrangler deploy failed:\n${deploy.stderr || deploy.stdout}`);
+    const deploy = await spawnStreaming(wranglerBin, ["deploy"], { cwd: outDir, env: cfEnv }, onLog);
+    if (deploy.status !== 0) throw new DeployError(`wrangler deploy failed:\n${deploy.output}`);
 
-    const baseUrl = parseWorkersUrl(`${deploy.stdout}\n${deploy.stderr}`);
+    const baseUrl = parseWorkersUrl(deploy.output);
     if (!baseUrl) {
-      throw new DeployError(`could not determine the deployed Worker URL from wrangler output:\n${deploy.stdout}`);
+      throw new DeployError(`could not determine the deployed Worker URL from wrangler output:\n${deploy.output}`);
     }
 
     // Store the model provider key as a Worker secret (stdin → never in argv/repo).
@@ -337,6 +346,7 @@ export class FlueDeployer {
     apiKeyEnv: string,
     key: string | undefined,
     onProgress: DeployProgress,
+    onLog: DeployLog,
   ): Promise<string> {
     const token = process.env.FLY_API_TOKEN;
     if (!token) {
@@ -366,13 +376,13 @@ export class FlueDeployer {
     }
 
     onProgress("deploying", "flyctl deploy");
-    const deploy = spawnSync("flyctl", ["deploy", "--app", app, "--remote-only", "--yes"], {
-      cwd: agentDir,
-      stdio: "pipe",
-      encoding: "utf8",
-      env: flyEnv,
-    });
-    if (deploy.status !== 0) throw new DeployError(`flyctl deploy failed:\n${deploy.stderr || deploy.stdout}`);
+    const deploy = await spawnStreaming(
+      "flyctl",
+      ["deploy", "--app", app, "--remote-only", "--yes"],
+      { cwd: agentDir, env: flyEnv },
+      onLog,
+    );
+    if (deploy.status !== 0) throw new DeployError(`flyctl deploy failed:\n${deploy.output}`);
 
     const baseUrl = `https://${app}.fly.dev`;
     await waitReady(baseUrl);
@@ -421,6 +431,42 @@ function writeEnvFile(apiKeyEnv: string, key: string | undefined): string {
   return file;
 }
 
+/**
+ * Run a command, streaming its combined stdout/stderr to `onLog` line-by-line as
+ * it arrives (so the UI shows live progress), and resolving with the exit status
+ * + full captured output. Never rejects.
+ */
+function spawnStreaming(
+  cmd: string,
+  args: string[],
+  opts: { cwd?: string; env?: NodeJS.ProcessEnv },
+  onLog: DeployLog,
+): Promise<{ status: number; output: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    let buf = "";
+    const onChunk = (data: Buffer): void => {
+      const text = data.toString();
+      output += text;
+      buf += text;
+      const lines = buf.split(/\r?\n/);
+      buf = lines.pop() ?? "";
+      if (lines.length) onLog(lines);
+    };
+    child.stdout?.on("data", onChunk);
+    child.stderr?.on("data", onChunk);
+    child.on("error", (err) => {
+      onLog([err.message]);
+      resolve({ status: 1, output: `${output}\n${err.message}` });
+    });
+    child.on("close", (code) => {
+      if (buf) onLog([buf]);
+      resolve({ status: code ?? 0, output });
+    });
+  });
+}
+
 // ── shared @flue install ────────────────────────────────────────────────────
 
 /**
@@ -429,7 +475,7 @@ function writeEnvFile(apiKeyEnv: string, key: string | undefined): string {
  * monorepo dev tree, or a previous deploy — skip the install. Otherwise write a
  * tiny package.json next to the agents and `npm install` once.
  */
-function ensureSharedFlue(base: string, onProgress: DeployProgress): void {
+async function ensureSharedFlue(base: string, onProgress: DeployProgress, onLog: DeployLog): Promise<void> {
   if (canResolveFlue(base)) return;
   onProgress("installing", "Flue runtime (first deploy — this can take a minute)");
   writeFileSync(
@@ -445,10 +491,8 @@ function ensureSharedFlue(base: string, onProgress: DeployProgress): void {
       2,
     ),
   );
-  const install = spawnSync("npm", ["install"], { cwd: base, stdio: "pipe", encoding: "utf8" });
-  if (install.status !== 0) {
-    throw new DeployError(`installing the Flue runtime failed:\n${install.stderr || install.stdout}`);
-  }
+  const install = await spawnStreaming("npm", ["install"], { cwd: base }, onLog);
+  if (install.status !== 0) throw new DeployError(`installing the Flue runtime failed:\n${install.output}`);
 }
 
 /**
@@ -479,7 +523,7 @@ function findBin(base: string, name: string): string | null {
  * resolvable from `<base>`: @flue, the `agents` peer (CF Worker entry imports it),
  * and `wrangler` (deploy + secrets). Installed once; skipped if already present.
  */
-function ensureCloudflareDeps(base: string, onProgress: DeployProgress): void {
+async function ensureCloudflareDeps(base: string, onProgress: DeployProgress, onLog: DeployLog): Promise<void> {
   if (findBin(base, "flue") && findBin(base, "wrangler")) return;
   onProgress("installing", "Cloudflare build tools (first cloudflare deploy — this can take a minute)");
   writeFileSync(
@@ -495,10 +539,8 @@ function ensureCloudflareDeps(base: string, onProgress: DeployProgress): void {
       2,
     ),
   );
-  const install = spawnSync("npm", ["install"], { cwd: base, stdio: "pipe", encoding: "utf8" });
-  if (install.status !== 0) {
-    throw new DeployError(`installing the Cloudflare build tools failed:\n${install.stderr || install.stdout}`);
-  }
+  const install = await spawnStreaming("npm", ["install"], { cwd: base }, onLog);
+  if (install.status !== 0) throw new DeployError(`installing the Cloudflare build tools failed:\n${install.output}`);
 }
 
 /** Find the `flue build --target cloudflare` output dir (the one holding wrangler.json). */

@@ -106,6 +106,7 @@ export class GatewayCore {
       const result = await this.#deployer.deploy(
         { sourceDir: req.sourceDir, provider: req.provider, model: req.model, target: req.target },
         (step, detail) => emit({ type: "deploy.progress", step, detail }),
+        (lines) => emit({ type: "deploy.log", lines }),
       );
       // `github` yields an artifact (a published repo), not a running agent.
       if (result.kind === "artifact") {
