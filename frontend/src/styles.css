@@ -1135,6 +1135,19 @@ button:disabled {
   font-size: 11px;
 }
 
+/* agent config — redeploy-to-apply CTA */
+.config-redeploy {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2, rgba(255, 255, 255, 0.03));
+  font-size: 12px;
+}
+
 /* settings */
 .settings-note {
   font-size: 11px;

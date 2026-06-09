@@ -13,6 +13,7 @@ import { DeployWizard } from "./components/DeployWizard/DeployWizard";
 import { DeployProgress } from "./components/DeployProgress/DeployProgress";
 import { Settings } from "./components/Settings/Settings";
 import { ConnectAgent } from "./components/ConnectAgent/ConnectAgent";
+import { AgentConfig } from "./components/AgentConfig/AgentConfig";
 import { Modal } from "./components/Modal/Modal";
 
 const GATEWAY_URL = import.meta.env.VITE_GATEWAY_URL ?? "ws://127.0.0.1:4179";
@@ -39,6 +40,16 @@ export function App(): React.JSX.Element {
   const [connectError, setConnectError] = useState<string | null>(null);
   /** True while we're waiting for agent.registered or error in response to agent.connectFlue. */
   const connectPendingRef = useRef(false);
+  /** The agentId whose config modal is currently open, or null. */
+  const [configAgentId, setConfigAgentId] = useState<string | null>(null);
+  /** Ref mirror of configAgentId for the once-registered event handler. */
+  const configAgentIdRef = useRef<string | null>(null);
+  /** Whether the last saved config needs a redeploy to take effect. */
+  const [configRequiresRedeploy, setConfigRequiresRedeploy] = useState(false);
+  /** True while a config.set is in flight (waiting for config.updated). */
+  const [configSaving, setConfigSaving] = useState(false);
+  /** Ref mirror of configSaving for the once-registered error handler. */
+  const configSavingRef = useRef(false);
   /** The agentId whose deploy log modal is currently open, or null. */
   const [deployLogViewId, setDeployLogViewId] = useState<string | null>(null);
   /** The last deploy log fetched from the Core (null = not yet fetched or no log). */
@@ -53,6 +64,32 @@ export function App(): React.JSX.Element {
     setDeployError(null);
     setDeployArtifact(null);
     setDeployLog([]);
+  }
+
+  function setSaving(v: boolean): void {
+    configSavingRef.current = v;
+    setConfigSaving(v);
+  }
+
+  function openConfig(id: string): void {
+    setConfigAgentId(id);
+    configAgentIdRef.current = id;
+    setConfigRequiresRedeploy(false);
+    setSaving(false);
+  }
+
+  function closeConfig(): void {
+    setConfigAgentId(null);
+    configAgentIdRef.current = null;
+    setConfigRequiresRedeploy(false);
+    setSaving(false);
+  }
+
+  function handleSaveConfig(modelSpecifier: string | null): void {
+    if (!configAgentId) return;
+    setSaving(true);
+    const sent = client.send({ type: "config.set", agentId: configAgentId, modelSpecifier });
+    if (!sent) setSaving(false);
   }
 
   function handleRedeploy(id: string): void {
@@ -115,6 +152,13 @@ export function App(): React.JSX.Element {
         setDeployError(e.message);
       } else if (e.type === "deploy.preflight") {
         setPreflightChecks(e.checks);
+      } else if (e.type === "config.updated") {
+        // Only react to the agent whose config modal is open (handler is registered once).
+        if (configAgentIdRef.current === e.agentId) {
+          setConfigRequiresRedeploy(e.requiresRedeploy);
+          configSavingRef.current = false;
+          setConfigSaving(false);
+        }
       } else if (e.type === "deploy.lastLog") {
         deployLogPendingRef.current = false;
         setDeployLastLog(e.log);
@@ -126,6 +170,10 @@ export function App(): React.JSX.Element {
         // Surface log-fetch failures inside the log modal instead of leaving it loading forever.
         deployLogPendingRef.current = false;
         setDeployLogError(e.message);
+      } else if (e.type === "error" && configSavingRef.current) {
+        // A config.set failed (e.g. the agent was deleted) — stop the saving spinner.
+        configSavingRef.current = false;
+        setConfigSaving(false);
       }
     });
     // Refresh lists on every (re)connect; reflect live connection state.
@@ -170,6 +218,7 @@ export function App(): React.JSX.Element {
           const sent = client.send({ type: "agent.delete", agentId: id });
           if (!sent) setDeployError("Not connected to the Core — reconnecting. Try again in a moment.");
         }}
+        onOpenConfig={openConfig}
         onOpenSettings={() => setSettingsOpen(true)}
         onViewDeployLog={(id) => {
           setDeployLastLog(undefined); // reset while loading
@@ -251,6 +300,27 @@ export function App(): React.JSX.Element {
           onClose={() => setSettingsOpen(false)}
         />
       )}
+
+      {configAgentId &&
+        (() => {
+          const agent = agents.find((a) => a.id === configAgentId);
+          if (!agent) return null;
+          return (
+            <AgentConfig
+              agent={agent}
+              connected={connected}
+              requiresRedeploy={configRequiresRedeploy}
+              saving={configSaving}
+              onSave={handleSaveConfig}
+              onRedeploy={() => {
+                const id = configAgentId;
+                closeConfig();
+                handleRedeploy(id);
+              }}
+              onClose={closeConfig}
+            />
+          );
+        })()}
 
       {connectOpen && (
         <ConnectAgent

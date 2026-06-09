@@ -9,9 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import type { DeployTarget, PreflightCheck } from "../../lib/api";
 import { Modal } from "../Modal/Modal";
 import { isTauri, onDirectoryDrop, pickDirectory } from "../../lib/dialog";
-import { PROVIDER_CATALOG, modelsFor } from "../../lib/providers";
-
-const CUSTOM = "__custom__";
+import { ModelPicker } from "../ModelPicker/ModelPicker";
 
 const DEPLOY_TARGETS: { value: DeployTarget; label: string; hint: string }[] = [
   { value: "docker-local", label: "Docker — local", hint: "Run a container on this machine." },
@@ -50,7 +48,6 @@ export function DeployWizard({
   const [sourceDir, setSourceDir] = useState("");
   const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
-  const [customModel, setCustomModel] = useState(false);
   const logRef = useRef<HTMLPreElement>(null);
 
   // Keep the live log scrolled to the newest line.
@@ -58,23 +55,6 @@ export function DeployWizard({
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [deployLog]);
 
-  function changeProvider(p: string): void {
-    setProvider(p);
-    const models = p ? modelsFor(p) : [];
-    // Providers with no curated models (e.g. OpenCode Go) start in Custom mode.
-    setCustomModel(p !== "" && models.length === 0);
-    setModel(models[0] ?? "");
-  }
-
-  function changeModel(value: string): void {
-    if (value === CUSTOM) {
-      setCustomModel(true);
-      setModel("");
-    } else {
-      setCustomModel(false);
-      setModel(value);
-    }
-  }
   const [target, setTarget] = useState<DeployTarget>("docker-local");
   const [dragActive, setDragActive] = useState(false);
   const [started, setStarted] = useState(false);
@@ -188,38 +168,14 @@ export function DeployWizard({
         {/* Step 2 — Provider & model */}
         {step === 1 && !started && (
           <div className="wizard-field">
-            <label>Provider</label>
-            <select value={provider} onChange={(e) => changeProvider(e.target.value)}>
-              <option value="">Keep source model (no change)</option>
-              {PROVIDER_CATALOG.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
-
-            {provider && (
-              <>
-                <label>Model</label>
-                <select value={customModel ? CUSTOM : model} onChange={(e) => changeModel(e.target.value)}>
-                  {modelsFor(provider).map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                  <option value={CUSTOM}>Custom…</option>
-                </select>
-                {customModel && (
-                  <input
-                    value={model}
-                    onChange={(e) => setModel(e.target.value)}
-                    placeholder="model id (e.g. gpt-5.5)"
-                    autoFocus
-                  />
-                )}
-              </>
-            )}
-
+            <ModelPicker
+              initialProvider={provider}
+              initialModel={model}
+              onChange={({ provider: p, model: m }) => {
+                setProvider(p);
+                setModel(m);
+              }}
+            />
             <div className="folder-hint">
               {provider
                 ? "The converted agent will use this provider + model."

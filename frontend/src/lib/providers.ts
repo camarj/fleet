@@ -46,3 +46,14 @@ export const PROVIDER_IDS = PROVIDER_CATALOG.map((p) => p.id);
 export function modelsFor(providerId: string): string[] {
   return PROVIDER_MODELS[providerId] ?? [];
 }
+
+/**
+ * Split a `"provider/model-id"` specifier on its FIRST slash (model ids may
+ * contain slashes). Returns empty strings when the specifier is empty or has no
+ * provider/model parts. Mirrors the Core's splitSpecifier.
+ */
+export function splitSpecifier(specifier: string): { provider: string; model: string } {
+  const slash = specifier.indexOf("/");
+  if (slash <= 0 || slash === specifier.length - 1) return { provider: "", model: "" };
+  return { provider: specifier.slice(0, slash), model: specifier.slice(slash + 1) };
+}
