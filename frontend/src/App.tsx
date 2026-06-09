@@ -12,6 +12,7 @@ import { WorkflowCanvas } from "./components/WorkflowCanvas/WorkflowCanvas";
 import { DeployWizard } from "./components/DeployWizard/DeployWizard";
 import { DeployProgress } from "./components/DeployProgress/DeployProgress";
 import { Settings } from "./components/Settings/Settings";
+import { ConnectAgent } from "./components/ConnectAgent/ConnectAgent";
 
 const GATEWAY_URL = import.meta.env.VITE_GATEWAY_URL ?? "ws://127.0.0.1:4179";
 
@@ -32,6 +33,10 @@ export function App(): React.JSX.Element {
   const [deployOpen, setDeployOpen] = useState(false);
   const [redeployingId, setRedeployingId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [connectOpen, setConnectOpen] = useState(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
+  /** True while we're waiting for agent.registered or error in response to agent.connectFlue. */
+  const connectPendingRef = useRef(false);
 
   function resetDeploy(): void {
     setDeployStatus(null);
@@ -48,6 +53,13 @@ export function App(): React.JSX.Element {
     if (!sent) setDeployError("Not connected to the Core — reconnecting. Try again in a moment.");
   }
 
+  function handleConnect(baseUrl: string, agentName: string, token?: string): boolean {
+    setConnectError(null);
+    const sent = client.send({ type: "agent.connectFlue", baseUrl, agentName, token });
+    if (sent) connectPendingRef.current = true;
+    return sent;
+  }
+
   useEffect(() => {
     const offMsg = client.on((e: ServerEvent) => {
       if (e.type === "agents") {
@@ -59,6 +71,12 @@ export function App(): React.JSX.Element {
         setDeployStatus(null); // a deploy that just finished
         setDeployError(null);
         setDeployArtifact(null);
+        // Close the connect modal on successful registration (covers both deploy and connect paths).
+        if (connectPendingRef.current) {
+          connectPendingRef.current = false;
+          setConnectOpen(false);
+          setConnectError(null);
+        }
       } else if (e.type === "agent.updated") {
         setAgents((prev) => upsertAgent(prev, e.agent));
       } else if (e.type === "agent.removed") {
@@ -85,6 +103,10 @@ export function App(): React.JSX.Element {
       } else if (e.type === "deploy.error") {
         setDeployStatus(null);
         setDeployError(e.message);
+      } else if (e.type === "error" && connectPendingRef.current) {
+        // Surface connect failures inside the modal rather than silently dropping them.
+        connectPendingRef.current = false;
+        setConnectError(e.message);
       }
     });
     // Refresh lists on every (re)connect; reflect live connection state.
@@ -115,6 +137,10 @@ export function App(): React.JSX.Element {
         onOpenDeploy={() => {
           resetDeploy();
           setDeployOpen(true);
+        }}
+        onOpenConnect={() => {
+          setConnectError(null);
+          setConnectOpen(true);
         }}
         onRedeploy={handleRedeploy}
         onStop={(id) => {
@@ -185,6 +211,19 @@ export function App(): React.JSX.Element {
           secretsProviders={secretsProviders}
           onSetSecret={(provider, apiKey) => client.send({ type: "secrets.set", provider, apiKey })}
           onClose={() => setSettingsOpen(false)}
+        />
+      )}
+
+      {connectOpen && (
+        <ConnectAgent
+          connected={connected}
+          onConnect={handleConnect}
+          onClose={() => {
+            connectPendingRef.current = false;
+            setConnectOpen(false);
+            setConnectError(null);
+          }}
+          error={connectError}
         />
       )}
     </div>

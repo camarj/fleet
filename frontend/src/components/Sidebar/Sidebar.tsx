@@ -1,7 +1,8 @@
 /**
- * Sidebar — the fleet. Lists the deployed agents and exposes two actions:
- * open the Deploy wizard (convert + deploy a Claude Code project as a Flue agent)
- * and open Settings (provider API keys). The actual forms live in their modals.
+ * Sidebar — the fleet. Lists the deployed agents and exposes three actions:
+ * open the Deploy wizard (convert + deploy a Claude Code project as a Flue agent),
+ * open the Connect modal (attach an already-running Flue agent by URL), and
+ * open Settings (provider API keys). The actual forms live in their modals.
  */
 
 import { useState } from "react";
@@ -15,6 +16,7 @@ interface Props {
   secretsProviders: string[];
   onSelect: (id: string) => void;
   onOpenDeploy: () => void;
+  onOpenConnect: () => void;
   onRedeploy: (id: string) => void;
   onStop: (id: string) => void;
   onDelete: (id: string) => void;
@@ -28,6 +30,7 @@ export function Sidebar({
   secretsProviders,
   onSelect,
   onOpenDeploy,
+  onOpenConnect,
   onRedeploy,
   onStop,
   onDelete,
@@ -113,6 +116,9 @@ export function Sidebar({
       <div className="sidebar-actions">
         <button className="btn-primary deploy-cta" onClick={onOpenDeploy} disabled={!connected}>
           + Deploy agent
+        </button>
+        <button className="btn-ghost connect-cta" onClick={onOpenConnect} disabled={!connected}>
+          ⟳ Connect agent
         </button>
         <button className="btn-ghost settings-cta" onClick={onOpenSettings}>
           ⚙ Settings
