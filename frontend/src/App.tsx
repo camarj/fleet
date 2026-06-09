@@ -5,7 +5,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { GatewayClient } from "./lib/gatewayClient";
-import type { AgentSummary, ServerEvent } from "./lib/api";
+import type { AgentSummary, PreflightCheck, ServerEvent } from "./lib/api";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { TerminalPanel } from "./components/TerminalPanel/TerminalPanel";
 import { WorkflowCanvas } from "./components/WorkflowCanvas/WorkflowCanvas";
@@ -31,6 +31,7 @@ export function App(): React.JSX.Element {
   const [deployArtifact, setDeployArtifact] = useState<{ url: string; message: string } | null>(null);
   const [deployLog, setDeployLog] = useState<string[]>([]);
   const [deployOpen, setDeployOpen] = useState(false);
+  const [preflightChecks, setPreflightChecks] = useState<PreflightCheck[] | null>(null);
   const [redeployingId, setRedeployingId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [connectOpen, setConnectOpen] = useState(false);
@@ -103,6 +104,8 @@ export function App(): React.JSX.Element {
       } else if (e.type === "deploy.error") {
         setDeployStatus(null);
         setDeployError(e.message);
+      } else if (e.type === "deploy.preflight") {
+        setPreflightChecks(e.checks);
       } else if (e.type === "error" && connectPendingRef.current) {
         // Surface connect failures inside the modal rather than silently dropping them.
         connectPendingRef.current = false;
@@ -176,6 +179,11 @@ export function App(): React.JSX.Element {
           deployError={deployError}
           deployArtifact={deployArtifact}
           deployLog={deployLog}
+          preflightChecks={preflightChecks}
+          onPreflight={(params) => {
+            setPreflightChecks(null); // clear while the check runs
+            client.send({ type: "deploy.preflight", ...params });
+          }}
           onDeploy={(req) => {
             setDeployStatus("starting");
             setDeployError(null);
@@ -186,6 +194,7 @@ export function App(): React.JSX.Element {
           }}
           onClose={() => {
             setDeployOpen(false);
+            setPreflightChecks(null);
             resetDeploy();
           }}
         />

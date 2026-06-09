@@ -11,6 +11,20 @@ import type { ModelOverride, ModelParameters, RunEvent, RunStatus, RuntimeErrorC
 import type { SessionStatus } from "./state/index.js";
 
 /**
+ * A single check in a deploy preflight report. `ok: false` means the deploy
+ * will likely fail for this reason; `detail` carries the actionable fix hint.
+ */
+export interface PreflightCheck {
+  /** Stable id — e.g. "docker", "apiKey", "flyctl", "wrangler", "git", "gh". */
+  id: string;
+  /** Human-readable label shown in the wizard checklist. */
+  label: string;
+  ok: boolean;
+  /** Actionable hint when ok=false (or an informational note when ok=true). */
+  detail?: string;
+}
+
+/**
  * Where a converted agent is deployed (wire copy of DeployTarget). The four the
  * UI offers are docker-local, fly, cloudflare, and github (repo for self-hosted
  * Docker — Coolify/Dokploy). `local-process` stays for Docker-free tests only.
@@ -64,7 +78,9 @@ export type ClientRequest =
   | { type: "session.abort"; sessionId: string }
   | { type: "sessions.list"; agentId: string }
   | { type: "session.history"; sessionId: string }
-  | { type: "config.set"; agentId: string; modelSpecifier: string | null; parameters?: ModelParameters | null };
+  | { type: "config.set"; agentId: string; modelSpecifier: string | null; parameters?: ModelParameters | null }
+  /** Run preflight checks for a target before deploying (no side-effects). */
+  | { type: "deploy.preflight"; provider?: string; model?: string; target: DeployTargetWire };
 
 // ── Core → Frontend ──────────────────────────────────────────────────────────
 
@@ -94,4 +110,6 @@ export type ServerEvent =
   | { type: "sessions"; agentId: string; sessions: SessionSummary[] }
   /** Full event log and final usage for a past session. */
   | { type: "session.history"; sessionId: string; events: RunEvent[]; usage: Usage | null; costUsd: number | null }
-  | { type: "error"; message: string; requestType?: string };
+  | { type: "error"; message: string; requestType?: string }
+  /** Results of a deploy.preflight request — one entry per check performed. */
+  | { type: "deploy.preflight"; checks: PreflightCheck[] };

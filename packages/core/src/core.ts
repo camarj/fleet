@@ -90,6 +90,8 @@ export class GatewayCore {
           this.#state.setConfig(req.agentId, req.modelSpecifier, req.parameters ?? null);
           emit({ type: "config.updated", agentId: req.agentId });
           return;
+        case "deploy.preflight":
+          return await this.#deployPreflight(req, emit);
         default: {
           const _exhaustive: never = req;
           void _exhaustive;
@@ -211,6 +213,16 @@ export class GatewayCore {
     } catch (err) {
       emit({ type: "deploy.error", message: (err as Error).message });
     }
+  }
+
+  /** Run preflight checks and emit a deploy.preflight event with the results. */
+  async #deployPreflight(req: Extract<ClientRequest, { type: "deploy.preflight" }>, emit: Emit): Promise<void> {
+    const checks = await this.#deployer.preflight({
+      provider: req.provider,
+      model: req.model,
+      target: req.target as DeployTarget,
+    });
+    emit({ type: "deploy.preflight", checks });
   }
 
   // ── Stop / Delete ─────────────────────────────────────────────────────────

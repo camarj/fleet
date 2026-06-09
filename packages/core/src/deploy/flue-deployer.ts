@@ -17,9 +17,10 @@ import { chmodSync, existsSync, readdirSync, rmSync, unlinkSync, writeFileSync }
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { convert, writeFlueProject } from "@inteliside/gateway-converter";
+import { convert, resolveModel, writeFlueProject } from "@inteliside/gateway-converter";
 import { FlueAdapter } from "../adapters/flue.js";
 import { deployedDir } from "../paths.js";
+import type { PreflightCheck } from "../api.js";
 import type { SecretsStore } from "../secrets/store.js";
 
 const FLUE_VERSION = "0.10.1";
@@ -427,6 +428,72 @@ export class FlueDeployer {
     }
   }
 
+  /**
+   * Run preflight checks for a deploy target and return all results (never throws).
+   * Each check is self-contained — ok:false means the deploy would likely fail for
+   * that reason, with `detail` carrying an actionable fix hint.
+   */
+  async preflight(req: { provider?: string; model?: string; target: DeployTarget }): Promise<PreflightCheck[]> {
+    const checks: PreflightCheck[] = [];
+
+    switch (req.target) {
+      case "docker-local":
+        checks.push(checkDockerDaemon());
+        break;
+      case "fly":
+        checks.push(checkBinary("flyctl", "flyctl CLI", "Install the Fly.io CLI: https://fly.io/docs/getting-started/installing-flyctl/"));
+        checks.push(checkEnvToken("FLY_API_TOKEN", "Fly.io API token (FLY_API_TOKEN)", "Set FLY_API_TOKEN in your environment."));
+        break;
+      case "cloudflare":
+        checks.push(checkWrangler());
+        checks.push(checkEnvToken("CLOUDFLARE_API_TOKEN", "Cloudflare API token (CLOUDFLARE_API_TOKEN)", "Set CLOUDFLARE_API_TOKEN in your environment."));
+        break;
+      case "github":
+        checks.push(checkBinary("git", "Git CLI", "Install Git: https://git-scm.com/"));
+        checks.push(checkGhAuth());
+        break;
+      default:
+        // local-process: no CLI/daemon check (Node is already running); apiKey below.
+        break;
+    }
+
+    // All targets EXCEPT github require the provider API key.
+    // (github publishes a repo; the key is supplied later by CI / the PaaS.)
+    if (req.target !== "github") {
+      checks.push(this.#checkApiKey(req.provider, req.model));
+    }
+
+    return checks;
+  }
+
+  /**
+   * Check whether the provider API key is present (secrets store first, then env var).
+   * Mirrors the exact logic in `deploy()` — same provider derivation, same lookup order.
+   */
+  #checkApiKey(provider?: string, model?: string): PreflightCheck {
+    try {
+      const resolved = resolveModel(undefined, { provider, model });
+      const providerId = resolved.provider.id;
+      const apiKeyEnv = resolved.provider.apiKeyEnv;
+      const key = this.#secrets.get(providerId) ?? process.env[apiKeyEnv];
+      return {
+        id: "apiKey",
+        label: `Provider API key (${providerId} / ${apiKeyEnv})`,
+        ok: !!key,
+        detail: key
+          ? undefined
+          : `Set a "${providerId}" key in Settings (env var: ${apiKeyEnv}).`,
+      };
+    } catch (err) {
+      return {
+        id: "apiKey",
+        label: "Provider API key",
+        ok: false,
+        detail: (err as Error).message,
+      };
+    }
+  }
+
   /** Kill every deployed agent (subprocesses + containers). Called on Core shutdown. */
   async shutdown(): Promise<void> {
     for (const child of this.#processes.values()) {
@@ -596,6 +663,81 @@ function findCfOutputDir(distDir: string): string | null {
 function ensureCli(cmd: string, message: string): void {
   const probe = spawnSync(cmd, ["--version"], { stdio: "ignore" });
   if (probe.status !== 0) throw new DeployError(message);
+}
+
+// ── preflight helpers ────────────────────────────────────────────────────────
+
+/** Check that the Docker daemon is reachable (`docker info` exit 0). */
+function checkDockerDaemon(): PreflightCheck {
+  const probe = spawnSync("docker", ["info"], { stdio: "ignore", timeout: 5000 });
+  const ok = probe.status === 0;
+  return {
+    id: "docker",
+    label: "Docker daemon",
+    ok,
+    detail: ok ? undefined : "Docker daemon is not running — start Docker Desktop (or the Docker service), then Re-check.",
+  };
+}
+
+/**
+ * Check that a CLI binary is available on PATH (`cmd --version` exit 0).
+ * The id is the command name itself (e.g. "flyctl", "git").
+ */
+function checkBinary(cmd: string, label: string, installHint: string): PreflightCheck {
+  const probe = spawnSync(cmd, ["--version"], { stdio: "ignore", timeout: 5000 });
+  const ok = probe.status === 0;
+  return { id: cmd, label, ok, detail: ok ? undefined : installHint };
+}
+
+/**
+ * Check that an env-var token is set (platform tokens — FLY_API_TOKEN,
+ * CLOUDFLARE_API_TOKEN — are not in the secrets store; they live in the env only).
+ */
+function checkEnvToken(envVar: string, label: string, missingDetail: string): PreflightCheck {
+  const ok = !!process.env[envVar];
+  // Use a lowercase-kebab id for stability (e.g. "fly-api-token").
+  return { id: envVar.toLowerCase().replace(/_/g, "-"), label, ok, detail: ok ? undefined : missingDetail };
+}
+
+/**
+ * Check wrangler availability. The deployer auto-installs wrangler from npm on
+ * first Cloudflare deploy, so this check never blocks (ok is always true). We
+ * surface whether wrangler is already present so the user has an accurate picture.
+ */
+function checkWrangler(): PreflightCheck {
+  const onPath = spawnSync("wrangler", ["--version"], { stdio: "ignore", timeout: 5000 }).status === 0;
+  const locally = findBin(deployedDir(), "wrangler") !== null;
+  const alreadyInstalled = onPath || locally;
+  return {
+    id: "wrangler",
+    label: "wrangler CLI",
+    ok: true, // deployer auto-installs via npm — never blocks the deploy
+    detail: alreadyInstalled ? undefined : "Not installed yet — will be auto-installed from npm on first Cloudflare deploy.",
+  };
+}
+
+/**
+ * Check that the GitHub CLI is installed AND authenticated (`gh auth status` exit 0).
+ * Mirrors what the github deploy path needs: `gh` on PATH + valid auth.
+ */
+function checkGhAuth(): PreflightCheck {
+  const ghProbe = spawnSync("gh", ["--version"], { stdio: "ignore", timeout: 5000 });
+  if (ghProbe.status !== 0) {
+    return {
+      id: "gh",
+      label: "GitHub CLI (gh)",
+      ok: false,
+      detail: "GitHub CLI is not installed. Install it at https://cli.github.com/, then run `gh auth login`.",
+    };
+  }
+  const authProbe = spawnSync("gh", ["auth", "status"], { stdio: "ignore", timeout: 10000 });
+  const ok = authProbe.status === 0;
+  return {
+    id: "gh",
+    label: "GitHub CLI auth (gh auth status)",
+    ok,
+    detail: ok ? undefined : "Not authenticated. Run `gh auth login` first.",
+  };
 }
 
 /** Run a git command in `dir`, throwing on failure. */
