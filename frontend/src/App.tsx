@@ -43,6 +43,10 @@ export function App(): React.JSX.Element {
   const [deployLogViewId, setDeployLogViewId] = useState<string | null>(null);
   /** The last deploy log fetched from the Core (null = not yet fetched or no log). */
   const [deployLastLog, setDeployLastLog] = useState<string | null | undefined>(undefined);
+  /** Error returned by the Core for the in-flight deploy.lastLog request, if any. */
+  const [deployLogError, setDeployLogError] = useState<string | null>(null);
+  /** True while we're waiting for deploy.lastLog or error in response to a log request. */
+  const deployLogPendingRef = useRef(false);
 
   function resetDeploy(): void {
     setDeployStatus(null);
@@ -112,11 +116,16 @@ export function App(): React.JSX.Element {
       } else if (e.type === "deploy.preflight") {
         setPreflightChecks(e.checks);
       } else if (e.type === "deploy.lastLog") {
+        deployLogPendingRef.current = false;
         setDeployLastLog(e.log);
       } else if (e.type === "error" && connectPendingRef.current) {
         // Surface connect failures inside the modal rather than silently dropping them.
         connectPendingRef.current = false;
         setConnectError(e.message);
+      } else if (e.type === "error" && deployLogPendingRef.current) {
+        // Surface log-fetch failures inside the log modal instead of leaving it loading forever.
+        deployLogPendingRef.current = false;
+        setDeployLogError(e.message);
       }
     });
     // Refresh lists on every (re)connect; reflect live connection state.
@@ -164,7 +173,9 @@ export function App(): React.JSX.Element {
         onOpenSettings={() => setSettingsOpen(true)}
         onViewDeployLog={(id) => {
           setDeployLastLog(undefined); // reset while loading
+          setDeployLogError(null);
           setDeployLogViewId(id);
+          deployLogPendingRef.current = true;
           client.send({ type: "deploy.lastLog", agentId: id });
         }}
       />
@@ -258,23 +269,29 @@ export function App(): React.JSX.Element {
         <Modal
           title={`Last deploy log — ${agents.find((a) => a.id === deployLogViewId)?.name ?? deployLogViewId}`}
           onClose={() => {
+            deployLogPendingRef.current = false;
             setDeployLogViewId(null);
             setDeployLastLog(undefined);
+            setDeployLogError(null);
           }}
           dismissable
           footer={
             <button
               className="btn-primary"
               onClick={() => {
+                deployLogPendingRef.current = false;
                 setDeployLogViewId(null);
                 setDeployLastLog(undefined);
+                setDeployLogError(null);
               }}
             >
               Close
             </button>
           }
         >
-          {deployLastLog === undefined ? (
+          {deployLogError !== null ? (
+            <p className="empty">Failed to load the deploy log: {deployLogError}</p>
+          ) : deployLastLog === undefined ? (
             <div className="deploy-running">
               <span className="spinner" /> Loading…
             </div>
