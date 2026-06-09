@@ -24,10 +24,41 @@
 | F5 Orquestador visual | ⏳ pendiente | WU-16..19 | contrato decidido en §7 |
 | F6 Hardening | ⏳ pendiente | WU-20..23 | |
 
-**Mergeado en `main` vía PR #3** (`feat: agent lifecycle control + day-2 UX (gaps F0–F2)`, merge commit `4b315e3`). 13 commits. Arrancar la próxima sesión por **F3 / WU-10** (§5).
+**Mergeado en `main` vía PR #3** (`feat: agent lifecycle control + day-2 UX (gaps F0–F2)`, merge commit `4b315e3`). 13 commits. PR #4 (docs) también mergeado. Arrancar la próxima sesión por **F3 / WU-10** (§5).
 
 > Nota: el plan original (abajo) decía "Rama base: feat/flue-migration (PR #1)".
 > PR #1 ya está mergeado a `main`; las ramas nuevas salen de `main`.
+
+### Revisión de supervisión F0–F2 (2026-06-09)
+
+Auditoría adversarial (Core + Frontend) de WU-01..09 contra esta spec.
+**Veredicto: implementación fiel, sin bugs críticos.** El espejo de tipos
+core↔frontend está intacto (única diferencia intencional: `local-process`
+no se expone en la UI). Se corrigieron 4 hallazgos en la rama
+`fix/f0-f2-review-findings`:
+
+1. **WU-03**: carrera entre `#reconnectPersisted()` y `#healthTick()` podía
+   filtrar un `FlueAdapter` duplicado — guard post-`await` en ambos lados.
+2. **db.ts**: el catch de migraciones tragaba CUALQUIER error; ahora solo
+   "duplicate column name" se trata como ya-aplicada, el resto se relanza.
+3. **WU-07**: el botón Deploy no se deshabilitaba mientras el preflight
+   cargaba (`preflightChecks === null`) — gate bypasseable.
+4. **WU-09**: un `error` del Core a `deploy.lastLog` dejaba el modal en
+   "Loading…" para siempre — ahora se muestra el error en el modal.
+
+**Limitaciones conocidas registradas (NO bloquean F3)** — ver notas
+agregadas en F4/F6:
+
+- WU-09: si un PRIMER deploy falla antes de registrar el agente, el log de
+  error se descarta (no hay fila a la cual asociarlo). Aceptado en v1.
+- Preflight `cloudflare`: `checkWrangler()` siempre devuelve ok (el deployer
+  auto-instala wrangler vía npm); no avisa si npm falta.
+- `findCfOutputDir()` busca `wrangler.json` (no `.jsonc`) en el output de
+  `flue build` — verificar en WU-13 contra el output real.
+- Frontend: el historial de sesiones no se refresca tras reconexión para el
+  agente ya seleccionado (solo on-select) — cubrir en WU-23.
+- `App.tsx` (`agent.removed`): `setSelectedId` anidado dentro del updater de
+  `setAgents` — inofensivo con StrictMode off, limpiar en F6 (WU-21).
 
 ---
 
@@ -39,7 +70,7 @@
    propio; nunca inventes wire de Flue (verificá contra `@flue/sdk`/`@flue/cli`
    o la skill `flue-client`); secrets solo en env vars/secure store.
 2. **Skills**: cargá la skill que corresponda antes de tocar su área —
-   `adapter-interface`, `flue-client`, `xterm-terminal`, `react-flow-canvas`,
+   `adapter-interface`, `flue-client`, `transcript-panel`, `react-flow-canvas`,
    `tauri-shell-sidecar`.
 3. **Gotcha de dev (te va a morder si lo ignorás)**: el Core importa el
    converter desde `dist`. Tras cambiar `packages/converter` corré
@@ -329,6 +360,10 @@ intercalarse en cualquier momento con credenciales. F6 al final o como relleno.
 - **WU-13 — Cloudflare**: `CLOUDFLARE_API_TOKEN` → target `cloudflare` →
   worker desplegado → chat E2E. Cuidado: nunca inventar wire CF de Flue;
   ante cualquier discrepancia, verificar contra `@flue/cli` instalado.
+  **Verificar también**: `findCfOutputDir()` en `flue-deployer.ts` busca
+  `wrangler.json` (no `.jsonc`) en el output de `flue build --target
+  cloudflare` — si el build emite `.jsonc`, el deploy CF falla con error
+  confuso; corregir ahí.
 - **WU-14 — GitHub → Coolify/Dokploy**: target `github` → repo publicado →
   deploy manual en Coolify/Dokploy → conectar por URL con WU-05 (acá se
   prueba el valor real de "Connect agent").
@@ -458,14 +493,21 @@ intercalarse en cualquier momento con credenciales. F6 al final o como relleno.
   pasa al frontend. Localhost sin token sigue OK en dev (env flag).
 - **WU-21 — Accesibilidad**: items del sidebar navegables por teclado
   (`role`, `tabIndex`, Enter/Space), focus trap + restauración en `Modal`,
-  `aria-label` en cards del wizard y botones de ícono.
+  `aria-label` en cards del wizard y botones de ícono. Aprovechar para
+  limpiar el anti-pattern de `App.tsx` (`agent.removed`): `setSelectedId`
+  llamado dentro del updater de `setAgents` (rompe si StrictMode vuelve), y
+  actualizar el comment de `main.tsx` que justifica StrictMode-off citando
+  xterm (xterm ya no existe).
 - **WU-22 — Shutdown limpio del sidecar**: en `apps/desktop/src-tauri/src/lib.rs`
   guardar el `Child` del sidecar y matarlo en el evento de cierre de
   ventana/app (skill `tauri-shell-sidecar`). Limpia también los 2 warnings
   de imports sin usar.
 - **WU-23 — Multi-conversación**: con WU-06 hecho, agregar lista de
   conversaciones por agente en el panel (sidebar interno o dropdown):
-  retomar cualquier sesión pasada, no solo la última.
+  retomar cualquier sesión pasada, no solo la última. Incluir: refrescar
+  la lista de sesiones tras una reconexión al Core (hoy solo se pide
+  on-select, así que sesiones nuevas acumuladas offline no aparecen hasta
+  cambiar de agente y volver).
 
 ---
 
