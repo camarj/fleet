@@ -23,12 +23,6 @@ export interface ModelParameters {
   topP?: number;
 }
 
-/** Per-session model override (the only override the MVP carries). */
-export interface ModelOverride {
-  specifier: string;
-  parameters?: ModelParameters;
-}
-
 /** Neutral input for a run (what an adapter receives). */
 export interface RunInput {
   messages: ChatMessage[];
@@ -36,9 +30,13 @@ export interface RunInput {
   context?: Record<string, unknown>;
 }
 
-export interface RunOptions {
-  model?: ModelOverride;
-}
+/**
+ * Per-run options. Empty in v1: a per-session model override was removed because
+ * Flue bakes the model at convert time — changing an agent's model is a redeploy
+ * (see `config.set` → `config.updated.requiresRedeploy` → `agent.redeploy`), not
+ * a per-run flag. Reserved for genuinely per-run options later.
+ */
+export type RunOptions = Record<string, never>;
 
 /**
  * Neutral streaming event catalog — Flue's FlueEvent stream maps onto these.

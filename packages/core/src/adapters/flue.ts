@@ -88,9 +88,9 @@ export class FlueAdapter implements AgentAdapter {
   }
 
   run(input: RunInput, _options: RunOptions, sink: RunSink): RunHandle {
-    // Flue's prompt is a single string and carries no per-prompt model override
-    // (the model is fixed at agent/profile config; provider/model swap is the
-    // converter's job). So `_options.model` is intentionally not applied.
+    // RunOptions is empty in v1 (no per-run options). The model is fixed at
+    // convert time; changing it is a redeploy (config.set → agent.redeploy),
+    // not a per-run flag — so there is nothing to apply from `_options` here.
     const message = userText(input);
     const accum = new UsageAccumulator();
     const controller = new AbortController();

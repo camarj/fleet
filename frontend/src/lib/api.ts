@@ -26,11 +26,6 @@ export interface ModelParameters {
   topP?: number;
 }
 
-export interface ModelOverride {
-  specifier: string;
-  parameters?: ModelParameters;
-}
-
 /** The agent kind. Fleet is Flue-only. */
 export type AgentKind = "flue";
 
@@ -118,7 +113,7 @@ export type ClientRequest =
   /** Store a provider API key server-side (the value never persists in the frontend). */
   | { type: "secrets.set"; provider: string; apiKey: string }
   | { type: "secrets.list" }
-  | { type: "session.start"; agentId: string; message: string; modelOverride?: ModelOverride }
+  | { type: "session.start"; agentId: string; message: string }
   | { type: "session.abort"; sessionId: string }
   | { type: "sessions.list"; agentId: string }
   | { type: "session.history"; sessionId: string }
@@ -144,7 +139,12 @@ export type ServerEvent =
   /** A deploy that produced an artifact (e.g. a published GitHub repo) instead of a running agent. */
   | { type: "deploy.artifact"; target: string; url: string; message: string }
   | { type: "deploy.error"; message: string }
-  | { type: "config.updated"; agentId: string }
+  /**
+   * A config change was saved. `requiresRedeploy` is true when the saved model
+   * specifier differs from what the agent currently runs — Flue bakes the model
+   * at convert time, so applying it means a redeploy (the honest path).
+   */
+  | { type: "config.updated"; agentId: string; requiresRedeploy: boolean }
   | { type: "session.started"; sessionId: string; agentId: string }
   | { type: "session.event"; sessionId: string; seq: number; event: RunEvent }
   | { type: "session.usage"; sessionId: string; usage: Usage; costUsd: number | null }
