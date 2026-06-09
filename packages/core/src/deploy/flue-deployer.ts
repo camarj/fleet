@@ -90,7 +90,8 @@ const INTERNAL_PORT = 8080; // the port the Flue server listens on inside the co
 
 export class FlueDeployer {
   readonly #secrets: SecretsStore;
-  readonly #processes = new Set<ChildProcess>();
+  /** Maps agentName → child process for local-process deploys. */
+  readonly #processes = new Map<string, ChildProcess>();
   readonly #containers = new Set<string>();
 
   constructor(secrets: SecretsStore) {
@@ -221,8 +222,8 @@ export class FlueDeployer {
       env: { ...process.env, HOST: "0.0.0.0", PORT: String(port), ...(key ? { [apiKeyEnv]: key } : {}) },
       stdio: ["ignore", "pipe", "pipe"],
     });
-    this.#processes.add(child);
-    child.on("exit", () => this.#processes.delete(child));
+    this.#processes.set(agentName, child);
+    child.on("exit", () => this.#processes.delete(agentName));
 
     const baseUrl = `http://127.0.0.1:${port}`;
     await waitReady(baseUrl);
@@ -402,9 +403,33 @@ export class FlueDeployer {
     return baseUrl;
   }
 
+  /**
+   * Stop a single deployed agent's runtime (called by GatewayCore on agent.stop / agent.delete).
+   * For docker-local: removes the container. For local-process: kills the child.
+   * For remote targets (fly, cloudflare, github): no-op — remote infra teardown is out
+   * of scope for v1; the Core just disconnects the adapter locally.
+   */
+  stopDeployment(agentName: string, target: DeployTarget): void {
+    if (target === "docker-local") {
+      const container = `fleet-${agentName}`;
+      spawnSync("docker", ["rm", "-f", container], { stdio: "ignore" });
+      this.#containers.delete(container);
+    } else if (target === "local-process") {
+      const child = this.#processes.get(agentName);
+      if (child?.pid) {
+        try {
+          process.kill(-child.pid, "SIGTERM");
+        } catch {
+          child.kill("SIGTERM");
+        }
+      }
+      this.#processes.delete(agentName);
+    }
+  }
+
   /** Kill every deployed agent (subprocesses + containers). Called on Core shutdown. */
   async shutdown(): Promise<void> {
-    for (const child of this.#processes) {
+    for (const child of this.#processes.values()) {
       if (child.pid) {
         try {
           process.kill(-child.pid, "SIGTERM");

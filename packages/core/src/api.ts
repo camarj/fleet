@@ -41,6 +41,10 @@ export type ClientRequest =
   | { type: "agent.deployFlue"; sourceDir: string; provider?: string; model?: string; target?: DeployTargetWire }
   /** Repeat an agent's original deploy (e.g. after adding its provider API key). */
   | { type: "agent.redeploy"; agentId: string }
+  /** Stop the agent's runtime and close the adapter; the registration is kept so it can be redeployed. */
+  | { type: "agent.stop"; agentId: string }
+  /** Stop the agent's runtime and permanently remove its registration and deploy params. */
+  | { type: "agent.delete"; agentId: string }
   /** Store a provider API key server-side (secure store). The value never persists in the frontend. */
   | { type: "secrets.set"; provider: string; apiKey: string }
   /** Ask which providers currently have a key set (values are never returned). */
@@ -54,6 +58,10 @@ export type ClientRequest =
 export type ServerEvent =
   | { type: "agents"; agents: AgentSummary[] }
   | { type: "agent.registered"; agent: AgentSummary }
+  /** An agent's summary changed (e.g. it went offline after stop). */
+  | { type: "agent.updated"; agent: AgentSummary }
+  /** The agent was permanently deleted and is no longer in the registry. */
+  | { type: "agent.removed"; agentId: string }
   /** Which providers have an API key set (ids only, never the values). */
   | { type: "secrets.status"; providers: string[] }
   /** A step in an in-flight deploy: converting → installing → building → starting/pushing/deploying → connecting → done. */

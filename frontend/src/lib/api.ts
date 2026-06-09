@@ -85,6 +85,10 @@ export type ClientRequest =
   /** Convert a local Claude Code project to a Flue agent, deploy it, and connect. */
   | { type: "agent.deployFlue"; sourceDir: string; provider?: string; model?: string; target?: DeployTarget }
   | { type: "agent.redeploy"; agentId: string }
+  /** Stop the agent's runtime and close the adapter; the registration is kept so it can be redeployed. */
+  | { type: "agent.stop"; agentId: string }
+  /** Stop the agent's runtime and permanently remove its registration and deploy params. */
+  | { type: "agent.delete"; agentId: string }
   /** Store a provider API key server-side (the value never persists in the frontend). */
   | { type: "secrets.set"; provider: string; apiKey: string }
   | { type: "secrets.list" }
@@ -97,6 +101,10 @@ export type ClientRequest =
 export type ServerEvent =
   | { type: "agents"; agents: AgentSummary[] }
   | { type: "agent.registered"; agent: AgentSummary }
+  /** An agent's summary changed (e.g. it went offline after stop). */
+  | { type: "agent.updated"; agent: AgentSummary }
+  /** The agent was permanently deleted and is no longer in the registry. */
+  | { type: "agent.removed"; agentId: string }
   | { type: "secrets.status"; providers: string[] }
   | { type: "deploy.progress"; step: string; detail?: string }
   /** Live output lines from the deploy's underlying commands (docker build, etc.). */

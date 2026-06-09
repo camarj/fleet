@@ -30,6 +30,8 @@ export class GatewayCore {
   readonly #state: GatewayState;
   readonly #agents = new Map<string, RegisteredAgent>();
   readonly #sessions = new Map<string, RunHandle>();
+  /** Reverse index: agentId → Set of active sessionIds (for bulk-abort on stop/delete). */
+  readonly #agentSessions = new Map<string, Set<string>>();
   readonly #secrets = new SecretsStore();
   readonly #deployer = new FlueDeployer(this.#secrets);
 
@@ -49,6 +51,10 @@ export class GatewayCore {
           return await this.#deployFlue(req, emit);
         case "agent.redeploy":
           return await this.#redeploy(req, emit);
+        case "agent.stop":
+          return await this.#stopAgent(req, emit);
+        case "agent.delete":
+          return await this.#deleteAgent(req, emit);
         case "secrets.set":
           this.#secrets.set(req.provider, req.apiKey);
           emit({ type: "secrets.status", providers: this.#secrets.list() });
@@ -81,6 +87,7 @@ export class GatewayCore {
     }
     await this.#deployer.shutdown().catch(() => {});
     this.#agents.clear();
+    this.#agentSessions.clear();
     this.#state.close();
   }
 
@@ -156,6 +163,71 @@ export class GatewayCore {
     }
   }
 
+  // ── Stop / Delete ─────────────────────────────────────────────────────────
+
+  /**
+   * Shared teardown: stops local infra (container or process), closes the live
+   * adapter, and aborts all in-flight sessions for the agent.
+   * Does NOT emit any events — callers decide what to broadcast after this.
+   * Safe to call when the agent is already offline (no adapter in #agents).
+   */
+  async #teardownAgent(agentId: string): Promise<void> {
+    const stored = this.#state.getAgent(agentId);
+    const deployParams = this.#state.getDeploy(agentId);
+
+    // Stop local runtime infra if applicable.
+    if (deployParams && stored) {
+      const t = deployParams.target;
+      if (t === "docker-local" || t === "local-process") {
+        this.#deployer.stopDeployment(stored.name, t as DeployTarget);
+      }
+      // NOTE: For remote targets (fly, cloudflare, github) in v1, only the local
+      // adapter is disconnected below — remote infrastructure teardown is out of
+      // scope for v1 and must be done manually (e.g. via flyctl/wrangler/PaaS UI).
+    }
+
+    // Close the live adapter and remove it from the active registry.
+    const reg = this.#agents.get(agentId);
+    if (reg) {
+      await reg.adapter.close().catch(() => {});
+      this.#agents.delete(agentId);
+    }
+
+    // Abort every in-flight session for this agent.
+    const sessionIds = [...(this.#agentSessions.get(agentId) ?? [])];
+    for (const sessionId of sessionIds) {
+      const handle = this.#sessions.get(sessionId);
+      if (handle) await handle.abort().catch(() => {});
+    }
+    this.#agentSessions.delete(agentId);
+  }
+
+  /** Stop an agent's runtime, keep its registration (it can be redeployed). */
+  async #stopAgent(req: Extract<ClientRequest, { type: "agent.stop" }>, emit: Emit): Promise<void> {
+    const stored = this.#state.getAgent(req.agentId);
+    if (!stored) {
+      emit({ type: "error", message: `Agent "${req.agentId}" not found`, requestType: req.type });
+      return;
+    }
+    await this.#teardownAgent(req.agentId);
+    emit({ type: "agent.updated", agent: this.#summary(stored, false) });
+  }
+
+  /** Stop an agent's runtime and permanently delete its registration + deploy params. */
+  async #deleteAgent(req: Extract<ClientRequest, { type: "agent.delete" }>, emit: Emit): Promise<void> {
+    const stored = this.#state.getAgent(req.agentId);
+    if (!stored) {
+      emit({ type: "error", message: `Agent "${req.agentId}" not found`, requestType: req.type });
+      return;
+    }
+    await this.#teardownAgent(req.agentId);
+    // Build the summary while the DB row still exists (cascade removes deploys too).
+    const summary = this.#summary(stored, false);
+    this.#state.deleteAgent(req.agentId);
+    emit({ type: "agent.updated", agent: summary });
+    emit({ type: "agent.removed", agentId: req.agentId });
+  }
+
   // ── Sessions ───────────────────────────────────────────────────────────────
 
   async #startSession(req: Extract<ClientRequest, { type: "session.start" }>, emit: Emit): Promise<void> {
@@ -180,16 +252,21 @@ export class GatewayCore {
         this.#state.endSession(sessionId, status === "aborted" ? "aborted" : "completed");
         emit({ type: "session.done", sessionId, status, usage: usage ?? null, costUsd });
         this.#sessions.delete(sessionId);
+        this.#agentSessions.get(req.agentId)?.delete(sessionId);
       },
       onError: (code, message) => {
         this.#state.endSession(sessionId, "error");
         emit({ type: "session.error", sessionId, error: { code, message } });
         this.#sessions.delete(sessionId);
+        this.#agentSessions.get(req.agentId)?.delete(sessionId);
       },
     };
 
     const handle = reg.adapter.run({ messages: [{ role: "user", content: req.message }] }, options, sink);
     this.#sessions.set(sessionId, handle);
+    // Register under the reverse agent→sessions index for bulk-abort on stop/delete.
+    if (!this.#agentSessions.has(req.agentId)) this.#agentSessions.set(req.agentId, new Set());
+    this.#agentSessions.get(req.agentId)!.add(sessionId);
   }
 
   async #abortSession(sessionId: string, emit: Emit): Promise<void> {

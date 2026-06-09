@@ -202,6 +202,14 @@ export class GatewayState {
     return !!row;
   }
 
+  /**
+   * Hard-delete an agent row. The schema's ON DELETE CASCADE removes all child
+   * rows (configs, deploys, sessions, usage) automatically.
+   */
+  deleteAgent(id: string): void {
+    this.#db.prepare(`DELETE FROM agents WHERE id = ?`).run(id);
+  }
+
   // ── Sessions ───────────────────────────────────────────────────────────────
 
   createSession(agentId: string): string {
