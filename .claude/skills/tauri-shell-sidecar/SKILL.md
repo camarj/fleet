@@ -43,7 +43,7 @@ Tauri shell (Rust)
                     └── Frontend speaks Gateway API (api.ts)
 ```
 
-The frontend never speaks A2A or ACP. The Core translates agent events into Gateway API packets.
+The frontend never speaks Flue. The Core translates agent events into Gateway API packets.
 
 ## Steps
 

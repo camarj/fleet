@@ -67,10 +67,10 @@ function main(): void {
     const fm = skill.slice(0, skill.indexOf("\n---", 3));
     // Flue contract: allowed-tools is a space-separated STRING; metadata is an
     // OBJECT whose values are all strings (numbers like version: 1.0 coerced).
-    assert(/allowed-tools:\s*read grep/.test(fm), "allowed-tools flattened to a space-separated string");
+    assert(/allowed-tools:\s*"?read grep"?/.test(fm), "allowed-tools flattened to a space-separated string");
     assert(/metadata:\s*\r?\n/.test(fm), "metadata stays a nested mapping (not a JSON string)");
     assert(/version:\s*["']1(\.0)?["']/.test(fm), "metadata.version coerced to a string");
-    assert(/author:\s*store-team/.test(fm), "metadata string values preserved");
+    assert(/author:\s*"?store-team"?/.test(fm), "metadata string values preserved");
     assert(/updated:\s*["']?2026-03-10["']?/.test(fm) && !/updated:\s*2026-03-10T/.test(fm), "metadata YAML date coerced to a date string");
   }
 

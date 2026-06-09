@@ -6,7 +6,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import type { DeployTarget } from "../../lib/api";
+import type { DeployTarget, PreflightCheck } from "../../lib/api";
 import { Modal } from "../Modal/Modal";
 import { isTauri, onDirectoryDrop, pickDirectory } from "../../lib/dialog";
 import { PROVIDER_CATALOG, modelsFor } from "../../lib/providers";
@@ -28,6 +28,9 @@ interface Props {
   deployError: string | null;
   deployArtifact: { url: string; message: string } | null;
   deployLog: string[];
+  /** Preflight check results (null = loading / not yet run). */
+  preflightChecks: PreflightCheck[] | null;
+  onPreflight: (params: { provider?: string; model?: string; target: DeployTarget }) => void;
   onDeploy: (req: { sourceDir: string; provider?: string; model?: string; target: DeployTarget }) => void;
   onClose: () => void;
 }
@@ -38,6 +41,8 @@ export function DeployWizard({
   deployError,
   deployArtifact,
   deployLog,
+  preflightChecks,
+  onPreflight,
   onDeploy,
   onClose,
 }: Props): React.JSX.Element {
@@ -88,9 +93,21 @@ export function DeployWizard({
     };
   }, []);
 
+  // Trigger preflight whenever the user enters the Review/Deploy step (step 3).
+  useEffect(() => {
+    if (step === 3 && !started) {
+      onPreflight({ provider: provider || undefined, model: model.trim() || undefined, target });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, started]);
+
   async function browse(): Promise<void> {
     const dir = await pickDirectory();
     if (dir) setSourceDir(dir);
+  }
+
+  function runPreflight(): void {
+    onPreflight({ provider: provider || undefined, model: model.trim() || undefined, target });
   }
 
   function deploy(): void {
@@ -109,6 +126,9 @@ export function DeployWizard({
   const finished = !!deployError || !!deployArtifact || succeeded;
   const activeTarget = DEPLOY_TARGETS.find((t) => t.value === target);
 
+  // Any failed preflight check blocks the Deploy button.
+  const anyPreflightFailed = preflightChecks !== null && preflightChecks.some((c) => !c.ok);
+
   const footer = started ? (
     <button className="btn-primary" onClick={onClose} disabled={!finished}>
       {finished ? "Done" : "Deploying…"}
@@ -123,7 +143,7 @@ export function DeployWizard({
           Next
         </button>
       ) : (
-        <button className="btn-primary" onClick={deploy} disabled={!connected || !sourceDir.trim()}>
+        <button className="btn-primary" onClick={deploy} disabled={!connected || !sourceDir.trim() || anyPreflightFailed}>
           Deploy
         </button>
       )}
@@ -234,6 +254,39 @@ export function DeployWizard({
               <span>Target</span>
               <code>{activeTarget?.label}</code>
             </div>
+
+            {/* Preflight checklist */}
+            <div className="preflight-section">
+              <div className="preflight-header">
+                <span className="preflight-title">Pre-deploy checks</span>
+                <button className="btn-ghost preflight-recheck" onClick={runPreflight}>
+                  Re-check
+                </button>
+              </div>
+              {preflightChecks === null ? (
+                <div className="preflight-loading">
+                  <span className="spinner" /> Checking…
+                </div>
+              ) : (
+                <ul className="preflight-checks">
+                  {preflightChecks.map((c) => (
+                    <li key={c.id} className={`preflight-check ${c.ok ? "ok" : "fail"}`}>
+                      <span className="preflight-check-icon">{c.ok ? "✓" : "✗"}</span>
+                      <span className="preflight-check-body">
+                        <span className="preflight-check-label">{c.label}</span>
+                        {c.detail && <span className="preflight-check-detail">{c.detail}</span>}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {anyPreflightFailed && (
+                <div className="deploy-error preflight-block">
+                  Fix the failing checks above before deploying.
+                </div>
+              )}
+            </div>
+
             {!connected && <div className="deploy-error">Not connected to the Core.</div>}
           </div>
         )}

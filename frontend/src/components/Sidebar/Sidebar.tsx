@@ -1,10 +1,13 @@
 /**
- * Sidebar — the fleet. Lists the deployed agents and exposes two actions:
- * open the Deploy wizard (convert + deploy a Claude Code project as a Flue agent)
- * and open Settings (provider API keys). The actual forms live in their modals.
+ * Sidebar — the fleet. Lists the deployed agents and exposes three actions:
+ * open the Deploy wizard (convert + deploy a Claude Code project as a Flue agent),
+ * open the Connect modal (attach an already-running Flue agent by URL), and
+ * open Settings (provider API keys). The actual forms live in their modals.
  */
 
+import { useState } from "react";
 import type { AgentSummary } from "../../lib/api";
+import { Modal } from "../Modal/Modal";
 
 interface Props {
   agents: AgentSummary[];
@@ -13,8 +16,12 @@ interface Props {
   secretsProviders: string[];
   onSelect: (id: string) => void;
   onOpenDeploy: () => void;
+  onOpenConnect: () => void;
   onRedeploy: (id: string) => void;
+  onStop: (id: string) => void;
+  onDelete: (id: string) => void;
   onOpenSettings: () => void;
+  onViewDeployLog: (id: string) => void;
 }
 
 export function Sidebar({
@@ -24,9 +31,24 @@ export function Sidebar({
   secretsProviders,
   onSelect,
   onOpenDeploy,
+  onOpenConnect,
   onRedeploy,
+  onStop,
+  onDelete,
   onOpenSettings,
+  onViewDeployLog,
 }: Props): React.JSX.Element {
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  const confirmDeleteAgent = agents.find((a) => a.id === confirmDeleteId) ?? null;
+
+  function handleConfirmDelete(): void {
+    if (confirmDeleteId) {
+      onDelete(confirmDeleteId);
+      setConfirmDeleteId(null);
+    }
+  }
+
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
@@ -49,19 +71,58 @@ export function Sidebar({
               <span className={`badge ${a.online ? "online" : ""}`}>{a.online ? "online" : "offline"}</span>
             </div>
             <div className="agent-meta">{a.model}</div>
-            {a.redeployable && (
+            <div className="agent-actions">
+              {a.redeployable && (
+                <button
+                  className="btn-ghost agent-redeploy"
+                  disabled={!connected}
+                  title="Rebuild and deploy this agent again (picks up new API keys/settings)"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onRedeploy(a.id);
+                  }}
+                >
+                  ↻ Redeploy
+                </button>
+              )}
+              {a.redeployable && (
+                <button
+                  className="btn-ghost agent-deploy-log"
+                  disabled={!connected}
+                  title="View the log from the last deploy"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onViewDeployLog(a.id);
+                  }}
+                >
+                  ☰ Deploy log
+                </button>
+              )}
+              {a.online && (
+                <button
+                  className="btn-ghost agent-stop"
+                  disabled={!connected}
+                  title="Stop this agent's runtime (keeps registration for redeploy)"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onStop(a.id);
+                  }}
+                >
+                  ■ Stop
+                </button>
+              )}
               <button
-                className="btn-ghost agent-redeploy"
+                className="btn-ghost agent-delete"
                 disabled={!connected}
-                title="Rebuild and deploy this agent again (picks up new API keys/settings)"
+                title="Permanently remove this agent from Fleet"
                 onClick={(e) => {
                   e.stopPropagation();
-                  onRedeploy(a.id);
+                  setConfirmDeleteId(a.id);
                 }}
               >
-                ↻ Redeploy
+                ✕ Delete
               </button>
-            )}
+            </div>
           </li>
         ))}
         {agents.length === 0 && <li className="empty">No agents yet — deploy one below</li>}
@@ -71,11 +132,37 @@ export function Sidebar({
         <button className="btn-primary deploy-cta" onClick={onOpenDeploy} disabled={!connected}>
           + Deploy agent
         </button>
+        <button className="btn-ghost connect-cta" onClick={onOpenConnect} disabled={!connected}>
+          ⟳ Connect agent
+        </button>
         <button className="btn-ghost settings-cta" onClick={onOpenSettings}>
           ⚙ Settings
           {secretsProviders.length > 0 && <span className="keys-count"> ({secretsProviders.length})</span>}
         </button>
       </div>
+
+      {confirmDeleteAgent && (
+        <Modal
+          title="Delete agent"
+          onClose={() => setConfirmDeleteId(null)}
+          dismissable
+          footer={
+            <>
+              <button className="btn-ghost" onClick={() => setConfirmDeleteId(null)}>
+                Cancel
+              </button>
+              <button className="btn-danger" onClick={handleConfirmDelete}>
+                Delete
+              </button>
+            </>
+          }
+        >
+          <p>
+            Delete <strong>{confirmDeleteAgent.name}</strong>? This removes it from Fleet along with
+            its deploy parameters. The action cannot be undone.
+          </p>
+        </Modal>
+      )}
     </aside>
   );
 }

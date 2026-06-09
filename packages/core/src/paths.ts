@@ -20,3 +20,8 @@ export function deployedDir(): string {
 export function secretsPath(): string {
   return join(dataDir(), "secrets.json");
 }
+
+/** Default path for the Fleet SQLite database. */
+export function dbPath(): string {
+  return join(dataDir(), "fleet.db");
+}

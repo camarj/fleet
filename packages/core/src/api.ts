@@ -8,6 +8,21 @@
 
 import type { AgentKind } from "./adapters/agent-adapter.js";
 import type { ModelOverride, ModelParameters, RunEvent, RunStatus, RuntimeErrorCode, Usage } from "./neutral.js";
+import type { SessionStatus } from "./state/index.js";
+
+/**
+ * A single check in a deploy preflight report. `ok: false` means the deploy
+ * will likely fail for this reason; `detail` carries the actionable fix hint.
+ */
+export interface PreflightCheck {
+  /** Stable id — e.g. "docker", "apiKey", "flyctl", "wrangler", "git", "gh". */
+  id: string;
+  /** Human-readable label shown in the wizard checklist. */
+  label: string;
+  ok: boolean;
+  /** Actionable hint when ok=false (or an informational note when ok=true). */
+  detail?: string;
+}
 
 /**
  * Where a converted agent is deployed (wire copy of DeployTarget). The four the
@@ -31,6 +46,16 @@ export interface AgentSummary {
   redeployable: boolean;
 }
 
+/** Compact summary of a past session returned by `sessions.list`. */
+export interface SessionSummary {
+  id: string;
+  status: SessionStatus;
+  startedAt: string;
+  endedAt: string | null;
+  /** First ~80 chars of the user's opening message. */
+  preview: string;
+}
+
 // ── Frontend → Core ──────────────────────────────────────────────────────────
 
 export type ClientRequest =
@@ -41,19 +66,33 @@ export type ClientRequest =
   | { type: "agent.deployFlue"; sourceDir: string; provider?: string; model?: string; target?: DeployTargetWire }
   /** Repeat an agent's original deploy (e.g. after adding its provider API key). */
   | { type: "agent.redeploy"; agentId: string }
+  /** Stop the agent's runtime and close the adapter; the registration is kept so it can be redeployed. */
+  | { type: "agent.stop"; agentId: string }
+  /** Stop the agent's runtime and permanently remove its registration and deploy params. */
+  | { type: "agent.delete"; agentId: string }
   /** Store a provider API key server-side (secure store). The value never persists in the frontend. */
   | { type: "secrets.set"; provider: string; apiKey: string }
   /** Ask which providers currently have a key set (values are never returned). */
   | { type: "secrets.list" }
   | { type: "session.start"; agentId: string; message: string; modelOverride?: ModelOverride }
   | { type: "session.abort"; sessionId: string }
-  | { type: "config.set"; agentId: string; modelSpecifier: string | null; parameters?: ModelParameters | null };
+  | { type: "sessions.list"; agentId: string }
+  | { type: "session.history"; sessionId: string }
+  | { type: "config.set"; agentId: string; modelSpecifier: string | null; parameters?: ModelParameters | null }
+  /** Run preflight checks for a target before deploying (no side-effects). */
+  | { type: "deploy.preflight"; provider?: string; model?: string; target: DeployTargetWire }
+  /** Retrieve the last deploy log for an agent (persisted at the end of the most recent deploy). */
+  | { type: "deploy.lastLog"; agentId: string };
 
 // ── Core → Frontend ──────────────────────────────────────────────────────────
 
 export type ServerEvent =
   | { type: "agents"; agents: AgentSummary[] }
   | { type: "agent.registered"; agent: AgentSummary }
+  /** An agent's summary changed (e.g. it went offline after stop). */
+  | { type: "agent.updated"; agent: AgentSummary }
+  /** The agent was permanently deleted and is no longer in the registry. */
+  | { type: "agent.removed"; agentId: string }
   /** Which providers have an API key set (ids only, never the values). */
   | { type: "secrets.status"; providers: string[] }
   /** A step in an in-flight deploy: converting → installing → building → starting/pushing/deploying → connecting → done. */
@@ -69,4 +108,12 @@ export type ServerEvent =
   | { type: "session.usage"; sessionId: string; usage: Usage; costUsd: number | null }
   | { type: "session.done"; sessionId: string; status: RunStatus; usage: Usage | null; costUsd: number | null }
   | { type: "session.error"; sessionId: string; error: { code: RuntimeErrorCode; message: string } }
-  | { type: "error"; message: string; requestType?: string };
+  /** List of past sessions for an agent (most recent first). */
+  | { type: "sessions"; agentId: string; sessions: SessionSummary[] }
+  /** Full event log and final usage for a past session. */
+  | { type: "session.history"; sessionId: string; events: RunEvent[]; usage: Usage | null; costUsd: number | null }
+  | { type: "error"; message: string; requestType?: string }
+  /** Results of a deploy.preflight request — one entry per check performed. */
+  | { type: "deploy.preflight"; checks: PreflightCheck[] }
+  /** The last deploy log for an agent. `log` is null if no deploy has been completed yet. */
+  | { type: "deploy.lastLog"; agentId: string; log: string | null };

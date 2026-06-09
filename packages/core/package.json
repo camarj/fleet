@@ -14,7 +14,7 @@
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
-    "test": "tsx test/flue.test.ts"
+    "test": "tsx test/flue.test.ts && tsx test/session-history.test.ts && tsx test/deploy-log-db.test.ts"
   },
   "engines": {
     "node": ">=22.18"

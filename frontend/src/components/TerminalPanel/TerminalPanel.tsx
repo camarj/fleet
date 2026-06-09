@@ -10,6 +10,10 @@
  *
  * The frontend NEVER talks to an agent directly — only through the Core
  * over WebSocket (Gateway API). See CLAUDE.md rule #2.
+ *
+ * WU-06: `applyEvent` is a pure reducer shared by live streaming and history
+ * replay. The streaming / thinking block IDs are derived from the blocks array
+ * itself (no external refs), so both paths produce identical output.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -107,7 +111,7 @@ interface ErrorBlock {
   text: string;
 }
 
-type TranscriptBlock =
+export type TranscriptBlock =
   | UserBlock
   | AssistantBlock
   | ToolBlock
@@ -141,6 +145,8 @@ interface Props {
   client: GatewayClient;
   agent: AgentSummary | null;
   connected: boolean;
+  /** Called when the user clicks "Redeploy" in the offline banner. Same path as Sidebar's Redeploy. */
+  onRedeploy?: (agentId: string) => void;
 }
 
 // ── Block ID generator ────────────────────────────────────────────────────────
@@ -148,6 +154,168 @@ interface Props {
 let _seq = 0;
 function nextId(): string {
   return String(++_seq);
+}
+
+// ── Block-array helpers ───────────────────────────────────────────────────────
+
+/** Scan backwards for the most recent open streaming assistant block. */
+function findStreamingBlockId(blocks: TranscriptBlock[]): string | null {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i];
+    if (b && b.kind === "assistant" && b.streaming) return b.id;
+  }
+  return null;
+}
+
+/** Scan backwards for the most recent incomplete thinking block. */
+function findOpenThinkingBlockId(blocks: TranscriptBlock[]): string | null {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i];
+    if (b && b.kind === "thinking" && !b.done) return b.id;
+  }
+  return null;
+}
+
+// ── Pure event reducer ────────────────────────────────────────────────────────
+
+/**
+ * Pure reducer: apply a single RunEvent to a transcript block array.
+ *
+ * Used by BOTH live streaming (via `setBlocks(prev => applyEvent(prev, ev))`)
+ * and history replay (`events.reduce(applyEvent, [])`). No side effects, no
+ * refs, no React state — just blocks in, blocks out.
+ *
+ * The streaming / thinking block IDs are derived by scanning the blocks array,
+ * so React's functional-update batching guarantees correctness without external
+ * state.
+ */
+export function applyEvent(blocks: TranscriptBlock[], event: RunEvent): TranscriptBlock[] {
+  switch (event.type) {
+    case "message.delta": {
+      if (event.role !== "assistant") return blocks;
+      const sid = findStreamingBlockId(blocks);
+      if (sid) {
+        return blocks.map((b) =>
+          b.id === sid && b.kind === "assistant" ? { ...b, text: b.text + event.content } : b,
+        );
+      }
+      const id = nextId();
+      return [...blocks, { id, kind: "assistant", text: event.content, streaming: true }];
+    }
+    case "message.completed": {
+      // Content was already streamed via deltas; finalize the block.
+      const sid = findStreamingBlockId(blocks);
+      if (!sid) return blocks;
+      return blocks.map((b) =>
+        b.id === sid && b.kind === "assistant" ? { ...b, streaming: false } : b,
+      );
+    }
+    case "tool.call":
+      return [
+        ...blocks,
+        {
+          id: nextId(),
+          kind: "tool" as const,
+          callId: event.id,
+          name: event.name,
+          input: event.input,
+          resultReady: false,
+        },
+      ];
+    case "tool.result":
+      return blocks.map((b) =>
+        b.kind === "tool" && b.callId === event.id
+          ? { ...b, result: event.output, resultReady: true }
+          : b,
+      );
+    case "subagent.start":
+      return [...blocks, { id: nextId(), kind: "subagent" as const, action: "start" as const, name: event.name }];
+    case "subagent.end":
+      return [...blocks, { id: nextId(), kind: "subagent" as const, action: "end" as const, name: event.name }];
+    case "interrupt":
+      return [
+        ...blocks,
+        { id: nextId(), kind: "interrupt" as const, reason: event.reason, payload: event.payload },
+      ];
+    case "thinking.start": {
+      const id = nextId();
+      return [...blocks, { id, kind: "thinking" as const, text: "", done: false, startedAt: Date.now() }];
+    }
+    case "thinking.delta": {
+      const tid = findOpenThinkingBlockId(blocks);
+      if (!tid) return blocks;
+      return blocks.map((b) =>
+        b.id === tid && b.kind === "thinking" ? { ...b, text: b.text + event.content } : b,
+      );
+    }
+    case "thinking.end": {
+      const tid = findOpenThinkingBlockId(blocks);
+      if (!tid) return blocks;
+      return blocks.map((b) =>
+        b.id === tid && b.kind === "thinking"
+          ? { ...b, text: event.content || b.text, done: true }
+          : b,
+      );
+    }
+    case "mcp.call":
+      return [
+        ...blocks,
+        {
+          id: nextId(),
+          kind: "mcp" as const,
+          callId: event.id,
+          server: event.server,
+          name: event.name,
+          input: event.input,
+          resultReady: false,
+          isError: false,
+        },
+      ];
+    case "mcp.result":
+      return blocks.map((b) =>
+        b.kind === "mcp" && b.callId === event.id
+          ? { ...b, result: event.output, resultReady: true, isError: event.isError }
+          : b,
+      );
+    case "skill.start":
+      return [
+        ...blocks,
+        {
+          id: nextId(),
+          kind: "skill" as const,
+          opId: event.id,
+          name: event.name,
+          done: false,
+          isError: false,
+        },
+      ];
+    case "skill.end":
+      return blocks.map((b) =>
+        b.kind === "skill" && b.opId === event.id
+          ? { ...b, done: true, isError: event.isError, durationMs: event.durationMs }
+          : b,
+      );
+    case "memory.start":
+      return [...blocks, { id: nextId(), kind: "memory" as const, reason: event.reason, done: false }];
+    case "memory.end": {
+      const idx = [...blocks].reverse().findIndex((b) => b.kind === "memory" && !b.done);
+      if (idx === -1) return blocks;
+      const realIdx = blocks.length - 1 - idx;
+      return blocks.map((b, i) =>
+        i === realIdx && b.kind === "memory"
+          ? {
+              ...b,
+              done: true,
+              messagesBefore: event.messagesBefore,
+              messagesAfter: event.messagesAfter,
+              durationMs: event.durationMs,
+            }
+          : b,
+      );
+    }
+    default:
+      return blocks;
+  }
 }
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
@@ -396,7 +564,7 @@ function CostZone({
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function TerminalPanel({ client, agent, connected }: Props): React.JSX.Element {
+export function TerminalPanel({ client, agent, connected, onRedeploy }: Props): React.JSX.Element {
   const [blocks, setBlocks] = useState<TranscriptBlock[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -406,6 +574,11 @@ export function TerminalPanel({ client, agent, connected }: Props): React.JSX.El
     costUsd: 0,
     hasPricedData: false,
   });
+  /**
+   * True while the panel is showing a replayed past session (not a live one).
+   * Sending a new message clears the replay and starts a fresh session.
+   */
+  const [historyMode, setHistoryMode] = useState(false);
 
   // Session lifecycle refs (same pattern as the original xterm version).
   const sessionRef = useRef<string | null>(null);
@@ -413,13 +586,18 @@ export function TerminalPanel({ client, agent, connected }: Props): React.JSX.El
   const agentRef = useRef<AgentSummary | null>(agent);
   agentRef.current = agent;
 
-  // ID of the currently-streaming assistant block for delta appends.
-  const streamingBlockIdRef = useRef<string | null>(null);
-  const thinkingBlockIdRef = useRef<string | null>(null);
+  // Ref mirror of `busy` so event handlers in client.on (stale closure) can read it.
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
 
   // Guards against double-counting usage when both session.usage and
   // session.done carry usage for the same turn.
   const usageSeenThisTurnRef = useRef(false);
+
+  // History loading: tracks which agentId we've already dispatched a sessions.list for.
+  const historyRequestedForRef = useRef<string | null>(null);
+  // Tracks which sessionId we've requested session.history for (to filter stale responses).
+  const pendingHistorySessionRef = useRef<string | null>(null);
 
   // Auto-scroll.
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -432,15 +610,27 @@ export function TerminalPanel({ client, agent, connected }: Props): React.JSX.El
   const agentId = agent?.id;
   useEffect(() => {
     setBlocks([]);
+    setHistoryMode(false);
     setLastUsage(null);
     setSessionTotals({ tokens: 0, costUsd: 0, hasPricedData: false });
     sessionRef.current = null;
     pendingRef.current = false;
-    streamingBlockIdRef.current = null;
-    thinkingBlockIdRef.current = null;
+    pendingHistorySessionRef.current = null;
     usageSeenThisTurnRef.current = false;
     setBusy(false);
+    // Reset the history-requested tracker so we re-request for the new agent.
+    historyRequestedForRef.current = null;
   }, [agentId]);
+
+  // Request session history when a new agent is selected (or when the
+  // connection is established after the agent is already set).
+  // The historyRequestedForRef guard prevents duplicate requests on reconnect.
+  useEffect(() => {
+    if (!agentId || !connected) return;
+    if (historyRequestedForRef.current === agentId) return; // already requested
+    historyRequestedForRef.current = agentId;
+    client.send({ type: "sessions.list", agentId });
+  }, [agentId, connected, client]);
 
   // Scroll to bottom on new content, unless the user has scrolled up.
   useEffect(() => {
@@ -466,200 +656,9 @@ export function TerminalPanel({ client, agent, connected }: Props): React.JSX.El
   }, []);
 
   // Wire Gateway events → transcript state.
-  // applyRunEvent is defined inside the effect to avoid stale-closure issues;
-  // it reads only stable refs (streamingBlockIdRef) and stable setters (setBlocks).
+  // `applyEvent` is a pure function defined outside this effect; the closure
+  // captures only stable refs and state setters.
   useEffect(() => {
-    function finalizeStreamingBlock(prevBlocks: TranscriptBlock[]): TranscriptBlock[] {
-      const sid = streamingBlockIdRef.current;
-      if (!sid) return prevBlocks;
-      streamingBlockIdRef.current = null;
-      return prevBlocks.map((b) =>
-        b.id === sid && b.kind === "assistant" ? { ...b, streaming: false } : b,
-      );
-    }
-
-    function applyRunEvent(ev: RunEvent): void {
-      switch (ev.type) {
-        case "message.delta": {
-          if (ev.role !== "assistant") return;
-          if (streamingBlockIdRef.current) {
-            const sid = streamingBlockIdRef.current;
-            setBlocks((prev) =>
-              prev.map((b) =>
-                b.id === sid && b.kind === "assistant"
-                  ? { ...b, text: b.text + ev.content }
-                  : b,
-              ),
-            );
-          } else {
-            const id = nextId();
-            streamingBlockIdRef.current = id;
-            setBlocks((prev) => [
-              ...prev,
-              { id, kind: "assistant", text: ev.content, streaming: true },
-            ]);
-          }
-          return;
-        }
-        case "message.completed": {
-          // Content was already streamed via deltas; just finalize the block.
-          setBlocks((prev) => finalizeStreamingBlock(prev));
-          return;
-        }
-        case "tool.call": {
-          setBlocks((prev) => [
-            ...prev,
-            {
-              id: nextId(),
-              kind: "tool",
-              callId: ev.id,
-              name: ev.name,
-              input: ev.input,
-              resultReady: false,
-            },
-          ]);
-          return;
-        }
-        case "tool.result": {
-          setBlocks((prev) =>
-            prev.map((b) =>
-              b.kind === "tool" && b.callId === ev.id
-                ? { ...b, result: ev.output, resultReady: true }
-                : b,
-            ),
-          );
-          return;
-        }
-        case "subagent.start": {
-          setBlocks((prev) => [
-            ...prev,
-            { id: nextId(), kind: "subagent", action: "start", name: ev.name },
-          ]);
-          return;
-        }
-        case "subagent.end": {
-          setBlocks((prev) => [
-            ...prev,
-            { id: nextId(), kind: "subagent", action: "end", name: ev.name },
-          ]);
-          return;
-        }
-        case "interrupt": {
-          setBlocks((prev) => [
-            ...prev,
-            {
-              id: nextId(),
-              kind: "interrupt",
-              reason: ev.reason,
-              payload: ev.payload,
-            },
-          ]);
-          return;
-        }
-        case "thinking.start": {
-          const id = nextId();
-          thinkingBlockIdRef.current = id;
-          setBlocks((prev) => [
-            ...prev,
-            { id, kind: "thinking", text: "", done: false, startedAt: Date.now() },
-          ]);
-          return;
-        }
-        case "thinking.delta": {
-          const tid = thinkingBlockIdRef.current;
-          if (!tid) return;
-          setBlocks((prev) =>
-            prev.map((b) =>
-              b.id === tid && b.kind === "thinking" ? { ...b, text: b.text + ev.content } : b,
-            ),
-          );
-          return;
-        }
-        case "thinking.end": {
-          const tid = thinkingBlockIdRef.current;
-          thinkingBlockIdRef.current = null;
-          setBlocks((prev) =>
-            prev.map((b) =>
-              b.id === tid && b.kind === "thinking"
-                ? { ...b, text: ev.content || b.text, done: true }
-                : b,
-            ),
-          );
-          return;
-        }
-        case "mcp.call": {
-          setBlocks((prev) => [
-            ...prev,
-            {
-              id: nextId(),
-              kind: "mcp",
-              callId: ev.id,
-              server: ev.server,
-              name: ev.name,
-              input: ev.input,
-              resultReady: false,
-              isError: false,
-            },
-          ]);
-          return;
-        }
-        case "mcp.result": {
-          setBlocks((prev) =>
-            prev.map((b) =>
-              b.kind === "mcp" && b.callId === ev.id
-                ? { ...b, result: ev.output, resultReady: true, isError: ev.isError }
-                : b,
-            ),
-          );
-          return;
-        }
-        case "skill.start": {
-          setBlocks((prev) => [
-            ...prev,
-            { id: nextId(), kind: "skill", opId: ev.id, name: ev.name, done: false, isError: false },
-          ]);
-          return;
-        }
-        case "skill.end": {
-          setBlocks((prev) =>
-            prev.map((b) =>
-              b.kind === "skill" && b.opId === ev.id
-                ? { ...b, done: true, isError: ev.isError, durationMs: ev.durationMs }
-                : b,
-            ),
-          );
-          return;
-        }
-        case "memory.start": {
-          setBlocks((prev) => [
-            ...prev,
-            { id: nextId(), kind: "memory", reason: ev.reason, done: false },
-          ]);
-          return;
-        }
-        case "memory.end": {
-          // Patch the most recent unfinished memory block.
-          setBlocks((prev) => {
-            const idx = [...prev].reverse().findIndex((b) => b.kind === "memory" && !b.done);
-            if (idx === -1) return prev;
-            const realIdx = prev.length - 1 - idx;
-            return prev.map((b, i) =>
-              i === realIdx && b.kind === "memory"
-                ? {
-                    ...b,
-                    done: true,
-                    messagesBefore: ev.messagesBefore,
-                    messagesAfter: ev.messagesAfter,
-                    durationMs: ev.durationMs,
-                  }
-                : b,
-            );
-          });
-          return;
-        }
-      }
-    }
-
     return client.on((e: ServerEvent) => {
       switch (e.type) {
         case "session.started": {
@@ -676,7 +675,7 @@ export function TerminalPanel({ client, agent, connected }: Props): React.JSX.El
         }
         case "session.event": {
           if (e.sessionId !== sessionRef.current) return;
-          applyRunEvent(e.event);
+          setBlocks((prev) => applyEvent(prev, e.event));
           return;
         }
         case "session.usage": {
@@ -706,21 +705,37 @@ export function TerminalPanel({ client, agent, connected }: Props): React.JSX.El
               }));
             }
           }
-          setBlocks((prev) => finalizeStreamingBlock(prev));
+          // Finalize any open streaming block.
+          setBlocks((prev) => {
+            const sid = findStreamingBlockId(prev);
+            if (!sid) return prev;
+            return prev.map((b) =>
+              b.id === sid && b.kind === "assistant" ? { ...b, streaming: false } : b,
+            );
+          });
           sessionRef.current = null;
           setBusy(false);
           return;
         }
         case "session.error": {
           if (e.sessionId !== sessionRef.current) return;
-          setBlocks((prev) => [
-            ...finalizeStreamingBlock(prev),
-            {
-              id: nextId(),
-              kind: "error",
-              text: `${e.error.code}: ${e.error.message}`,
-            },
-          ]);
+          setBlocks((prev) => {
+            const finalized = (() => {
+              const sid = findStreamingBlockId(prev);
+              if (!sid) return prev;
+              return prev.map((b) =>
+                b.id === sid && b.kind === "assistant" ? { ...b, streaming: false } : b,
+              );
+            })();
+            return [
+              ...finalized,
+              {
+                id: nextId(),
+                kind: "error" as const,
+                text: `${e.error.code}: ${e.error.message}`,
+              },
+            ];
+          });
           sessionRef.current = null;
           setBusy(false);
           return;
@@ -728,11 +743,46 @@ export function TerminalPanel({ client, agent, connected }: Props): React.JSX.El
         case "error": {
           setBlocks((prev) => [
             ...prev,
-            { id: nextId(), kind: "error", text: e.message },
+            { id: nextId(), kind: "error" as const, text: e.message },
           ]);
           if (pendingRef.current) {
             pendingRef.current = false;
             setBusy(false);
+          }
+          return;
+        }
+        case "sessions": {
+          // Only handle responses for the currently-selected agent.
+          // Skip if a live session is in progress (don't overwrite active transcript).
+          if (e.agentId !== agentRef.current?.id) return;
+          if (busyRef.current) return;
+          if (e.sessions.length === 0) return;
+          const mostRecent = e.sessions[0];
+          if (!mostRecent) return;
+          // Don't try to load a still-running session (shouldn't normally happen
+          // but guard anyway — an interrupted Core restart could leave one).
+          if (mostRecent.status === "running") return;
+          pendingHistorySessionRef.current = mostRecent.id;
+          client.send({ type: "session.history", sessionId: mostRecent.id });
+          return;
+        }
+        case "session.history": {
+          if (e.sessionId !== pendingHistorySessionRef.current) return;
+          pendingHistorySessionRef.current = null;
+          if (e.events.length === 0) return; // nothing to replay
+          const replayedBlocks = e.events.reduce(
+            (acc, ev) => applyEvent(acc, ev),
+            [] as TranscriptBlock[],
+          );
+          setBlocks(replayedBlocks);
+          setHistoryMode(true);
+          if (e.usage) {
+            setLastUsage({ ...e.usage, costUsd: e.costUsd });
+            setSessionTotals({
+              tokens: e.usage.totalTokens,
+              costUsd: e.costUsd ?? 0,
+              hasPricedData: e.costUsd != null,
+            });
           }
           return;
         }
@@ -743,14 +793,24 @@ export function TerminalPanel({ client, agent, connected }: Props): React.JSX.El
   }, [client]);
 
   function submit(): void {
-    if (!agent || !input.trim() || busy) return;
+    if (!agent || !input.trim() || busy || !agent.online || !connected) return;
     const message = input.trim();
     setInput("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
-    setBlocks((prev) => [
-      ...prev,
-      { id: nextId(), kind: "user", text: message },
-    ]);
+
+    if (historyMode) {
+      // Viewing a past session: clear the replay and start a fresh one.
+      setHistoryMode(false);
+      setLastUsage(null);
+      setSessionTotals({ tokens: 0, costUsd: 0, hasPricedData: false });
+      setBlocks([{ id: nextId(), kind: "user", text: message }]);
+    } else {
+      setBlocks((prev) => [
+        ...prev,
+        { id: nextId(), kind: "user", text: message },
+      ]);
+    }
+
     atBottomRef.current = true;
     pendingRef.current = true;
     setBusy(true);
@@ -776,6 +836,15 @@ export function TerminalPanel({ client, agent, connected }: Props): React.JSX.El
       e.preventDefault();
       submit();
     }
+  }
+
+  /** Clear the replayed transcript and return to the empty-state prompt. */
+  function handleNewConversation(): void {
+    setBlocks([]);
+    setHistoryMode(false);
+    setLastUsage(null);
+    setSessionTotals({ tokens: 0, costUsd: 0, hasPricedData: false });
+    sessionRef.current = null;
   }
 
   const statusLabel = connected
@@ -809,7 +878,18 @@ export function TerminalPanel({ client, agent, connected }: Props): React.JSX.El
             "No agent selected"
           )}
         </span>
-        <span className={`header-status ${statusClass}`}>{statusLabel}</span>
+        <span className="header-right">
+          {historyMode && !busy && (
+            <button
+              className="btn-ghost btn-new-conversation"
+              onClick={handleNewConversation}
+              title="Clear history and start a new conversation"
+            >
+              + New conversation
+            </button>
+          )}
+          <span className={`header-status ${statusClass}`}>{statusLabel}</span>
+        </span>
       </div>
 
       {/* ── Transcript scroll area ── */}
@@ -823,6 +903,11 @@ export function TerminalPanel({ client, agent, connected }: Props): React.JSX.El
             {agent
               ? "Send a message to start."
               : "Select an agent from the sidebar."}
+          </div>
+        )}
+        {historyMode && blocks.length > 0 && (
+          <div className="transcript-history-banner">
+            Past conversation — send a message to start a new one.
           </div>
         )}
         {blocks.map((block) => {
@@ -851,6 +936,21 @@ export function TerminalPanel({ client, agent, connected }: Props): React.JSX.El
         })}
       </div>
 
+      {/* ── Offline banner (shown when agent is registered but not reachable) ── */}
+      {agent && !agent.online && (
+        <div className="offline-banner">
+          <span className="offline-banner-text">This agent is offline.</span>
+          {agent.redeployable && onRedeploy && (
+            <button
+              className="btn-ghost offline-banner-redeploy"
+              onClick={() => onRedeploy(agent.id)}
+            >
+              ↻ Redeploy
+            </button>
+          )}
+        </div>
+      )}
+
       {/* ── Input area ── */}
       <div className="transcript-input-area">
         <div className="transcript-input-row">
@@ -859,21 +959,29 @@ export function TerminalPanel({ client, agent, connected }: Props): React.JSX.El
             className="transcript-textarea"
             value={input}
             placeholder={
-              agent ? "Type a message…" : "Select an agent first"
+              !connected
+                ? "Reconnecting to Core…"
+                : agent
+                  ? agent.online
+                    ? historyMode
+                      ? "Send a message to start a new conversation…"
+                      : "Type a message…"
+                    : "Agent is offline"
+                  : "Select an agent first"
             }
-            disabled={!agent || busy}
+            disabled={!agent || busy || !agent.online || !connected}
             rows={2}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
           />
           {busy ? (
-            <button className="btn-secondary" onClick={abort}>
+            <button className="btn-secondary" onClick={abort} disabled={!connected}>
               Abort
             </button>
           ) : (
             <button
               onClick={submit}
-              disabled={!agent || !input.trim()}
+              disabled={!agent || !input.trim() || !agent.online || !connected}
             >
               Send
             </button>

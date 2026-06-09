@@ -5,13 +5,15 @@
 
 import { useEffect, useRef, useState } from "react";
 import { GatewayClient } from "./lib/gatewayClient";
-import type { AgentSummary, ServerEvent } from "./lib/api";
+import type { AgentSummary, PreflightCheck, ServerEvent } from "./lib/api";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { TerminalPanel } from "./components/TerminalPanel/TerminalPanel";
 import { WorkflowCanvas } from "./components/WorkflowCanvas/WorkflowCanvas";
 import { DeployWizard } from "./components/DeployWizard/DeployWizard";
 import { DeployProgress } from "./components/DeployProgress/DeployProgress";
 import { Settings } from "./components/Settings/Settings";
+import { ConnectAgent } from "./components/ConnectAgent/ConnectAgent";
+import { Modal } from "./components/Modal/Modal";
 
 const GATEWAY_URL = import.meta.env.VITE_GATEWAY_URL ?? "ws://127.0.0.1:4179";
 
@@ -30,14 +32,38 @@ export function App(): React.JSX.Element {
   const [deployArtifact, setDeployArtifact] = useState<{ url: string; message: string } | null>(null);
   const [deployLog, setDeployLog] = useState<string[]>([]);
   const [deployOpen, setDeployOpen] = useState(false);
+  const [preflightChecks, setPreflightChecks] = useState<PreflightCheck[] | null>(null);
   const [redeployingId, setRedeployingId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [connectOpen, setConnectOpen] = useState(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
+  /** True while we're waiting for agent.registered or error in response to agent.connectFlue. */
+  const connectPendingRef = useRef(false);
+  /** The agentId whose deploy log modal is currently open, or null. */
+  const [deployLogViewId, setDeployLogViewId] = useState<string | null>(null);
+  /** The last deploy log fetched from the Core (null = not yet fetched or no log). */
+  const [deployLastLog, setDeployLastLog] = useState<string | null | undefined>(undefined);
 
   function resetDeploy(): void {
     setDeployStatus(null);
     setDeployError(null);
     setDeployArtifact(null);
     setDeployLog([]);
+  }
+
+  function handleRedeploy(id: string): void {
+    resetDeploy();
+    setDeployStatus("starting");
+    setRedeployingId(id);
+    const sent = client.send({ type: "agent.redeploy", agentId: id });
+    if (!sent) setDeployError("Not connected to the Core — reconnecting. Try again in a moment.");
+  }
+
+  function handleConnect(baseUrl: string, agentName: string, token?: string): boolean {
+    setConnectError(null);
+    const sent = client.send({ type: "agent.connectFlue", baseUrl, agentName, token });
+    if (sent) connectPendingRef.current = true;
+    return sent;
   }
 
   useEffect(() => {
@@ -51,6 +77,23 @@ export function App(): React.JSX.Element {
         setDeployStatus(null); // a deploy that just finished
         setDeployError(null);
         setDeployArtifact(null);
+        // Close the connect modal on successful registration (covers both deploy and connect paths).
+        if (connectPendingRef.current) {
+          connectPendingRef.current = false;
+          setConnectOpen(false);
+          setConnectError(null);
+        }
+      } else if (e.type === "agent.updated") {
+        setAgents((prev) => upsertAgent(prev, e.agent));
+      } else if (e.type === "agent.removed") {
+        setAgents((prev) => {
+          const next = prev.filter((a) => a.id !== e.agentId);
+          setSelectedId((cur) => {
+            if (cur !== e.agentId) return cur;
+            return next[0]?.id ?? null;
+          });
+          return next;
+        });
       } else if (e.type === "secrets.status") {
         setSecretsProviders(e.providers);
       } else if (e.type === "deploy.progress") {
@@ -66,6 +109,14 @@ export function App(): React.JSX.Element {
       } else if (e.type === "deploy.error") {
         setDeployStatus(null);
         setDeployError(e.message);
+      } else if (e.type === "deploy.preflight") {
+        setPreflightChecks(e.checks);
+      } else if (e.type === "deploy.lastLog") {
+        setDeployLastLog(e.log);
+      } else if (e.type === "error" && connectPendingRef.current) {
+        // Surface connect failures inside the modal rather than silently dropping them.
+        connectPendingRef.current = false;
+        setConnectError(e.message);
       }
     });
     // Refresh lists on every (re)connect; reflect live connection state.
@@ -97,16 +148,33 @@ export function App(): React.JSX.Element {
           resetDeploy();
           setDeployOpen(true);
         }}
-        onRedeploy={(id) => {
-          resetDeploy();
-          setDeployStatus("starting");
-          setRedeployingId(id);
-          const sent = client.send({ type: "agent.redeploy", agentId: id });
+        onOpenConnect={() => {
+          setConnectError(null);
+          setConnectOpen(true);
+        }}
+        onRedeploy={handleRedeploy}
+        onStop={(id) => {
+          const sent = client.send({ type: "agent.stop", agentId: id });
+          if (!sent) setDeployError("Not connected to the Core — reconnecting. Try again in a moment.");
+        }}
+        onDelete={(id) => {
+          const sent = client.send({ type: "agent.delete", agentId: id });
           if (!sent) setDeployError("Not connected to the Core — reconnecting. Try again in a moment.");
         }}
         onOpenSettings={() => setSettingsOpen(true)}
+        onViewDeployLog={(id) => {
+          setDeployLastLog(undefined); // reset while loading
+          setDeployLogViewId(id);
+          client.send({ type: "deploy.lastLog", agentId: id });
+        }}
       />
       <main className="main">
+        {!connected && (
+          <div className="connection-banner" role="status" aria-live="polite">
+            <span className="connection-banner-dot" aria-hidden="true" />
+            Reconnecting to Fleet Core…
+          </div>
+        )}
         <div className="tabs">
           <button className={`tab ${view === "terminal" ? "active" : ""}`} onClick={() => setView("terminal")}>
             Terminal
@@ -116,7 +184,7 @@ export function App(): React.JSX.Element {
           </button>
         </div>
         {view === "terminal" ? (
-          <TerminalPanel client={client} agent={selected} connected={connected} />
+          <TerminalPanel client={client} agent={selected} connected={connected} onRedeploy={handleRedeploy} />
         ) : (
           <WorkflowCanvas />
         )}
@@ -129,6 +197,11 @@ export function App(): React.JSX.Element {
           deployError={deployError}
           deployArtifact={deployArtifact}
           deployLog={deployLog}
+          preflightChecks={preflightChecks}
+          onPreflight={(params) => {
+            setPreflightChecks(null); // clear while the check runs
+            client.send({ type: "deploy.preflight", ...params });
+          }}
           onDeploy={(req) => {
             setDeployStatus("starting");
             setDeployError(null);
@@ -139,6 +212,7 @@ export function App(): React.JSX.Element {
           }}
           onClose={() => {
             setDeployOpen(false);
+            setPreflightChecks(null);
             resetDeploy();
           }}
         />
@@ -165,6 +239,51 @@ export function App(): React.JSX.Element {
           onSetSecret={(provider, apiKey) => client.send({ type: "secrets.set", provider, apiKey })}
           onClose={() => setSettingsOpen(false)}
         />
+      )}
+
+      {connectOpen && (
+        <ConnectAgent
+          connected={connected}
+          onConnect={handleConnect}
+          onClose={() => {
+            connectPendingRef.current = false;
+            setConnectOpen(false);
+            setConnectError(null);
+          }}
+          error={connectError}
+        />
+      )}
+
+      {deployLogViewId && (
+        <Modal
+          title={`Last deploy log — ${agents.find((a) => a.id === deployLogViewId)?.name ?? deployLogViewId}`}
+          onClose={() => {
+            setDeployLogViewId(null);
+            setDeployLastLog(undefined);
+          }}
+          dismissable
+          footer={
+            <button
+              className="btn-primary"
+              onClick={() => {
+                setDeployLogViewId(null);
+                setDeployLastLog(undefined);
+              }}
+            >
+              Close
+            </button>
+          }
+        >
+          {deployLastLog === undefined ? (
+            <div className="deploy-running">
+              <span className="spinner" /> Loading…
+            </div>
+          ) : deployLastLog === null ? (
+            <p className="empty">No deploy log available for this agent.</p>
+          ) : (
+            <pre className="deploy-log">{deployLastLog}</pre>
+          )}
+        </Modal>
       )}
     </div>
   );

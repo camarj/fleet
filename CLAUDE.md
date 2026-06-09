@@ -41,9 +41,33 @@ agent (`packages/converter`, `@inteliside/gateway-converter`), **deploys** it
    `handle.abort()` on the neutral `RunHandle`.
 8. **Secrets only in env vars / a secure store** — never in the frontend or the
    repo. Agent configuration carries env var NAMES, never values.
-9. **Don't invent Tauri / xterm.js / React Flow APIs.** Consult the matching
+9. **Don't invent Tauri / React Flow APIs.** Consult the matching
    skill, its `references/`, or the official docs. If it isn't there, ask.
-10. **Phase 1 has no orchestration** — `orchestration/` is a skeleton only.
+10. **Orchestration is built ONLY per the handoff's Phase F5** (WU-16…19 in
+    `docs/handoff-implementacion-gaps.md`): DAG-only v1, engine in the Core,
+    canvas edits/visualizes. Until F5 starts, `orchestration/` stays a skeleton.
+11. **Every `packages/core/src/api.ts` change is mirrored by hand in
+    `frontend/src/lib/api.ts`** (the frontend deliberately does not import the
+    Node core). Touch one → touch the other, same PR.
+
+## Active plan
+
+`docs/handoff-implementacion-gaps.md` is the CURRENT implementation plan
+(23 work units, phases F0–F6, all architecture decisions pre-made). Work items
+come from there in order; don't reopen its decisions. Background:
+`docs/analisis-gaps-2026-06-09.md` (why) and `docs/handoff-flue-integration.md`
+(history + verified state).
+
+## Dev gotchas (these WILL bite)
+
+- The Core imports the converter from `dist`; `tsx watch` does not watch
+  `node_modules`. After changing `packages/converter`:
+  `pnpm --filter @inteliside/gateway-converter build` AND restart the Core.
+- Port 4179 in use on startup = a stale Core (`tsx watch`) or the packaged
+  Fleet.app holding it. Kill it first; don't debug ghosts.
+- In `tauri dev` the shell does NOT spawn the sidecar (release-only): run the
+  Core separately (`pnpm core:dev`), then `pnpm desktop:dev` (it starts its own
+  Vite on 1420 — don't run `pnpm dev` alongside it).
 
 ## Skills (load before relevant work)
 
@@ -51,8 +75,8 @@ agent (`packages/converter`, `@inteliside/gateway-converter`), **deploys** it
 | --- | --- |
 | `adapter-interface` | The neutral `AgentAdapter` interface and `FlueAdapter` |
 | `flue-client` | Working with `FlueAdapter` and the Claude Code→Flue converter — `@flue/sdk`, invoke-stream, mapping |
-| `xterm-terminal` | The terminal panel (xterm.js) |
-| `react-flow-canvas` | The workflow canvas (Phase 2) |
+| `transcript-panel` | The TerminalPanel React transcript (RunEvent rendering, session streaming) |
+| `react-flow-canvas` | The workflow canvas (orchestrator UI, handoff F5) |
 | `tauri-shell-sidecar` | Desktop shell, sidecar packaging, builds |
 
 ## Stack

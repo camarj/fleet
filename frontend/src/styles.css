@@ -95,12 +95,27 @@ body {
   color: var(--muted);
   margin-top: 2px;
 }
-.agent-redeploy {
+.agent-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
   margin-top: 6px;
+}
+.agent-redeploy,
+.agent-stop,
+.agent-delete {
   font-size: 11px;
   padding: 2px 8px;
 }
-.agent:not(:hover):not(.selected) .agent-redeploy {
+.agent-delete {
+  border-color: transparent;
+  color: var(--muted);
+}
+.agent-delete:hover:not(:disabled) {
+  border-color: #f85149;
+  color: #f85149;
+}
+.agent:not(:hover):not(.selected) .agent-actions {
   opacity: 0.55;
 }
 .badge {
@@ -259,6 +274,32 @@ body {
 }
 .settings {
   padding: 4px 0;
+}
+
+/* ── Connection banner ───────────────────────────────────────────────────── */
+/* Shown at the top of the main area when the Core WebSocket is disconnected. */
+.connection-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: rgba(210, 153, 34, 0.1);
+  border-bottom: 1px solid rgba(210, 153, 34, 0.3);
+  font-size: 12px;
+  color: #d29922;
+  font-weight: 500;
+}
+.connection-banner-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #d29922;
+  flex-shrink: 0;
+  animation: connection-banner-pulse 1.4s ease-in-out infinite;
+}
+@keyframes connection-banner-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
 }
 
 /* ── Main ────────────────────────────────────────────────────────────────── */
@@ -632,6 +673,25 @@ body {
   font-size: 12px;
 }
 
+/* Offline banner — shown above the input when the selected agent is not reachable */
+.offline-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  background: rgba(248, 81, 73, 0.07);
+  font-size: 13px;
+}
+.offline-banner-text {
+  color: #f85149;
+}
+.offline-banner-redeploy {
+  font-size: 11px;
+  padding: 2px 10px;
+}
+
 /* Input area */
 .transcript-input-area {
   border-top: 1px solid var(--border);
@@ -741,7 +801,7 @@ button:disabled {
   cursor: not-allowed;
 }
 
-/* ── Buttons: primary / ghost ────────────────────────────────────────────── */
+/* ── Buttons: primary / ghost / danger ───────────────────────────────────── */
 .btn-primary {
   background: var(--accent);
   border: 1px solid var(--accent);
@@ -754,6 +814,15 @@ button:disabled {
 }
 .btn-ghost:hover:not(:disabled) {
   border-color: var(--accent);
+}
+.btn-danger {
+  background: #f85149;
+  border: 1px solid #f85149;
+  color: #fff;
+}
+.btn-danger:hover:not(:disabled) {
+  background: #da3633;
+  border-color: #da3633;
 }
 
 /* ── Sidebar actions (footer) ────────────────────────────────────────────── */
@@ -990,6 +1059,80 @@ button:disabled {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* preflight checks */
+.preflight-section {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.preflight-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.preflight-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.preflight-recheck {
+  font-size: 11px;
+  padding: 2px 8px;
+}
+.preflight-loading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 4px 0;
+}
+.preflight-checks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.preflight-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+}
+.preflight-check-icon {
+  font-weight: 700;
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+}
+.preflight-check.ok .preflight-check-icon {
+  color: var(--green);
+}
+.preflight-check.fail .preflight-check-icon {
+  color: #f85149;
+}
+.preflight-check-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.preflight-check-label {
+  color: var(--text);
+}
+.preflight-check-detail {
+  color: var(--muted);
+  font-size: 11px;
+}
+.preflight-block {
+  margin-top: 4px;
+  font-size: 11px;
 }
 
 /* settings */

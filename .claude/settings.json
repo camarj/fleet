@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(pnpm --filter @inteliside/gateway-core test*)",
+      "Bash(pnpm --filter @inteliside/gateway-core typecheck*)",
+      "Bash(pnpm --filter @inteliside/gateway-core build*)",
+      "Bash(pnpm --filter @inteliside/gateway-converter test*)",
+      "Bash(pnpm --filter @inteliside/gateway-converter typecheck*)",
+      "Bash(pnpm --filter @inteliside/gateway-converter build*)",
+      "Bash(pnpm --filter @inteliside/gateway-frontend build*)",
+      "Bash(pnpm core:typecheck*)",
+      "Bash(pnpm core:build*)",
+      "Bash(pnpm converter:build*)",
+      "Bash(pnpm converter:typecheck*)",
+      "Bash(pnpm converter:test*)",
+      "Bash(pnpm frontend:build*)",
+      "Bash(rg *)",
+      "Bash(fd *)",
+      "Bash(bat *)",
+      "Bash(eza *)",
+      "Bash(git status*)",
+      "Bash(git log*)",
+      "Bash(git diff*)",
+      "Bash(git show*)",
+      "Bash(git branch*)",
+      "Bash(docker ps*)",
+      "Bash(docker info*)",
+      "Bash(docker logs *)",
+      "Bash(docker images*)",
+      "Bash(lsof -ti tcp:4179*)",
+      "Bash(lsof -ti tcp:1420*)"
+    ]
+  }
+}
