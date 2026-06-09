@@ -95,6 +95,14 @@ body {
   color: var(--muted);
   margin-top: 2px;
 }
+.agent-redeploy {
+  margin-top: 6px;
+  font-size: 11px;
+  padding: 2px 8px;
+}
+.agent:not(:hover):not(.selected) .agent-redeploy {
+  opacity: 0.55;
+}
 .badge {
   font-size: 10px;
   color: var(--muted);

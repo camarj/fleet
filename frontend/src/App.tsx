@@ -10,6 +10,7 @@ import { Sidebar } from "./components/Sidebar/Sidebar";
 import { TerminalPanel } from "./components/TerminalPanel/TerminalPanel";
 import { WorkflowCanvas } from "./components/WorkflowCanvas/WorkflowCanvas";
 import { DeployWizard } from "./components/DeployWizard/DeployWizard";
+import { DeployProgress } from "./components/DeployProgress/DeployProgress";
 import { Settings } from "./components/Settings/Settings";
 
 const GATEWAY_URL = import.meta.env.VITE_GATEWAY_URL ?? "ws://127.0.0.1:4179";
@@ -29,6 +30,7 @@ export function App(): React.JSX.Element {
   const [deployArtifact, setDeployArtifact] = useState<{ url: string; message: string } | null>(null);
   const [deployLog, setDeployLog] = useState<string[]>([]);
   const [deployOpen, setDeployOpen] = useState(false);
+  const [redeployingId, setRedeployingId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   function resetDeploy(): void {
@@ -95,6 +97,13 @@ export function App(): React.JSX.Element {
           resetDeploy();
           setDeployOpen(true);
         }}
+        onRedeploy={(id) => {
+          resetDeploy();
+          setDeployStatus("starting");
+          setRedeployingId(id);
+          const sent = client.send({ type: "agent.redeploy", agentId: id });
+          if (!sent) setDeployError("Not connected to the Core — reconnecting. Try again in a moment.");
+        }}
         onOpenSettings={() => setSettingsOpen(true)}
       />
       <main className="main">
@@ -130,6 +139,20 @@ export function App(): React.JSX.Element {
           }}
           onClose={() => {
             setDeployOpen(false);
+            resetDeploy();
+          }}
+        />
+      )}
+
+      {redeployingId && (
+        <DeployProgress
+          agentName={agents.find((a) => a.id === redeployingId)?.name ?? redeployingId}
+          deployStatus={deployStatus}
+          deployError={deployError}
+          deployLog={deployLog}
+          done={!!deployError || deployStatus === null}
+          onClose={() => {
+            setRedeployingId(null);
             resetDeploy();
           }}
         />

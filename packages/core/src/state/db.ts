@@ -32,6 +32,14 @@ export interface AgentConfig {
   updatedAt: string;
 }
 
+/** The original deploy inputs, kept so an agent can be redeployed in one click. */
+export interface DeployParams {
+  sourceDir: string;
+  provider: string | null;
+  model: string | null;
+  target: string;
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS agents (
   id          TEXT PRIMARY KEY,
@@ -50,6 +58,15 @@ CREATE TABLE IF NOT EXISTS configs (
   model_specifier TEXT,
   parameters_json TEXT,
   updated_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS deploys (
+  agent_id   TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+  source_dir TEXT NOT NULL,
+  provider   TEXT,
+  model      TEXT,
+  target     TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -154,6 +171,37 @@ export class GatewayState {
       .run(agentId, modelSpecifier, parameters ? JSON.stringify(parameters) : null, now);
   }
 
+  // ── Per-agent deploy params (for one-click redeploy) ───────────────────────
+
+  setDeploy(agentId: string, params: DeployParams): void {
+    const now = new Date().toISOString();
+    this.#db
+      .prepare(
+        `INSERT INTO deploys (agent_id, source_dir, provider, model, target, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(agent_id) DO UPDATE SET
+           source_dir = excluded.source_dir,
+           provider = excluded.provider,
+           model = excluded.model,
+           target = excluded.target,
+           updated_at = excluded.updated_at`,
+      )
+      .run(agentId, params.sourceDir, params.provider, params.model, params.target, now);
+  }
+
+  getDeploy(agentId: string): DeployParams | null {
+    const row = this.#db.prepare(`SELECT * FROM deploys WHERE agent_id = ?`).get(agentId) as unknown as
+      | DeployDbRow
+      | undefined;
+    if (!row) return null;
+    return { sourceDir: row.source_dir, provider: row.provider, model: row.model, target: row.target };
+  }
+
+  hasDeploy(agentId: string): boolean {
+    const row = this.#db.prepare(`SELECT 1 FROM deploys WHERE agent_id = ?`).get(agentId);
+    return !!row;
+  }
+
   // ── Sessions ───────────────────────────────────────────────────────────────
 
   createSession(agentId: string): string {
@@ -208,6 +256,15 @@ interface ConfigDbRow {
   agent_id: string;
   model_specifier: string | null;
   parameters_json: string | null;
+  updated_at: string;
+}
+
+interface DeployDbRow {
+  agent_id: string;
+  source_dir: string;
+  provider: string | null;
+  model: string | null;
+  target: string;
   updated_at: string;
 }
 

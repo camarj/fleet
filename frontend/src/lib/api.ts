@@ -29,6 +29,8 @@ export interface AgentSummary {
   kind: AgentKind;
   online: boolean;
   model: string;
+  /** True when Fleet can redeploy it in one click (it has the original deploy params). */
+  redeployable: boolean;
 }
 
 export interface Usage {
@@ -82,6 +84,7 @@ export type ClientRequest =
   | { type: "agent.connectFlue"; baseUrl: string; agentName: string; instanceId?: string; token?: string }
   /** Convert a local Claude Code project to a Flue agent, deploy it, and connect. */
   | { type: "agent.deployFlue"; sourceDir: string; provider?: string; model?: string; target?: DeployTarget }
+  | { type: "agent.redeploy"; agentId: string }
   /** Store a provider API key server-side (the value never persists in the frontend). */
   | { type: "secrets.set"; provider: string; apiKey: string }
   | { type: "secrets.list" }

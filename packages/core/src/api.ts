@@ -27,6 +27,8 @@ export interface AgentSummary {
   /** True while the Core holds a live adapter for it. */
   online: boolean;
   model: string;
+  /** True when Fleet has the original deploy params and can redeploy it in one click. */
+  redeployable: boolean;
 }
 
 // ── Frontend → Core ──────────────────────────────────────────────────────────
@@ -37,6 +39,8 @@ export type ClientRequest =
   | { type: "agent.connectFlue"; baseUrl: string; agentName: string; instanceId?: string; token?: string }
   /** Convert a local Claude Code project to a Flue agent, deploy it, and connect. */
   | { type: "agent.deployFlue"; sourceDir: string; provider?: string; model?: string; target?: DeployTargetWire }
+  /** Repeat an agent's original deploy (e.g. after adding its provider API key). */
+  | { type: "agent.redeploy"; agentId: string }
   /** Store a provider API key server-side (secure store). The value never persists in the frontend. */
   | { type: "secrets.set"; provider: string; apiKey: string }
   /** Ask which providers currently have a key set (values are never returned). */

@@ -6,7 +6,7 @@
 
 import { FlueAdapter } from "./adapters/flue.js";
 import type { AgentAdapter, AgentKind, RunHandle } from "./adapters/agent-adapter.js";
-import { FlueDeployer } from "./deploy/flue-deployer.js";
+import { FlueDeployer, type DeployTarget } from "./deploy/flue-deployer.js";
 import { SecretsStore } from "./secrets/store.js";
 import { computeCostUsd } from "./pricing/pricing.js";
 import { GatewayState, type StoredAgent } from "./state/index.js";
@@ -47,6 +47,8 @@ export class GatewayCore {
           return await this.#connectFlue(req, emit);
         case "agent.deployFlue":
           return await this.#deployFlue(req, emit);
+        case "agent.redeploy":
+          return await this.#redeploy(req, emit);
         case "secrets.set":
           this.#secrets.set(req.provider, req.apiKey);
           emit({ type: "secrets.status", providers: this.#secrets.list() });
@@ -102,9 +104,35 @@ export class GatewayCore {
   }
 
   async #deployFlue(req: Extract<ClientRequest, { type: "agent.deployFlue" }>, emit: Emit): Promise<void> {
+    await this.#runDeploy(
+      { sourceDir: req.sourceDir, provider: req.provider, model: req.model, target: req.target ?? "docker-local" },
+      emit,
+    );
+  }
+
+  /** Redeploy an agent using the params persisted from its original deploy. */
+  async #redeploy(req: Extract<ClientRequest, { type: "agent.redeploy" }>, emit: Emit): Promise<void> {
+    const params = this.#state.getDeploy(req.agentId);
+    if (!params) {
+      emit({ type: "deploy.error", message: `Agent "${req.agentId}" has no stored deploy to repeat.` });
+      return;
+    }
+    await this.#runDeploy(params, emit);
+  }
+
+  /** Shared convert+deploy+connect flow for both first deploy and redeploy. */
+  async #runDeploy(
+    params: { sourceDir: string; provider?: string | null; model?: string | null; target: string },
+    emit: Emit,
+  ): Promise<void> {
     try {
       const result = await this.#deployer.deploy(
-        { sourceDir: req.sourceDir, provider: req.provider, model: req.model, target: req.target },
+        {
+          sourceDir: params.sourceDir,
+          provider: params.provider ?? undefined,
+          model: params.model ?? undefined,
+          target: params.target as DeployTarget,
+        },
         (step, detail) => emit({ type: "deploy.progress", step, detail }),
         (lines) => emit({ type: "deploy.log", lines }),
       );
@@ -115,6 +143,13 @@ export class GatewayCore {
       }
       const stored = this.#state.upsertAgent(result.adapter.info(), "flue", result.baseUrl);
       this.#agents.set(stored.id, { adapter: result.adapter, kind: "flue", sourceRef: result.baseUrl });
+      // Persist the inputs so this agent can be redeployed in one click later.
+      this.#state.setDeploy(stored.id, {
+        sourceDir: params.sourceDir,
+        provider: params.provider ?? null,
+        model: params.model ?? null,
+        target: params.target,
+      });
       emit({ type: "agent.registered", agent: this.#summary(stored, true) });
     } catch (err) {
       emit({ type: "deploy.error", message: (err as Error).message });
@@ -184,6 +219,7 @@ export class GatewayCore {
       kind: a.kind,
       online,
       model: a.model,
+      redeployable: this.#state.hasDeploy(a.id),
     };
   }
 }

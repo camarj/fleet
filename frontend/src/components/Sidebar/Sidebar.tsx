@@ -13,6 +13,7 @@ interface Props {
   secretsProviders: string[];
   onSelect: (id: string) => void;
   onOpenDeploy: () => void;
+  onRedeploy: (id: string) => void;
   onOpenSettings: () => void;
 }
 
@@ -23,6 +24,7 @@ export function Sidebar({
   secretsProviders,
   onSelect,
   onOpenDeploy,
+  onRedeploy,
   onOpenSettings,
 }: Props): React.JSX.Element {
   return (
@@ -47,6 +49,19 @@ export function Sidebar({
               <span className={`badge ${a.online ? "online" : ""}`}>{a.online ? "online" : "offline"}</span>
             </div>
             <div className="agent-meta">{a.model}</div>
+            {a.redeployable && (
+              <button
+                className="btn-ghost agent-redeploy"
+                disabled={!connected}
+                title="Rebuild and deploy this agent again (picks up new API keys/settings)"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRedeploy(a.id);
+                }}
+              >
+                ↻ Redeploy
+              </button>
+            )}
           </li>
         ))}
         {agents.length === 0 && <li className="empty">No agents yet — deploy one below</li>}
