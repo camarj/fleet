@@ -654,10 +654,35 @@ function freePort(): Promise<number> {
   });
 }
 
+/**
+ * Ping an agent's root endpoint with a 3 s timeout.
+ * Returns true if the server responds with ANY HTTP status (even 4xx/5xx) —
+ * the signal is "the process is up and accepting connections", not the status code.
+ * (Flue's root path returns a non-2xx; we only need reachability.)
+ * Returns false on network errors or timeouts (connection refused, AbortError).
+ * Used by the health monitor to detect online→offline and offline→online transitions.
+ */
+export async function pingAgent(baseUrl: string): Promise<boolean> {
+  try {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 3000);
+    try {
+      await fetch(`${baseUrl}/`, { signal: ac.signal });
+      return true; // any HTTP response = server is reachable
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return false;
+  }
+}
+
 async function waitReady(baseUrl: string, timeoutMs = 60_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
+      // Accept any HTTP response — even 4xx/5xx — as proof the server is listening.
+      // (Flue's root path may return 404; we only need to know the process is up.)
       await fetch(`${baseUrl}/`);
       return;
     } catch {

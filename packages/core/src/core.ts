@@ -6,7 +6,7 @@
 
 import { FlueAdapter } from "./adapters/flue.js";
 import type { AgentAdapter, AgentKind, RunHandle } from "./adapters/agent-adapter.js";
-import { FlueDeployer, type DeployTarget } from "./deploy/flue-deployer.js";
+import { FlueDeployer, pingAgent, type DeployTarget } from "./deploy/flue-deployer.js";
 import { SecretsStore } from "./secrets/store.js";
 import { computeCostUsd } from "./pricing/pricing.js";
 import { GatewayState, type StoredAgent } from "./state/index.js";
@@ -24,6 +24,11 @@ interface RegisteredAgent {
 export interface GatewayCoreOptions {
   /** SQLite path, or ":memory:". */
   dbPath?: string;
+  /**
+   * Interval in ms between health checks for registered agents.
+   * Default 15000. Pass a shorter value in tests to avoid waiting 15 s.
+   */
+  healthIntervalMs?: number;
 }
 
 export class GatewayCore {
@@ -34,9 +39,20 @@ export class GatewayCore {
   readonly #agentSessions = new Map<string, Set<string>>();
   readonly #secrets = new SecretsStore();
   readonly #deployer = new FlueDeployer(this.#secrets);
+  /** Registered emit functions for server-pushed events (e.g. health monitor transitions). */
+  readonly #emitters = new Set<Emit>();
+  /** Last-broadcast online state per agentId — suppresses duplicate agent.updated events. */
+  readonly #onlineCache = new Map<string, boolean>();
+  #healthInterval: ReturnType<typeof setInterval> | null = null;
+  #healthTickInFlight = false;
 
   constructor(options: GatewayCoreOptions = {}) {
     this.#state = new GatewayState(options.dbPath ?? ":memory:");
+    this.#startHealthMonitor(options.healthIntervalMs ?? 15_000);
+    // Attempt to reconnect any agents that were persisted from a previous run.
+    // Fire-and-forget — construction is synchronous; failures are swallowed and
+    // the health loop will bring the agent online when it becomes reachable.
+    void this.#reconnectPersisted();
   }
 
   /** Dispatch a frontend request. Never throws — errors are emitted. */
@@ -82,13 +98,43 @@ export class GatewayCore {
 
   /** Close every adapter, kill deployed agents, close the store. */
   async shutdown(): Promise<void> {
+    // Clear the health interval first so no ticks race with teardown.
+    if (this.#healthInterval !== null) {
+      clearInterval(this.#healthInterval);
+      this.#healthInterval = null;
+    }
     for (const reg of this.#agents.values()) {
       await reg.adapter.close().catch(() => {});
     }
     await this.#deployer.shutdown().catch(() => {});
     this.#agents.clear();
     this.#agentSessions.clear();
+    this.#emitters.clear();
     this.#state.close();
+  }
+
+  // ── Emitter registry (server-pushed events) ────────────────────────────────
+
+  /**
+   * Register a connected client's emit function so the Core can push server-
+   * initiated events (e.g. health monitor transitions). Returns an unsubscribe
+   * function — call it when the client disconnects.
+   */
+  addEmitter(emit: Emit): () => void {
+    this.#emitters.add(emit);
+    return () => this.#emitters.delete(emit);
+  }
+
+  /**
+   * Returns the Flue base URL for a registered (or persisted-offline) agent.
+   * Useful for introspection and testing without reaching into private state.
+   */
+  getAgentSourceRef(agentId: string): string | null {
+    return this.#state.getAgent(agentId)?.sourceRef ?? null;
+  }
+
+  #broadcast(event: ServerEvent): void {
+    for (const emit of this.#emitters) emit(event);
   }
 
   // ── Agents ─────────────────────────────────────────────────────────────────
@@ -298,5 +344,95 @@ export class GatewayCore {
       model: a.model,
       redeployable: this.#state.hasDeploy(a.id),
     };
+  }
+
+  // ── Health monitor ─────────────────────────────────────────────────────────
+
+  /**
+   * Start the periodic health loop. The timer is unref'd so it never keeps the
+   * process alive by itself — `shutdown()` also clears it explicitly.
+   */
+  #startHealthMonitor(intervalMs: number): void {
+    const handle = setInterval(() => void this.#healthTick(), intervalMs);
+    handle.unref();
+    this.#healthInterval = handle;
+  }
+
+  /**
+   * One health-check iteration across all persisted agents that have a sourceRef.
+   * Detects online→offline and offline→online transitions; emits `agent.updated`
+   * only on a state change (anti-spam). Protected by an in-flight guard to prevent
+   * overlapping ticks when the interval fires faster than the checks complete.
+   */
+  async #healthTick(): Promise<void> {
+    if (this.#healthTickInFlight) return;
+    this.#healthTickInFlight = true;
+    try {
+      for (const stored of this.#state.listAgents()) {
+        if (!stored.sourceRef) continue;
+
+        const isOnline = this.#agents.has(stored.id);
+        const reachable = await pingAgent(stored.sourceRef);
+
+        if (isOnline && !reachable) {
+          // online → offline transition
+          const reg = this.#agents.get(stored.id);
+          if (reg) {
+            await reg.adapter.close().catch(() => {});
+            this.#agents.delete(stored.id);
+          }
+          const wasOnline = this.#onlineCache.get(stored.id) ?? true;
+          this.#onlineCache.set(stored.id, false);
+          if (wasOnline) {
+            this.#broadcast({ type: "agent.updated", agent: this.#summary(stored, false) });
+          }
+        } else if (!isOnline && reachable) {
+          // offline → online: attempt to reconnect the adapter.
+          // Re-check #agents in case reconnect-on-boot completed while we were pinging.
+          if (!this.#agents.has(stored.id)) {
+            try {
+              const adapter = await FlueAdapter.connect({ baseUrl: stored.sourceRef, agentName: stored.name });
+              this.#agents.set(stored.id, { adapter, kind: "flue", sourceRef: stored.sourceRef });
+              const wasOnline = this.#onlineCache.get(stored.id) ?? false;
+              this.#onlineCache.set(stored.id, true);
+              if (!wasOnline) {
+                this.#broadcast({ type: "agent.updated", agent: this.#summary(stored, true) });
+              }
+            } catch {
+              // Connect failed despite ping succeeding — leave offline, retry next tick.
+            }
+          }
+        } else {
+          // State unchanged — keep cache in sync so anti-spam works correctly on future transitions.
+          this.#onlineCache.set(stored.id, isOnline);
+        }
+      }
+    } finally {
+      this.#healthTickInFlight = false;
+    }
+  }
+
+  /**
+   * On construction, attempt to reconnect each agent that was persisted from a
+   * prior run. Called once, fire-and-forget. Agents that are unreachable are left
+   * offline; the health loop will bring them online when they return.
+   */
+  async #reconnectPersisted(): Promise<void> {
+    for (const stored of this.#state.listAgents()) {
+      if (!stored.sourceRef || this.#agents.has(stored.id)) continue;
+      // Mark as offline by default; updated below if the connect succeeds.
+      if (!this.#onlineCache.has(stored.id)) {
+        this.#onlineCache.set(stored.id, false);
+      }
+      try {
+        const adapter = await FlueAdapter.connect({ baseUrl: stored.sourceRef, agentName: stored.name });
+        this.#agents.set(stored.id, { adapter, kind: "flue", sourceRef: stored.sourceRef });
+        this.#onlineCache.set(stored.id, true);
+        // No broadcast here — there are typically no connected clients at boot time.
+        // The first agents.list response will reflect the correct online state.
+      } catch {
+        // Agent is unreachable — the health loop will reconnect it when it returns.
+      }
+    }
   }
 }

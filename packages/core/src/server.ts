@@ -37,6 +37,11 @@ export function startServer(host = HOST, port = PORT, dbPath = DB_PATH): { close
       if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(event));
     };
 
+    // Register this connection for server-pushed events (e.g. health monitor
+    // transitions). Unregister automatically when the socket closes.
+    const unregisterEmitter = core.addEmitter(emit);
+    socket.on("close", unregisterEmitter);
+
     socket.on("message", (data) => {
       let req: ClientRequest;
       try {
