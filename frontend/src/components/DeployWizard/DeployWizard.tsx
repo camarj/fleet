@@ -126,7 +126,8 @@ export function DeployWizard({
   const finished = !!deployError || !!deployArtifact || succeeded;
   const activeTarget = DEPLOY_TARGETS.find((t) => t.value === target);
 
-  // Any failed preflight check blocks the Deploy button.
+  // The Deploy button stays blocked until preflight results arrive and all pass.
+  const preflightPending = preflightChecks === null;
   const anyPreflightFailed = preflightChecks !== null && preflightChecks.some((c) => !c.ok);
 
   const footer = started ? (
@@ -143,7 +144,11 @@ export function DeployWizard({
           Next
         </button>
       ) : (
-        <button className="btn-primary" onClick={deploy} disabled={!connected || !sourceDir.trim() || anyPreflightFailed}>
+        <button
+          className="btn-primary"
+          onClick={deploy}
+          disabled={!connected || !sourceDir.trim() || preflightPending || anyPreflightFailed}
+        >
           Deploy
         </button>
       )}

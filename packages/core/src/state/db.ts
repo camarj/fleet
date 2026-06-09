@@ -131,16 +131,22 @@ export class GatewayState {
   #applyMigrations(): void {
     // WU-06: add `preview` column to sessions (present in SCHEMA for new DBs;
     // older file DBs need the ALTER TABLE path).
-    try {
-      this.#db.exec(`ALTER TABLE sessions ADD COLUMN preview TEXT NOT NULL DEFAULT ''`);
-    } catch {
-      // Column already exists — migration already applied.
-    }
+    this.#addColumnIfMissing(`ALTER TABLE sessions ADD COLUMN preview TEXT NOT NULL DEFAULT ''`);
     // WU-09: add `log` column to deploys — stores the last deploy log per agent.
+    this.#addColumnIfMissing(`ALTER TABLE deploys ADD COLUMN log TEXT`);
+  }
+
+  /**
+   * Run an ALTER TABLE ... ADD COLUMN, treating only "duplicate column name" as
+   * already-applied. Any other failure (corruption, disk full, permissions) must
+   * surface instead of leaving the DB open with an inconsistent schema.
+   */
+  #addColumnIfMissing(alterSql: string): void {
     try {
-      this.#db.exec(`ALTER TABLE deploys ADD COLUMN log TEXT`);
-    } catch {
-      // Column already exists — migration already applied.
+      this.#db.exec(alterSql);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!message.includes("duplicate column name")) throw err;
     }
   }
 

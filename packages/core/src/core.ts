@@ -458,6 +458,12 @@ export class GatewayCore {
           if (!this.#agents.has(stored.id)) {
             try {
               const adapter = await FlueAdapter.connect({ baseUrl: stored.sourceRef, agentName: stored.name });
+              if (this.#agents.has(stored.id)) {
+                // Reconnect-on-boot won the race while we were connecting — keep
+                // its adapter and discard ours so neither leaks.
+                await adapter.close().catch(() => {});
+                continue;
+              }
               this.#agents.set(stored.id, { adapter, kind: "flue", sourceRef: stored.sourceRef });
               const wasOnline = this.#onlineCache.get(stored.id) ?? false;
               this.#onlineCache.set(stored.id, true);
@@ -492,6 +498,12 @@ export class GatewayCore {
       }
       try {
         const adapter = await FlueAdapter.connect({ baseUrl: stored.sourceRef, agentName: stored.name });
+        if (this.#agents.has(stored.id)) {
+          // A health tick connected this agent while we were awaiting — keep
+          // its adapter and discard ours so neither leaks.
+          await adapter.close().catch(() => {});
+          continue;
+        }
         this.#agents.set(stored.id, { adapter, kind: "flue", sourceRef: stored.sourceRef });
         this.#onlineCache.set(stored.id, true);
         // No broadcast here — there are typically no connected clients at boot time.
