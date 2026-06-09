@@ -8,18 +8,27 @@
  * Env:
  *   GATEWAY_HOST  (default 127.0.0.1)
  *   GATEWAY_PORT  (default 4179)
- *   GATEWAY_DB    (default ":memory:") — path to the SQLite state file
+ *   GATEWAY_DB    (default: ~/.fleet/fleet.db) — SQLite state file; use ":memory:" for ephemeral store
  */
 
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { WebSocketServer } from "ws";
 import { GatewayCore } from "./core.js";
 import type { ClientRequest, ServerEvent } from "./api.js";
+import { dbPath as resolveDbPath } from "./paths.js";
 
 const HOST = process.env.GATEWAY_HOST ?? "127.0.0.1";
 const PORT = Number(process.env.GATEWAY_PORT ?? 4179);
-const DB_PATH = process.env.GATEWAY_DB ?? ":memory:";
+// Persist state to a file by default so data survives Core restarts.
+// Pass GATEWAY_DB=:memory: explicitly to opt into an ephemeral store (tests do this).
+const DB_PATH = process.env.GATEWAY_DB ?? resolveDbPath();
 
 export function startServer(host = HOST, port = PORT, dbPath = DB_PATH): { close: () => Promise<void> } {
+  // Ensure the parent directory exists for file-based databases.
+  if (dbPath !== ":memory:") {
+    mkdirSync(dirname(dbPath), { recursive: true });
+  }
   const core = new GatewayCore({ dbPath });
   const wss = new WebSocketServer({ host, port });
 
