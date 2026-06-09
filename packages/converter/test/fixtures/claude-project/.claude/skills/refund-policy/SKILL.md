@@ -8,6 +8,7 @@ metadata:
   version: 1.0
   author: store-team
   internal: true
+  updated: 2026-03-10
 ---
 
 # Refund policy

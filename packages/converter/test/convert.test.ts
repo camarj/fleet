@@ -71,6 +71,7 @@ function main(): void {
     assert(/metadata:\s*\r?\n/.test(fm), "metadata stays a nested mapping (not a JSON string)");
     assert(/version:\s*["']1(\.0)?["']/.test(fm), "metadata.version coerced to a string");
     assert(/author:\s*store-team/.test(fm), "metadata string values preserved");
+    assert(/updated:\s*["']?2026-03-10["']?/.test(fm) && !/updated:\s*2026-03-10T/.test(fm), "metadata YAML date coerced to a date string");
   }
 
   // scaffold present

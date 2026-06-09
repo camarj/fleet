@@ -179,14 +179,22 @@ export function normalizeSkillFrontmatter(content: string): string {
       out[key] = JSON.stringify(v);
     }
   }
-  const yaml = stringifyYaml(out).trimEnd();
+  // Force double-quoting on every string value: an unquoted "2026-03-10" or "1.0"
+  // would round-trip back to a Date/number when Flue re-parses the YAML, which it
+  // rejects. Quoting keeps them strings. lineWidth:0 avoids folding long values.
+  const yaml = stringifyYaml(out, { defaultStringType: "QUOTE_DOUBLE", defaultKeyType: "PLAIN", lineWidth: 0 }).trimEnd();
   return `---\n${yaml}\n---\n${body ? `\n${body}` : ""}`;
 }
 
-/** Stringify a scalar (or JSON-stringify a non-scalar) for skill frontmatter. */
+/** Stringify a value for skill frontmatter (YAML can parse dates/numbers, which Flue rejects). */
 function scalarToString(v: unknown): string {
   if (typeof v === "string") return v;
   if (typeof v === "number" || typeof v === "boolean") return String(v);
+  if (v instanceof Date) {
+    // Date-only (midnight UTC) → "YYYY-MM-DD"; otherwise full ISO timestamp.
+    const iso = v.toISOString();
+    return iso.endsWith("T00:00:00.000Z") ? iso.slice(0, 10) : iso;
+  }
   return JSON.stringify(v);
 }
 
