@@ -8,6 +8,7 @@
 
 import type { AgentKind } from "./adapters/agent-adapter.js";
 import type { ModelOverride, ModelParameters, RunEvent, RunStatus, RuntimeErrorCode, Usage } from "./neutral.js";
+import type { SessionStatus } from "./state/index.js";
 
 /**
  * Where a converted agent is deployed (wire copy of DeployTarget). The four the
@@ -31,6 +32,16 @@ export interface AgentSummary {
   redeployable: boolean;
 }
 
+/** Compact summary of a past session returned by `sessions.list`. */
+export interface SessionSummary {
+  id: string;
+  status: SessionStatus;
+  startedAt: string;
+  endedAt: string | null;
+  /** First ~80 chars of the user's opening message. */
+  preview: string;
+}
+
 // ── Frontend → Core ──────────────────────────────────────────────────────────
 
 export type ClientRequest =
@@ -51,6 +62,8 @@ export type ClientRequest =
   | { type: "secrets.list" }
   | { type: "session.start"; agentId: string; message: string; modelOverride?: ModelOverride }
   | { type: "session.abort"; sessionId: string }
+  | { type: "sessions.list"; agentId: string }
+  | { type: "session.history"; sessionId: string }
   | { type: "config.set"; agentId: string; modelSpecifier: string | null; parameters?: ModelParameters | null };
 
 // ── Core → Frontend ──────────────────────────────────────────────────────────
@@ -77,4 +90,8 @@ export type ServerEvent =
   | { type: "session.usage"; sessionId: string; usage: Usage; costUsd: number | null }
   | { type: "session.done"; sessionId: string; status: RunStatus; usage: Usage | null; costUsd: number | null }
   | { type: "session.error"; sessionId: string; error: { code: RuntimeErrorCode; message: string } }
+  /** List of past sessions for an agent (most recent first). */
+  | { type: "sessions"; agentId: string; sessions: SessionSummary[] }
+  /** Full event log and final usage for a past session. */
+  | { type: "session.history"; sessionId: string; events: RunEvent[]; usage: Usage | null; costUsd: number | null }
   | { type: "error"; message: string; requestType?: string };

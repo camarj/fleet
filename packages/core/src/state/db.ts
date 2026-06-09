@@ -9,9 +9,19 @@
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import type { AgentInfo, AgentKind } from "../adapters/agent-adapter.js";
-import type { ModelParameters, Usage } from "../neutral.js";
+import type { ModelParameters, RunEvent, Usage } from "../neutral.js";
 
 export type SessionStatus = "running" | "completed" | "aborted" | "error";
+
+/** Compact session descriptor returned by `sessions.list`. */
+export interface SessionSummary {
+  id: string;
+  status: SessionStatus;
+  startedAt: string;
+  endedAt: string | null;
+  /** First ~80 chars of the user's opening message. */
+  preview: string;
+}
 
 export interface StoredAgent {
   id: string;
@@ -75,7 +85,15 @@ CREATE TABLE IF NOT EXISTS sessions (
   run_id     TEXT,
   status     TEXT NOT NULL,
   started_at TEXT NOT NULL,
-  ended_at   TEXT
+  ended_at   TEXT,
+  preview    TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS session_events (
+  session_id TEXT    NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  seq        INTEGER NOT NULL,
+  event_json TEXT    NOT NULL,
+  PRIMARY KEY (session_id, seq)
 );
 
 CREATE TABLE IF NOT EXISTS usage (
@@ -101,6 +119,22 @@ export class GatewayState {
     this.#db.exec("PRAGMA journal_mode = WAL;");
     this.#db.exec("PRAGMA foreign_keys = ON;");
     this.#db.exec(SCHEMA);
+    this.#applyMigrations();
+  }
+
+  /**
+   * Idempotent schema migrations for columns added after initial table creation.
+   * Each ALTER TABLE is wrapped in a try-catch so it's safe to run on an already-
+   * migrated DB (SQLite has no ADD COLUMN IF NOT EXISTS syntax).
+   */
+  #applyMigrations(): void {
+    // WU-06: add `preview` column to sessions (present in SCHEMA for new DBs;
+    // older file DBs need the ALTER TABLE path).
+    try {
+      this.#db.exec(`ALTER TABLE sessions ADD COLUMN preview TEXT NOT NULL DEFAULT ''`);
+    } catch {
+      // Column already exists — migration already applied.
+    }
   }
 
   close(): void {
@@ -212,11 +246,14 @@ export class GatewayState {
 
   // ── Sessions ───────────────────────────────────────────────────────────────
 
-  createSession(agentId: string): string {
+  createSession(agentId: string, preview = ""): string {
     const id = `sess_${randomUUID()}`;
     this.#db
-      .prepare(`INSERT INTO sessions (id, agent_id, run_id, status, started_at) VALUES (?, ?, NULL, 'running', ?)`)
-      .run(id, agentId, new Date().toISOString());
+      .prepare(
+        `INSERT INTO sessions (id, agent_id, run_id, status, started_at, preview)
+         VALUES (?, ?, NULL, 'running', ?, ?)`,
+      )
+      .run(id, agentId, new Date().toISOString(), preview.slice(0, 80));
     return id;
   }
 
@@ -224,6 +261,59 @@ export class GatewayState {
     this.#db
       .prepare(`UPDATE sessions SET status = ?, ended_at = ? WHERE id = ?`)
       .run(status, new Date().toISOString(), sessionId);
+  }
+
+  /** Append a single serialised RunEvent to the session event log. */
+  appendSessionEvent(sessionId: string, seq: number, eventJson: string): void {
+    this.#db
+      .prepare(`INSERT OR IGNORE INTO session_events (session_id, seq, event_json) VALUES (?, ?, ?)`)
+      .run(sessionId, seq, eventJson);
+  }
+
+  /** Return session summaries for an agent, most recent first. */
+  listSessions(agentId: string): SessionSummary[] {
+    const rows = this.#db
+      .prepare(
+        `SELECT id, status, started_at, ended_at, preview
+         FROM sessions WHERE agent_id = ? ORDER BY started_at DESC`,
+      )
+      .all(agentId) as unknown as SessionDbRow[];
+    return rows.map((r) => ({
+      id: r.id,
+      status: r.status as SessionStatus,
+      startedAt: r.started_at,
+      endedAt: r.ended_at,
+      preview: r.preview ?? "",
+    }));
+  }
+
+  /** Return the stored RunEvents for a session, in emission order. */
+  getSessionEvents(sessionId: string): RunEvent[] {
+    const rows = this.#db
+      .prepare(`SELECT event_json FROM session_events WHERE session_id = ? ORDER BY seq ASC`)
+      .all(sessionId) as unknown as { event_json: string }[];
+    return rows.map((r) => JSON.parse(r.event_json) as RunEvent);
+  }
+
+  /** Return the stored usage + cost for a session (at most one row per session). */
+  getSessionUsage(sessionId: string): { usage: Usage; costUsd: number | null } | null {
+    const row = this.#db
+      .prepare(
+        `SELECT input_tokens, output_tokens, total_tokens, model, cost_usd, duration_ms
+         FROM usage WHERE session_id = ? LIMIT 1`,
+      )
+      .get(sessionId) as unknown as UsageDbRow | undefined;
+    if (!row) return null;
+    return {
+      usage: {
+        inputTokens: row.input_tokens,
+        outputTokens: row.output_tokens,
+        totalTokens: row.total_tokens,
+        model: row.model,
+        durationMs: row.duration_ms ?? undefined,
+      },
+      costUsd: row.cost_usd ?? null,
+    };
   }
 
   // ── Usage / metrics ──────────────────────────────────────────────────────
@@ -274,6 +364,23 @@ interface DeployDbRow {
   model: string | null;
   target: string;
   updated_at: string;
+}
+
+interface SessionDbRow {
+  id: string;
+  status: string;
+  started_at: string;
+  ended_at: string | null;
+  preview: string | null;
+}
+
+interface UsageDbRow {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  model: string;
+  cost_usd: number | null;
+  duration_ms: number | null;
 }
 
 function rowToAgent(row: AgentDbRow): StoredAgent {

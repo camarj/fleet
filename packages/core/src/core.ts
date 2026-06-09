@@ -9,7 +9,7 @@ import type { AgentAdapter, AgentKind, RunHandle } from "./adapters/agent-adapte
 import { FlueDeployer, pingAgent, type DeployTarget } from "./deploy/flue-deployer.js";
 import { SecretsStore } from "./secrets/store.js";
 import { computeCostUsd } from "./pricing/pricing.js";
-import { GatewayState, type StoredAgent } from "./state/index.js";
+import { GatewayState, type StoredAgent, type SessionSummary } from "./state/index.js";
 import type { ModelOverride, RunOptions, RunSink } from "./neutral.js";
 import type { AgentSummary, ClientRequest, ServerEvent } from "./api.js";
 
@@ -82,6 +82,10 @@ export class GatewayCore {
           return await this.#startSession(req, emit);
         case "session.abort":
           return await this.#abortSession(req.sessionId, emit);
+        case "sessions.list":
+          return this.#listSessions(req, emit);
+        case "session.history":
+          return this.#getSessionHistory(req, emit);
         case "config.set":
           this.#state.setConfig(req.agentId, req.modelSpecifier, req.parameters ?? null);
           emit({ type: "config.updated", agentId: req.agentId });
@@ -283,14 +287,18 @@ export class GatewayCore {
       return;
     }
 
-    const sessionId = this.#state.createSession(req.agentId);
+    const sessionId = this.#state.createSession(req.agentId, req.message);
     emit({ type: "session.started", sessionId, agentId: req.agentId });
 
     const options: RunOptions = { model: this.#resolveModel(req.agentId, req.modelOverride) };
     let seq = 0;
 
     const sink: RunSink = {
-      onEvent: (event) => emit({ type: "session.event", sessionId, seq: seq++, event }),
+      onEvent: (event) => {
+        const currentSeq = seq++;
+        this.#state.appendSessionEvent(sessionId, currentSeq, JSON.stringify(event));
+        emit({ type: "session.event", sessionId, seq: currentSeq, event });
+      },
       onUsage: (usage) => emit({ type: "session.usage", sessionId, usage, costUsd: computeCostUsd(usage) }),
       onDone: (status, usage) => {
         const costUsd = usage ? computeCostUsd(usage) : null;
@@ -322,6 +330,23 @@ export class GatewayCore {
       return;
     }
     await handle.abort();
+  }
+
+  #listSessions(req: Extract<ClientRequest, { type: "sessions.list" }>, emit: Emit): void {
+    const sessions: SessionSummary[] = this.#state.listSessions(req.agentId);
+    emit({ type: "sessions", agentId: req.agentId, sessions });
+  }
+
+  #getSessionHistory(req: Extract<ClientRequest, { type: "session.history" }>, emit: Emit): void {
+    const events = this.#state.getSessionEvents(req.sessionId);
+    const stored = this.#state.getSessionUsage(req.sessionId);
+    emit({
+      type: "session.history",
+      sessionId: req.sessionId,
+      events,
+      usage: stored?.usage ?? null,
+      costUsd: stored?.costUsd ?? null,
+    });
   }
 
   #resolveModel(agentId: string, override?: ModelOverride): ModelOverride | undefined {
