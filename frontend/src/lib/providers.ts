@@ -48,6 +48,23 @@ export function modelsFor(providerId: string): string[] {
 }
 
 /**
+ * Infrastructure credential ids — the env-var names used for the remote deploy
+ * targets (Fly.io, Cloudflare, Dokploy). These ride the same SecretsStore as
+ * provider API keys: a stored value takes precedence over the env var of the same
+ * name. Mirrors INFRA_CREDENTIAL_IDS in packages/core/src/deploy/flue-deployer.ts
+ * (the frontend deliberately does not import the Core).
+ */
+export const INFRA_CREDENTIAL_IDS: readonly string[] = [
+  "FLY_API_TOKEN",
+  "CLOUDFLARE_API_TOKEN",
+  "DOKPLOY_URL",
+  "DOKPLOY_API_KEY",
+  "DOKPLOY_PROJECT",
+  "DOKPLOY_GITHUB_ID",
+  "DOKPLOY_DOMAIN",
+] as const;
+
+/**
  * Split a `"provider/model-id"` specifier on its FIRST slash (model ids may
  * contain slashes). Returns empty strings when the specifier is empty or has no
  * provider/model parts. Mirrors the Core's splitSpecifier.

@@ -76,9 +76,15 @@ export type ClientRequest =
   | { type: "agent.stop"; agentId: string }
   /** Stop the agent's runtime and permanently remove its registration and deploy params. */
   | { type: "agent.delete"; agentId: string }
-  /** Store a provider API key server-side (secure store). The value never persists in the frontend. */
+  /**
+   * Store a provider API key or infrastructure credential server-side (secure store).
+   * The `provider` field is either a provider name (e.g. "anthropic") OR an infrastructure
+   * env-var name (e.g. "FLY_API_TOKEN"). A stored value wins over the env var of the same
+   * name. Pass an empty `apiKey` to clear the stored value. The value never persists in
+   * the frontend.
+   */
   | { type: "secrets.set"; provider: string; apiKey: string }
-  /** Ask which providers currently have a key set (values are never returned). */
+  /** Ask which providers AND infrastructure credentials currently have a value set (ids only, never the values). */
   | { type: "secrets.list" }
   | { type: "session.start"; agentId: string; message: string }
   | { type: "session.abort"; sessionId: string }
@@ -109,7 +115,7 @@ export type ServerEvent =
   | { type: "agent.updated"; agent: AgentSummary }
   /** The agent was permanently deleted and is no longer in the registry. */
   | { type: "agent.removed"; agentId: string }
-  /** Which providers have an API key set (ids only, never the values). */
+  /** Which providers AND infrastructure credentials have a value set (ids only, never the values). */
   | { type: "secrets.status"; providers: string[] }
   /** A step in an in-flight deploy: converting → installing → building → starting/pushing/deploying → connecting → done. */
   | { type: "deploy.progress"; step: string; detail?: string }

@@ -28,6 +28,23 @@ const AGENTS_VERSION = "0.15.0"; // Cloudflare Agents SDK — peer dep of the CF
 const WRANGLER_VERSION = "4.98.0"; // Cloudflare deploy + secrets CLI
 
 /**
+ * Infrastructure credential ids — the env-var names used for the remote deploy
+ * targets. These ride the same SecretsStore as provider API keys: a value stored
+ * under this id takes precedence over the environment variable of the same name.
+ * Mirrored in frontend/src/lib/providers.ts (the frontend deliberately does not
+ * import the Core).
+ */
+export const INFRA_CREDENTIAL_IDS: readonly string[] = [
+  "FLY_API_TOKEN",
+  "CLOUDFLARE_API_TOKEN",
+  "DOKPLOY_URL",
+  "DOKPLOY_API_KEY",
+  "DOKPLOY_PROJECT",
+  "DOKPLOY_GITHUB_ID",
+  "DOKPLOY_DOMAIN",
+] as const;
+
+/**
  * Where to run the converted agent.
  *
  * - `docker-local` (default): a real Docker container, each on its OWN free host
@@ -109,6 +126,23 @@ export class FlueDeployer {
 
   constructor(secrets: SecretsStore) {
     this.#secrets = secrets;
+  }
+
+  /**
+   * Resolve an infrastructure credential: SecretsStore wins over the env var of
+   * the same name, matching the provider-key lookup order used in deploy().
+   */
+  #infraCred(id: string): string | undefined {
+    return this.#secrets.get(id) ?? process.env[id];
+  }
+
+  /**
+   * Preflight check for an infrastructure credential (store OR env var).
+   * Mirrors checkEnvToken's id derivation (lowercase-kebab) but is store-aware.
+   */
+  #checkInfraCred(id: string, label: string, missingDetail: string): PreflightCheck {
+    const ok = !!this.#infraCred(id);
+    return { id: id.toLowerCase().replace(/_/g, "-"), label, ok, detail: ok ? undefined : missingDetail };
   }
 
   async deploy(req: DeployRequest, onProgress: DeployProgress, onLog: DeployLog = NO_LOG): Promise<DeployResult> {
@@ -366,8 +400,9 @@ export class FlueDeployer {
    * to create/configure/deploy the agent and wait until it is live. Returns the
    * `baseUrl` so the generic `deploy()` tail can connect the FlueAdapter.
    *
-   * Requires DOKPLOY_URL + DOKPLOY_API_KEY in the environment (preflight checks
-   * these). The Dokploy instance must have a GitHub App connected in its UI.
+   * Requires DOKPLOY_URL + DOKPLOY_API_KEY — set them in Settings → Infrastructure
+   * or export them as env vars (preflight checks these). The Dokploy instance must
+   * have a GitHub App connected in its UI.
    */
   async #runDokploy(
     agentName: string,
@@ -378,13 +413,13 @@ export class FlueDeployer {
     onProgress: DeployProgress,
     onLog: DeployLog,
   ): Promise<string> {
-    const dokployUrl = process.env.DOKPLOY_URL;
-    const dokployKey = process.env.DOKPLOY_API_KEY;
+    const dokployUrl = this.#infraCred("DOKPLOY_URL");
+    const dokployKey = this.#infraCred("DOKPLOY_API_KEY");
     // Should never reach here with missing creds (preflight guards them), but
     // fail fast with a clear message rather than a cryptic network error.
     if (!dokployUrl || !dokployKey) {
       throw new DeployError(
-        "Dokploy deploy needs DOKPLOY_URL and DOKPLOY_API_KEY. Set them in the environment, then retry.",
+        "Dokploy deploy needs DOKPLOY_URL and DOKPLOY_API_KEY. Set them in Settings → Infrastructure (or export them), then retry.",
       );
     }
     const { owner, repo } = await this.#pushToGithub(agentName, agentDir, repoOwner, onProgress, onLog);
@@ -395,6 +430,9 @@ export class FlueDeployer {
       key,
       owner,
       repo,
+      githubId: this.#infraCred("DOKPLOY_GITHUB_ID"),
+      projectName: this.#infraCred("DOKPLOY_PROJECT"),
+      domain: this.#infraCred("DOKPLOY_DOMAIN"),
       onProgress,
       onLog,
     });
@@ -416,10 +454,10 @@ export class FlueDeployer {
     onProgress: DeployProgress,
     onLog: DeployLog,
   ): Promise<string> {
-    const token = process.env.CLOUDFLARE_API_TOKEN;
+    const token = this.#infraCred("CLOUDFLARE_API_TOKEN");
     if (!token) {
       throw new DeployError(
-        "Cloudflare deploy needs CLOUDFLARE_API_TOKEN (and a Cloudflare account). Set it in the environment, then retry.",
+        "Cloudflare deploy needs CLOUDFLARE_API_TOKEN (and a Cloudflare account). Set it in Settings → Infrastructure (or export CLOUDFLARE_API_TOKEN), then retry.",
       );
     }
     const base = deployedDir();
@@ -494,10 +532,10 @@ export class FlueDeployer {
     onProgress: DeployProgress,
     onLog: DeployLog,
   ): Promise<string> {
-    const token = process.env.FLY_API_TOKEN;
+    const token = this.#infraCred("FLY_API_TOKEN");
     if (!token) {
       throw new DeployError(
-        "Fly.io deploy needs FLY_API_TOKEN (and a Fly.io account). Set it in the environment, then retry.",
+        "Fly.io deploy needs FLY_API_TOKEN (and a Fly.io account). Set it in Settings → Infrastructure (or export FLY_API_TOKEN), then retry.",
       );
     }
     ensureCli("flyctl", "The Fly.io CLI (flyctl) is not available. Install flyctl, then retry.");
@@ -588,11 +626,11 @@ export class FlueDeployer {
         break;
       case "fly":
         checks.push(checkBinary("flyctl", "flyctl CLI", "Install the Fly.io CLI: https://fly.io/docs/getting-started/installing-flyctl/"));
-        checks.push(checkEnvToken("FLY_API_TOKEN", "Fly.io API token (FLY_API_TOKEN)", "Set FLY_API_TOKEN in your environment."));
+        checks.push(this.#checkInfraCred("FLY_API_TOKEN", "Fly.io API token (FLY_API_TOKEN)", "Set it in Settings → Infrastructure (or export FLY_API_TOKEN)."));
         break;
       case "cloudflare":
         checks.push(checkWrangler());
-        checks.push(checkEnvToken("CLOUDFLARE_API_TOKEN", "Cloudflare API token (CLOUDFLARE_API_TOKEN)", "Set CLOUDFLARE_API_TOKEN in your environment."));
+        checks.push(this.#checkInfraCred("CLOUDFLARE_API_TOKEN", "Cloudflare API token (CLOUDFLARE_API_TOKEN)", "Set it in Settings → Infrastructure (or export CLOUDFLARE_API_TOKEN)."));
         break;
       case "github":
         checks.push(checkBinary("git", "Git CLI", "Install Git: https://git-scm.com/"));
@@ -601,8 +639,8 @@ export class FlueDeployer {
       case "dokploy":
         checks.push(checkBinary("git", "Git CLI", "Install Git: https://git-scm.com/"));
         checks.push(checkGhAuth());
-        checks.push(checkEnvToken("DOKPLOY_URL", "Dokploy instance URL (DOKPLOY_URL)", "Set DOKPLOY_URL in your environment."));
-        checks.push(checkEnvToken("DOKPLOY_API_KEY", "Dokploy API key (DOKPLOY_API_KEY)", "Set DOKPLOY_API_KEY in your environment."));
+        checks.push(this.#checkInfraCred("DOKPLOY_URL", "Dokploy instance URL (DOKPLOY_URL)", "Set it in Settings → Infrastructure (or export DOKPLOY_URL)."));
+        checks.push(this.#checkInfraCred("DOKPLOY_API_KEY", "Dokploy API key (DOKPLOY_API_KEY)", "Set it in Settings → Infrastructure (or export DOKPLOY_API_KEY)."));
         break;
       default:
         // local-process: no CLI/daemon check (Node is already running); apiKey below.
@@ -842,16 +880,6 @@ function checkBinary(cmd: string, label: string, installHint: string): Preflight
 }
 
 /**
- * Check that an env-var token is set (platform tokens — FLY_API_TOKEN,
- * CLOUDFLARE_API_TOKEN — are not in the secrets store; they live in the env only).
- */
-function checkEnvToken(envVar: string, label: string, missingDetail: string): PreflightCheck {
-  const ok = !!process.env[envVar];
-  // Use a lowercase-kebab id for stability (e.g. "fly-api-token").
-  return { id: envVar.toLowerCase().replace(/_/g, "-"), label, ok, detail: ok ? undefined : missingDetail };
-}
-
-/**
  * Check wrangler availability. The deployer auto-installs wrangler from npm on
  * first Cloudflare deploy, so this check never blocks (ok is always true). We
  * surface whether wrangler is already present so the user has an accurate picture.
@@ -1009,6 +1037,12 @@ export async function runDokployOrchestration(opts: {
   fetchImpl?: typeof fetch;
   /** Override poll interval in ms (use 0 for fast tests). */
   pollIntervalMs?: number;
+  /** Resolved DOKPLOY_GITHUB_ID (store wins over env var of the same name). */
+  githubId?: string;
+  /** Resolved DOKPLOY_PROJECT (store wins over env var of the same name). */
+  projectName?: string;
+  /** Resolved DOKPLOY_DOMAIN (store wins over env var of the same name). */
+  domain?: string;
 }): Promise<string> {
   const { cfg, agentName, apiKeyEnv, key, owner, repo, onProgress, onLog } = opts;
   const fetchImpl = opts.fetchImpl ?? fetch;
@@ -1019,8 +1053,9 @@ export async function runDokployOrchestration(opts: {
   // 1. Resolve githubId
   onLog(["[dokploy] resolving GitHub provider…"]);
   let githubId: string;
-  if (process.env.DOKPLOY_GITHUB_ID) {
-    githubId = process.env.DOKPLOY_GITHUB_ID;
+  const resolvedGithubId = opts.githubId ?? process.env.DOKPLOY_GITHUB_ID;
+  if (resolvedGithubId) {
+    githubId = resolvedGithubId;
     onLog([`[dokploy] using DOKPLOY_GITHUB_ID=${githubId}`]);
   } else {
     const providers = (await api("GET", "github.githubProviders")) as Array<{ githubId: string }>;
@@ -1049,7 +1084,7 @@ export async function runDokployOrchestration(opts: {
   }
 
   let project: DokployProject;
-  const projectName = process.env.DOKPLOY_PROJECT;
+  const projectName = opts.projectName ?? process.env.DOKPLOY_PROJECT;
   if (projectName) {
     const found = projects.find((p) => p.name === projectName);
     if (!found) {
@@ -1150,7 +1185,7 @@ export async function runDokployOrchestration(opts: {
   }
 
   if (!domainResult) {
-    const customDomain = process.env.DOKPLOY_DOMAIN;
+    const customDomain = opts.domain ?? process.env.DOKPLOY_DOMAIN;
     let host: string;
     let tlsEnabled: boolean;
     let certType: string;

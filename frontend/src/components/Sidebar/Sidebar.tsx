@@ -8,6 +8,7 @@
 import { useState } from "react";
 import type { AgentSummary } from "../../lib/api";
 import { Modal } from "../Modal/Modal";
+import { INFRA_CREDENTIAL_IDS } from "../../lib/providers";
 
 interface Props {
   agents: AgentSummary[];
@@ -175,7 +176,9 @@ export function Sidebar({
         </button>
         <button className="btn-ghost settings-cta" onClick={onOpenSettings}>
           ⚙ Settings
-          {secretsProviders.length > 0 && <span className="keys-count"> ({secretsProviders.length})</span>}
+          {secretsProviders.filter((id) => !INFRA_CREDENTIAL_IDS.includes(id)).length > 0 && (
+            <span className="keys-count"> ({secretsProviders.filter((id) => !INFRA_CREDENTIAL_IDS.includes(id)).length})</span>
+          )}
         </button>
       </div>
 
