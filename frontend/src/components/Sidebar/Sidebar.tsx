@@ -84,7 +84,15 @@ export function Sidebar({
               {a.name}
               <span className={`badge ${a.online ? "online" : ""}`}>{a.online ? "online" : "offline"}</span>
             </div>
-            <div className="agent-meta">{a.model}</div>
+            <div className="agent-meta">
+              {a.target && <span className={`agent-target ${a.target}`}>{a.target}</span>}
+              {a.url && (
+                <span className="agent-url" title={a.url}>
+                  {a.url.replace(/^https?:\/\//, "")}
+                </span>
+              )}
+              {a.model && <span className="agent-model">{a.model}</span>}
+            </div>
             <div className="agent-actions">
               <button
                 className="btn-ghost agent-config"

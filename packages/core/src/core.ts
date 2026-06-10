@@ -547,6 +547,8 @@ export class GatewayCore {
       kind: a.kind,
       online,
       model: this.#deployedSpecifier(a.id, a.model),
+      url: a.sourceRef,
+      target: this.#state.getDeploy(a.id)?.target ?? null,
       redeployable: this.#state.hasDeploy(a.id),
     };
   }

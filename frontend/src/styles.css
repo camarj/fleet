@@ -94,6 +94,35 @@ body {
   font-size: 11px;
   color: var(--muted);
   margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* Deploy target badge (cloudflare / fly / docker-local / github). */
+.agent-target {
+  flex: none;
+  font-size: 10px;
+  text-transform: lowercase;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 0 6px;
+  line-height: 15px;
+}
+
+/* The agent's URL — muted and truncated so long workers.dev hosts don't wrap. */
+.agent-url {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-model {
+  flex: none;
+  color: var(--muted);
+  opacity: 0.8;
 }
 .agent-actions {
   display: flex;
