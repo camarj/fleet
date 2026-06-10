@@ -893,11 +893,11 @@ function parseRepoUrl(out: string): string | null {
   return out.match(/https:\/\/github\.com\/[^\s]+/)?.[0] ?? null;
 }
 
-/** Extract owner and repo name from a GitHub HTTPS URL. */
+/** Extract owner and repo name from a GitHub HTTPS URL (repo names may contain dots). */
 function parseOwnerRepo(url: string): { owner: string; repo: string } | null {
-  const m = url.match(/github\.com\/([^/]+)\/([^/\s.]+)/);
+  const m = url.match(/github\.com\/([^/\s]+)\/([^/\s]+)/);
   if (!m || !m[1] || !m[2]) return null;
-  return { owner: m[1], repo: m[2] };
+  return { owner: m[1], repo: m[2].replace(/\.git$/, "") };
 }
 
 /** Extract the first `*.workers.dev` URL from wrangler output. */

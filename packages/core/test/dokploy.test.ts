@@ -8,11 +8,16 @@
  *   2. Existing-app reuse: application.create is skipped, domain.byApplicationId
  *      reuse path is taken.
  *   3. Deployment error: applicationStatus "error" → throws DeployError.
+ *   4. Preflight: missing DOKPLOY_URL / DOKPLOY_API_KEY → failing checks.
  *
  * Run: pnpm --filter @inteliside/gateway-core exec tsx test/dokploy.test.ts
  */
 
-const { runDokployOrchestration, DeployError } = await import("../src/deploy/flue-deployer.js");
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+const { runDokployOrchestration, DeployError, FlueDeployer } = await import("../src/deploy/flue-deployer.js");
+const { SecretsStore } = await import("../src/secrets/store.js");
 import type { DeployProgress, DeployLog } from "../src/deploy/flue-deployer.js";
 
 function assert(cond: boolean, msg: string): void {
@@ -216,6 +221,24 @@ async function main(): Promise<void> {
       threw = err instanceof DeployError;
     }
     assert(threw, "applicationStatus 'error' → throws DeployError");
+
+    // ── 4. Preflight: missing DOKPLOY_URL / DOKPLOY_API_KEY → failing checks ──
+    console.log("\n[4] Preflight — missing Dokploy env vars are reported");
+
+    const savedDokployEnv = { url: process.env.DOKPLOY_URL, key: process.env.DOKPLOY_API_KEY };
+    delete process.env.DOKPLOY_URL;
+    delete process.env.DOKPLOY_API_KEY;
+    try {
+      const deployer = new FlueDeployer(new SecretsStore(join(tmpdir(), `fleet-test-secrets-${process.pid}.json`)));
+      const checks = await deployer.preflight({ target: "dokploy" });
+      const urlCheck = checks.find((c) => c.id === "dokploy-url");
+      const keyCheck = checks.find((c) => c.id === "dokploy-api-key");
+      assert(!!urlCheck && !urlCheck.ok && !!urlCheck.detail, "preflight: missing DOKPLOY_URL → ok:false with detail");
+      assert(!!keyCheck && !keyCheck.ok && !!keyCheck.detail, "preflight: missing DOKPLOY_API_KEY → ok:false with detail");
+    } finally {
+      if (savedDokployEnv.url !== undefined) process.env.DOKPLOY_URL = savedDokployEnv.url;
+      if (savedDokployEnv.key !== undefined) process.env.DOKPLOY_API_KEY = savedDokployEnv.key;
+    }
   } finally {
     // Restore env vars.
     for (const k of envCleanup) {
