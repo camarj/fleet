@@ -290,6 +290,7 @@ export function App(): React.JSX.Element {
           deployStatus={deployStatus}
           deployError={deployError}
           deployLog={deployLog}
+          deployUnmapped={deployUnmapped}
           done={!!deployError || deployStatus === null}
           onClose={() => {
             setRedeployingId(null);

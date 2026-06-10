@@ -13,6 +13,8 @@ interface Props {
   deployStatus: string | null;
   deployError: string | null;
   deployLog: string[];
+  /** Source features that did NOT convert to Flue, reported after conversion. */
+  deployUnmapped: { kind: string; name: string; reason: string }[];
   /** True once the redeploy finished (registered or errored) — lets the user close. */
   done: boolean;
   onClose: () => void;
@@ -23,6 +25,7 @@ export function DeployProgress({
   deployStatus,
   deployError,
   deployLog,
+  deployUnmapped,
   done,
   onClose,
 }: Props): React.JSX.Element {
@@ -48,6 +51,21 @@ export function DeployProgress({
           <div className="deploy-running">
             <span className="spinner" /> {deployStatus ?? "starting"}…
           </div>
+        )}
+        {deployUnmapped.length > 0 && (
+          <details className="deploy-unmapped">
+            <summary>
+              ⚠ This agent loses {deployUnmapped.length} feature
+              {deployUnmapped.length === 1 ? "" : "s"} when converted to Flue.
+            </summary>
+            <ul>
+              {deployUnmapped.map((u, i) => (
+                <li key={`${u.kind}-${u.name}-${i}`}>
+                  <strong>{u.name}</strong> ({u.kind}) — {u.reason}
+                </li>
+              ))}
+            </ul>
+          </details>
         )}
         {deployLog.length > 0 && (
           <pre className="deploy-log" ref={logRef}>
