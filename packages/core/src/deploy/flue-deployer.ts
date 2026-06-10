@@ -37,18 +37,26 @@ const WRANGLER_VERSION = "4.98.0"; // Cloudflare deploy + secrets CLI
  * - `fly`: `flyctl deploy` builds the Dockerfile on Fly.io and runs it; Fleet
  *   reads the `*.fly.dev` URL and connects. Needs `FLY_API_TOKEN`.
  * - `github`: publish the project as a Git repo (with its Dockerfile) so you can
- *   wire it to a self-hosted Docker PaaS (Coolify, Dokploy, …). Produces an
- *   ARTIFACT (a repo URL), not a running agent — connect Fleet by URL once it runs.
+ *   wire it to a self-hosted Docker PaaS (Coolify, …). Produces an ARTIFACT (a
+ *   repo URL), not a running agent — connect Fleet by URL once it runs.
  * - `cloudflare`: `flue build --target cloudflare` + `wrangler deploy` to a Workers
  *   `*.workers.dev` URL, then connect. Needs `CLOUDFLARE_API_TOKEN`.
+ * - `dokploy`: push the project as a GitHub repo, then drive a self-hosted Dokploy
+ *   instance via its REST API to create, configure, deploy, and wait for the agent.
+ *   Returns the live base URL and connects automatically. Needs `DOKPLOY_URL` +
+ *   `DOKPLOY_API_KEY` (and the Dokploy instance must have a GitHub App connected).
  */
-export type DeployTarget = "docker-local" | "local-process" | "fly" | "github" | "cloudflare";
+export type DeployTarget = "docker-local" | "local-process" | "fly" | "github" | "cloudflare" | "dokploy";
 
 export interface DeployRequest {
   sourceDir: string;
   provider?: string;
   model?: string;
   target?: DeployTarget;
+  /** GitHub account or organization that receives the generated repo. Defaults to
+   * the authenticated user's personal account when unset. Applies to `github` and
+   * `dokploy` targets only; ignored for all other targets. */
+  repoOwner?: string;
 }
 
 export type DeployStep =
@@ -117,7 +125,7 @@ export class FlueDeployer {
 
     // `github` publishes a repo for CI to build — there is nothing to connect to yet.
     if (target === "github") {
-      return { ...(await this.#runGithub(agentName, agentDir, onProgress, onLog)), unmapped };
+      return { ...(await this.#runGithub(agentName, agentDir, req.repoOwner, onProgress, onLog)), unmapped };
     }
 
     const apiKeyEnv = project.report.apiKeyEnv;
@@ -147,6 +155,9 @@ export class FlueDeployer {
         break;
       case "cloudflare":
         baseUrl = await this.#runCloudflare(agentName, agentDir, apiKeyEnv, key, onProgress, onLog);
+        break;
+      case "dokploy":
+        baseUrl = await this.#runDokploy(agentName, agentDir, apiKeyEnv, key, req.repoOwner, onProgress, onLog);
         break;
       default:
         baseUrl = await this.#runLocalProcess(agentName, agentDir, apiKeyEnv, key, onProgress, onLog);
@@ -237,16 +248,21 @@ export class FlueDeployer {
   }
 
   /**
-   * Publish the converted project as a GitHub repo whose CI builds the image to
-   * GHCR. Returns the repo URL (an artifact — nothing is running yet). The user
-   * deploys the published image on a host and connects Fleet by URL.
+   * Push the converted project to a new (or existing) GitHub repo.
+   * Shared by `#runGithub` (which returns it as an artifact) and `#runDokploy`
+   * (which then drives the Dokploy API against the pushed code).
+   *
+   * Idempotency: if `gh repo create` fails because the repo already exists,
+   * recovers by resolving the URL via `gh repo view`, (re-)setting the remote,
+   * and force-pushing main — so re-deploying the same agent works cleanly.
    */
-  async #runGithub(
+  async #pushToGithub(
     agentName: string,
     agentDir: string,
+    repoOwner: string | undefined,
     onProgress: DeployProgress,
     onLog: DeployLog,
-  ): Promise<Omit<DeployArtifact, "unmapped">> {
+  ): Promise<{ url: string; owner: string; repo: string }> {
     ensureCli("git", "Git is not available. Install Git, then retry.");
     ensureCli("gh", "The GitHub CLI is not available. Install `gh` and run `gh auth login`, then retry.");
 
@@ -263,16 +279,76 @@ export class FlueDeployer {
     ]);
 
     onProgress("pushing", "GitHub repository");
-    const repo = `fleet-agent-${agentName}`;
+    const repoName = `fleet-agent-${agentName}`;
+    // Use an owner-qualified name (org/repo) when the caller specifies an owner;
+    // bare name when not (gh defaults to the authenticated user's personal account).
+    const qualifiedName = repoOwner ? `${repoOwner}/${repoName}` : repoName;
     const res = await spawnStreaming(
       "gh",
-      ["repo", "create", repo, "--private", "--source", ".", "--push"],
+      ["repo", "create", qualifiedName, "--private", "--source", ".", "--push"],
       { cwd: agentDir },
       onLog,
     );
-    if (res.status !== 0) throw new DeployError(`gh repo create failed:\n${res.output}`);
-    const url = parseRepoUrl(res.output) ?? `https://github.com/<your-account>/${repo}`;
 
+    let url: string;
+    let owner: string;
+    let repo: string;
+
+    if (res.status !== 0) {
+      if (!/already exists/i.test(res.output)) {
+        throw new DeployError(`gh repo create failed:\n${res.output}`);
+      }
+      // Repo already exists — recover: get URL, set remote, force-push.
+      onLog([`[github] repo "${qualifiedName}" already exists — recovering…`]);
+      const viewRes = spawnSync("gh", ["repo", "view", qualifiedName, "--json", "url", "--jq", ".url"], {
+        stdio: "pipe",
+        encoding: "utf8",
+      });
+      url = viewRes.stdout?.trim() ?? "";
+      if (!url) {
+        throw new DeployError(
+          `Repo "${qualifiedName}" already exists but its URL could not be resolved. ` +
+          `Run \`gh repo view ${qualifiedName}\` to confirm and set the remote manually.`,
+        );
+      }
+      // Set or update the remote.
+      const remoteOk = spawnSync("git", ["remote", "get-url", "origin"], {
+        cwd: agentDir, stdio: "pipe", encoding: "utf8",
+      }).status === 0;
+      if (remoteOk) {
+        spawnSync("git", ["remote", "set-url", "origin", url], { cwd: agentDir, stdio: "ignore" });
+      } else {
+        spawnSync("git", ["remote", "add", "origin", url], { cwd: agentDir, stdio: "ignore" });
+      }
+      const pushRes = await spawnStreaming("git", ["push", "-f", "origin", "main"], { cwd: agentDir }, onLog);
+      if (pushRes.status !== 0) throw new DeployError(`git push -f origin main failed:\n${pushRes.output}`);
+      const parsed = parseOwnerRepo(url);
+      if (!parsed) throw new DeployError(`Could not parse owner/repo from URL: ${url}`);
+      owner = parsed.owner;
+      repo = parsed.repo;
+    } else {
+      url = parseRepoUrl(res.output) ?? `https://github.com/<your-account>/${repoName}`;
+      const parsed = parseOwnerRepo(url);
+      owner = parsed?.owner ?? "<your-account>";
+      repo = parsed?.repo ?? repoName;
+    }
+
+    return { url, owner, repo };
+  }
+
+  /**
+   * Publish the converted project as a GitHub repo whose CI builds the image to
+   * GHCR. Returns the repo URL (an artifact — nothing is running yet). The user
+   * deploys the published image on a host and connects Fleet by URL.
+   */
+  async #runGithub(
+    agentName: string,
+    agentDir: string,
+    repoOwner: string | undefined,
+    onProgress: DeployProgress,
+    onLog: DeployLog,
+  ): Promise<Omit<DeployArtifact, "unmapped">> {
+    const { url } = await this.#pushToGithub(agentName, agentDir, repoOwner, onProgress, onLog);
     onProgress("done");
     return {
       kind: "artifact",
@@ -280,9 +356,50 @@ export class FlueDeployer {
       target: "github",
       url,
       message:
-        "Repo published with its Dockerfile. Point a self-hosted Docker PaaS (Coolify, Dokploy, …) " +
+        "Repo published with its Dockerfile. Point a self-hosted Docker PaaS (Coolify, …) " +
         "at it to build and run the agent, then connect Fleet to the running URL.",
     };
+  }
+
+  /**
+   * Push the project to GitHub, then drive a Dokploy instance (via its REST API)
+   * to create/configure/deploy the agent and wait until it is live. Returns the
+   * `baseUrl` so the generic `deploy()` tail can connect the FlueAdapter.
+   *
+   * Requires DOKPLOY_URL + DOKPLOY_API_KEY in the environment (preflight checks
+   * these). The Dokploy instance must have a GitHub App connected in its UI.
+   */
+  async #runDokploy(
+    agentName: string,
+    agentDir: string,
+    apiKeyEnv: string,
+    key: string | undefined,
+    repoOwner: string | undefined,
+    onProgress: DeployProgress,
+    onLog: DeployLog,
+  ): Promise<string> {
+    const dokployUrl = process.env.DOKPLOY_URL;
+    const dokployKey = process.env.DOKPLOY_API_KEY;
+    // Should never reach here with missing creds (preflight guards them), but
+    // fail fast with a clear message rather than a cryptic network error.
+    if (!dokployUrl || !dokployKey) {
+      throw new DeployError(
+        "Dokploy deploy needs DOKPLOY_URL and DOKPLOY_API_KEY. Set them in the environment, then retry.",
+      );
+    }
+    const { owner, repo } = await this.#pushToGithub(agentName, agentDir, repoOwner, onProgress, onLog);
+    const baseUrl = await runDokployOrchestration({
+      cfg: { url: dokployUrl, key: dokployKey },
+      agentName,
+      apiKeyEnv,
+      key,
+      owner,
+      repo,
+      onProgress,
+      onLog,
+    });
+    await waitReady(baseUrl);
+    return baseUrl;
   }
 
   /**
@@ -436,7 +553,7 @@ export class FlueDeployer {
   /**
    * Stop a single deployed agent's runtime (called by GatewayCore on agent.stop / agent.delete).
    * For docker-local: removes the container. For local-process: kills the child.
-   * For remote targets (fly, cloudflare, github): no-op — remote infra teardown is out
+   * For remote targets (fly, cloudflare, github, dokploy): no-op — remote infra teardown is out
    * of scope for v1; the Core just disconnects the adapter locally.
    */
   stopDeployment(agentName: string, target: DeployTarget): void {
@@ -480,6 +597,12 @@ export class FlueDeployer {
       case "github":
         checks.push(checkBinary("git", "Git CLI", "Install Git: https://git-scm.com/"));
         checks.push(checkGhAuth());
+        break;
+      case "dokploy":
+        checks.push(checkBinary("git", "Git CLI", "Install Git: https://git-scm.com/"));
+        checks.push(checkGhAuth());
+        checks.push(checkEnvToken("DOKPLOY_URL", "Dokploy instance URL (DOKPLOY_URL)", "Set DOKPLOY_URL in your environment."));
+        checks.push(checkEnvToken("DOKPLOY_API_KEY", "Dokploy API key (DOKPLOY_API_KEY)", "Set DOKPLOY_API_KEY in your environment."));
         break;
       default:
         // local-process: no CLI/daemon check (Node is already running); apiKey below.
@@ -780,6 +903,13 @@ function parseRepoUrl(out: string): string | null {
   return out.match(/https:\/\/github\.com\/[^\s]+/)?.[0] ?? null;
 }
 
+/** Extract owner and repo name from a GitHub HTTPS URL (repo names may contain dots). */
+function parseOwnerRepo(url: string): { owner: string; repo: string } | null {
+  const m = url.match(/github\.com\/([^/\s]+)\/([^/\s]+)/);
+  if (!m || !m[1] || !m[2]) return null;
+  return { owner: m[1], repo: m[2].replace(/\.git$/, "") };
+}
+
 /** Extract the first `*.workers.dev` URL from wrangler output. */
 function parseWorkersUrl(out: string): string | null {
   return out.match(/https:\/\/[^\s]+\.workers\.dev/)?.[0] ?? null;
@@ -808,6 +938,280 @@ primary_region = "iad"
   auto_start_machines = true
   min_machines_running = 0
 `;
+}
+
+// ── Dokploy API client + orchestration ──────────────────────────────────────
+
+const DOKPLOY_POLL_INTERVAL_MS = 5_000;
+const DOKPLOY_DEPLOY_TIMEOUT_MS = 10 * 60 * 1_000; // 10 minutes
+
+/**
+ * Minimal Dokploy REST API client. All Dokploy endpoints follow the pattern
+ * `<DOKPLOY_URL>/api/<procedure>` with `x-api-key` authentication.
+ * GET queries receive params appended as a query string; POSTs send a JSON body.
+ * Throws DeployError on any non-2xx response.
+ *
+ * exported for tests — the fetchImpl parameter allows injection of a fake fetch.
+ */
+export async function dokployApi(
+  cfg: { url: string; key: string },
+  method: "GET" | "POST",
+  procedure: string,
+  body?: unknown,
+  fetchImpl: typeof fetch = fetch,
+): Promise<unknown> {
+  const base = cfg.url.replace(/\/$/, "");
+  const headers: Record<string, string> = { "x-api-key": cfg.key, "Content-Type": "application/json" };
+  let url = `${base}/api/${procedure}`;
+  const init: RequestInit = { method, headers };
+
+  if (method === "GET" && body && typeof body === "object") {
+    const qs = new URLSearchParams(body as Record<string, string>).toString();
+    url = `${url}?${qs}`;
+  } else if (method === "POST" && body !== undefined) {
+    init.body = JSON.stringify(body);
+  }
+
+  const res = await fetchImpl(url, init);
+  if (!res.ok) {
+    const text = await (res as Response).text().catch(() => "");
+    throw new DeployError(`Dokploy API ${procedure} failed (${res.status}): ${text}`);
+  }
+  // Some procedures return an empty body on self-hosted instances (e.g.
+  // `application.deploy` enqueues and returns nothing) — `res.json()` would
+  // throw "Unexpected end of JSON input". Parse defensively.
+  const text = await (res as Response).text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+/**
+ * Drive the Dokploy REST API to create/configure/deploy the agent and poll until
+ * it is live. Takes the GitHub owner/repo produced by `#pushToGithub` so this
+ * function is testable in isolation without spawning git or gh processes.
+ *
+ * exported for tests — pass fetchImpl and pollIntervalMs to inject fakes.
+ */
+export async function runDokployOrchestration(opts: {
+  cfg: { url: string; key: string };
+  agentName: string;
+  apiKeyEnv: string;
+  key: string | undefined;
+  owner: string;
+  repo: string;
+  onProgress: DeployProgress;
+  onLog: DeployLog;
+  /** Override fetch implementation (for tests). */
+  fetchImpl?: typeof fetch;
+  /** Override poll interval in ms (use 0 for fast tests). */
+  pollIntervalMs?: number;
+}): Promise<string> {
+  const { cfg, agentName, apiKeyEnv, key, owner, repo, onProgress, onLog } = opts;
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const pollIntervalMs = opts.pollIntervalMs ?? DOKPLOY_POLL_INTERVAL_MS;
+  const api = (method: "GET" | "POST", procedure: string, body?: unknown) =>
+    dokployApi(cfg, method, procedure, body, fetchImpl);
+
+  // 1. Resolve githubId
+  onLog(["[dokploy] resolving GitHub provider…"]);
+  let githubId: string;
+  if (process.env.DOKPLOY_GITHUB_ID) {
+    githubId = process.env.DOKPLOY_GITHUB_ID;
+    onLog([`[dokploy] using DOKPLOY_GITHUB_ID=${githubId}`]);
+  } else {
+    const providers = (await api("GET", "github.githubProviders")) as Array<{ githubId: string }>;
+    if (!Array.isArray(providers) || providers.length === 0) {
+      throw new DeployError(
+        "No GitHub App provider found in Dokploy. Connect a GitHub App in Dokploy's Git Providers settings, then retry.",
+      );
+    }
+    if (providers.length > 1) {
+      throw new DeployError(
+        `Multiple GitHub providers found. Set DOKPLOY_GITHUB_ID to one of: ${providers.map((p) => p.githubId).join(", ")}.`,
+      );
+    }
+    githubId = providers[0]!.githubId;
+  }
+
+  // 2. Resolve project + default environment
+  onLog(["[dokploy] resolving project and environment…"]);
+  type DokployApp = { applicationId: string; name: string; applicationStatus: string; appName?: string };
+  type DokployEnv = { name: string; environmentId: string; isDefault: boolean; applications?: DokployApp[] };
+  type DokployProject = { projectId: string; name: string; environments: DokployEnv[] };
+
+  const projects = (await api("GET", "project.all")) as DokployProject[];
+  if (!Array.isArray(projects) || projects.length === 0) {
+    throw new DeployError("No projects found in Dokploy. Create a project first, then retry.");
+  }
+
+  let project: DokployProject;
+  const projectName = process.env.DOKPLOY_PROJECT;
+  if (projectName) {
+    const found = projects.find((p) => p.name === projectName);
+    if (!found) {
+      throw new DeployError(
+        `Project "${projectName}" not found (DOKPLOY_PROJECT). Available: ${projects.map((p) => p.name).join(", ")}.`,
+      );
+    }
+    project = found;
+  } else if (projects.length === 1) {
+    project = projects[0]!;
+  } else {
+    throw new DeployError(
+      `Multiple projects found. Set DOKPLOY_PROJECT to one of: ${projects.map((p) => p.name).join(", ")}.`,
+    );
+  }
+
+  const envs = project.environments ?? [];
+  if (envs.length === 0) {
+    throw new DeployError(`Project "${project.name}" has no environments.`);
+  }
+  const defaultEnv = envs.find((e) => e.isDefault) ?? (envs.length === 1 ? envs[0] : null);
+  if (!defaultEnv) {
+    throw new DeployError(
+      `No default environment in project "${project.name}". Set isDefault on one environment in Dokploy.`,
+    );
+  }
+
+  // 3. Find or create application
+  onLog([`[dokploy] project="${project.name}" environment="${defaultEnv.name}"`]);
+  const existingApp = (defaultEnv.applications ?? []).find((a) => a.name === agentName);
+  let applicationId: string;
+  let appName: string;
+
+  if (existingApp) {
+    applicationId = existingApp.applicationId;
+    appName = existingApp.appName ?? existingApp.name;
+    onLog([`[dokploy] reusing existing application "${agentName}" (${applicationId})`]);
+  } else {
+    onLog([`[dokploy] creating application "${agentName}"…`]);
+    const created = (await api("POST", "application.create", {
+      name: agentName,
+      environmentId: defaultEnv.environmentId,
+    })) as { applicationId: string; appName?: string; name?: string };
+    applicationId = created.applicationId;
+    appName = created.appName ?? created.name ?? agentName;
+    onLog([`[dokploy] application created (${applicationId})`]);
+  }
+
+  // 4. Configure GitHub source
+  onLog(["[dokploy] configuring GitHub source…"]);
+  await api("POST", "application.saveGithubProvider", {
+    applicationId,
+    repository: repo,
+    owner,
+    branch: "main",
+    buildPath: "/",
+    githubId,
+    triggerType: "push",
+  });
+
+  // 5. Configure build type
+  onLog(["[dokploy] setting build type to dockerfile…"]);
+  await api("POST", "application.saveBuildType", {
+    applicationId,
+    buildType: "dockerfile",
+    dockerfile: "Dockerfile",
+    dockerContextPath: null,
+    dockerBuildStage: null,
+    herokuVersion: null,
+    railpackVersion: null,
+  });
+
+  // 6. Inject the model provider key as an environment variable
+  onLog(["[dokploy] setting provider environment variable…"]);
+  await api("POST", "application.saveEnvironment", {
+    applicationId,
+    env: `${apiKeyEnv}=${key ?? ""}`,
+    buildArgs: null,
+    buildSecrets: null,
+    createEnvFile: false,
+  });
+
+  // 7. Domain — reuse on redeploy if possible; otherwise create
+  type DomainResult = { host: string; https: boolean; certificateType: string };
+  let domainResult: DomainResult | null = null;
+
+  if (existingApp) {
+    try {
+      const domains = (await api("GET", "domain.byApplicationId", { applicationId })) as DomainResult[];
+      if (Array.isArray(domains) && domains.length > 0) {
+        const d = domains[0]!;
+        domainResult = { host: d.host, https: d.https, certificateType: d.certificateType };
+        onLog([`[dokploy] reusing existing domain ${domainResult.host}`]);
+      }
+    } catch {
+      // domain.byApplicationId may not be available on all Dokploy versions — fall through
+    }
+  }
+
+  if (!domainResult) {
+    const customDomain = process.env.DOKPLOY_DOMAIN;
+    let host: string;
+    let tlsEnabled: boolean;
+    let certType: string;
+
+    if (customDomain) {
+      host = customDomain;
+      tlsEnabled = true;
+      certType = "letsencrypt";
+      onLog([`[dokploy] using custom domain ${host} (https + letsencrypt)`]);
+    } else {
+      onLog(["[dokploy] generating domain…"]);
+      const generated = (await api("POST", "domain.generateDomain", { appName })) as unknown;
+      host = typeof generated === "string" ? generated : String(generated);
+      tlsEnabled = false;
+      certType = "none";
+      onLog([`[dokploy] generated domain: ${host}`]);
+    }
+
+    onLog(["[dokploy] creating domain record…"]);
+    await api("POST", "domain.create", {
+      host,
+      applicationId,
+      port: 8080,
+      https: tlsEnabled,
+      certificateType: certType,
+      domainType: "application",
+      path: "/",
+    });
+
+    domainResult = { host, https: tlsEnabled, certificateType: certType };
+  }
+
+  // 8. Trigger deployment
+  onProgress("deploying", "dokploy deploy");
+  onLog(["[dokploy] triggering deployment…"]);
+  await api("POST", "application.deploy", { applicationId });
+
+  // 9. Poll until the deployment reaches a terminal state
+  onLog(["[dokploy] waiting for deployment to complete…"]);
+  type AppStatus = { applicationStatus: "idle" | "running" | "done" | "error" };
+  const deadline = Date.now() + DOKPLOY_DEPLOY_TIMEOUT_MS;
+  let deployDone = false;
+  while (Date.now() < deadline) {
+    await sleep(pollIntervalMs);
+    const appState = (await api("GET", "application.one", { applicationId })) as AppStatus;
+    onLog([`[dokploy] deployment status: ${appState.applicationStatus}`]);
+    if (appState.applicationStatus === "done") {
+      deployDone = true;
+      break;
+    }
+    if (appState.applicationStatus === "error") {
+      throw new DeployError(
+        "Dokploy deployment failed. Check the deployment logs in your Dokploy dashboard for details.",
+      );
+    }
+  }
+  if (!deployDone) {
+    throw new DeployError("Dokploy deployment timed out after 10 minutes. Check the deployment logs in your Dokploy dashboard.");
+  }
+
+  return `${domainResult.https ? "https" : "http"}://${domainResult.host}`;
 }
 
 // ── process helpers ──────────────────────────────────────────────────────────

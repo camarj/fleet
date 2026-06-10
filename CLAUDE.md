@@ -28,11 +28,12 @@ agent (`packages/converter`, `@inteliside/gateway-converter`), **deploys** it
 4. **Never invent Flue wire behavior.** Verify against the installed `@flue/sdk`
    / `@flue/cli` or the `flue-client` skill (`references/flue-wire.md`,
    `flue-authoring.md`). If behavior is unspecified, check there first, then ask.
-5. **Four deploy targets** (`packages/core/src/deploy/flue-deployer.ts`):
+5. **Five deploy targets** (`packages/core/src/deploy/flue-deployer.ts`):
    `docker-local`, `fly` (Fly.io, needs `FLY_API_TOKEN`), `cloudflare` (Workers,
-   needs `CLOUDFLARE_API_TOKEN`), and `github` (push a repo for a self-hosted
-   Docker PaaS — Coolify/Dokploy). `local-process` exists for Docker-free tests
-   only and is not offered in the UI.
+   needs `CLOUDFLARE_API_TOKEN`), `github` (push a repo for a self-hosted Docker
+   PaaS — Coolify), and `dokploy` (Dokploy REST API, needs `DOKPLOY_URL` +
+   `DOKPLOY_API_KEY`). `local-process` exists for Docker-free tests only and is
+   not offered in the UI.
 6. **Cloudflare is supported** (the runtime is Flue/TypeScript, which runs on
    Workers). The converter emits a real `wrangler.jsonc`; the deployer runs
    `flue build --target cloudflare` + `wrangler deploy`. Never invent the Flue CF

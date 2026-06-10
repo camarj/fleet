@@ -49,6 +49,9 @@ export interface DeployParams {
   provider: string | null;
   model: string | null;
   target: string;
+  /** GitHub account or organization that received the pushed repo; null means the
+   * authenticated user's personal account (the gh CLI default). */
+  repoOwner: string | null;
 }
 
 const SCHEMA = `
@@ -152,6 +155,8 @@ export class GatewayState {
     this.#addColumnIfMissing(`ALTER TABLE sessions ADD COLUMN preview TEXT NOT NULL DEFAULT ''`);
     // WU-09: add `log` column to deploys — stores the last deploy log per agent.
     this.#addColumnIfMissing(`ALTER TABLE deploys ADD COLUMN log TEXT`);
+    // feat(deploy): add `repo_owner` column — GitHub account or org that received the pushed repo.
+    this.#addColumnIfMissing(`ALTER TABLE deploys ADD COLUMN repo_owner TEXT`);
   }
 
   /**
@@ -242,16 +247,17 @@ export class GatewayState {
     const now = new Date().toISOString();
     this.#db
       .prepare(
-        `INSERT INTO deploys (agent_id, source_dir, provider, model, target, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)
+        `INSERT INTO deploys (agent_id, source_dir, provider, model, target, repo_owner, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(agent_id) DO UPDATE SET
            source_dir = excluded.source_dir,
            provider = excluded.provider,
            model = excluded.model,
            target = excluded.target,
+           repo_owner = excluded.repo_owner,
            updated_at = excluded.updated_at`,
       )
-      .run(agentId, params.sourceDir, params.provider, params.model, params.target, now);
+      .run(agentId, params.sourceDir, params.provider, params.model, params.target, params.repoOwner ?? null, now);
   }
 
   getDeploy(agentId: string): DeployParams | null {
@@ -259,7 +265,7 @@ export class GatewayState {
       | DeployDbRow
       | undefined;
     if (!row) return null;
-    return { sourceDir: row.source_dir, provider: row.provider, model: row.model, target: row.target };
+    return { sourceDir: row.source_dir, provider: row.provider, model: row.model, target: row.target, repoOwner: row.repo_owner ?? null };
   }
 
   hasDeploy(agentId: string): boolean {
@@ -470,6 +476,7 @@ interface DeployDbRow {
   provider: string | null;
   model: string | null;
   target: string;
+  repo_owner: string | null;
   log: string | null;
   updated_at: string;
 }

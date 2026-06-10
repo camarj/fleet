@@ -237,11 +237,34 @@ desde Fleet. Memoria vectorial (Flue solo da persistencia de sesión; memoria po
   en el Sidebar + modal `DeployProgress`. Caveat: agentes deployados ANTES de este
   cambio no tienen params guardados → sin botón hasta re-deployarlos una vez.
 
+## Sesión 2026-06-10 — quinto target `dokploy` + verificación en vivo ✓
+
+- **Nuevo target `dokploy`** (PR #17): tras convertir, Fleet pushea el repo a
+  GitHub (helper compartido `#pushToGithub`, idempotente: repo existente →
+  force-push) y maneja la instancia Dokploy del usuario por su REST API
+  (`x-api-key`): crear/reusar app → source GitHub App → buildType dockerfile →
+  env del provider → dominio → deploy → poll hasta `done` → `waitReady` →
+  conexión automática. Config: `DOKPLOY_URL` + `DOKPLOY_API_KEY` (requeridos,
+  con preflight), `DOKPLOY_PROJECT` / `DOKPLOY_GITHUB_ID` / `DOKPLOY_DOMAIN`
+  (opcionales, auto-resolución cuando no son ambiguos). API verificada contra
+  el código fuente de Dokploy (tRPC routers + schemas Drizzle), no contra docs.
+- **VERIFICADO EN VIVO end-to-end** (dev1.codetrain.cloud): deploy automático +
+  chat con el agente funcionando. La verificación en vivo encontró y arregló:
+  (1) `application.deploy` devuelve cuerpo VACÍO en instancias self-hosted →
+  parseo defensivo en `dokployApi`; (2) la GitHub App del Dokploy solo veía
+  repos de la organización, no de la cuenta personal → selector **"Push repo
+  to"** (cuenta u org) en el wizard, persistido en `deploys.repo_owner` para
+  el redeploy de un click.
+- **Estado targets**: `docker-local` ✓, `cloudflare` ✓ (sesión anterior),
+  `dokploy` ✓. `fly` bloqueado (cuenta high-risk). `github`→Coolify manual
+  pendiente. Limitación conocida: Fleet no puede auto-otorgar acceso de la
+  GitHub App a repos nuevos — instalar la App con "All repositories".
+
 ## Próxima sesión — continuar acá
 
-1. **Verificar en vivo los otros targets** con credenciales reales: Fly.io
-   (`FLY_API_TOKEN`), Cloudflare (`CLOUDFLARE_API_TOKEN`), y el repo self-host
-   (Coolify/Dokploy). Hasta ahora solo `docker-local` está verificado end-to-end.
+1. **Verificar en vivo los targets restantes**: Fly.io (`FLY_API_TOKEN`,
+   desbloquear cuenta) y el flujo manual `github`→Coolify. `docker-local`,
+   `cloudflare` y `dokploy` ya están verificados end-to-end.
 2. **Provider/model swap real:** deployar el mismo agente cambiando proveedor
    (ej. anthropic→openai/google) y confirmar que corre.
 3. **Dev DX:** resolver el converter desde `src` en dev (tsconfig paths / export

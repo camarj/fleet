@@ -129,15 +129,15 @@ export type RuntimeErrorCode =
 
 // ── Frontend → Core ──────────────────────────────────────────────────────────
 
-/** Where a converted agent is deployed (the four offered in the UI). */
-export type DeployTarget = "docker-local" | "fly" | "github" | "cloudflare";
+/** Where a converted agent is deployed (the five offered in the UI). */
+export type DeployTarget = "docker-local" | "fly" | "github" | "cloudflare" | "dokploy";
 
 export type ClientRequest =
   | { type: "agents.list" }
   /** Connect a served Flue agent over its HTTP+WebSocket API. */
   | { type: "agent.connectFlue"; baseUrl: string; agentName: string; instanceId?: string; token?: string }
   /** Convert a local Claude Code project to a Flue agent, deploy it, and connect. */
-  | { type: "agent.deployFlue"; sourceDir: string; provider?: string; model?: string; target?: DeployTarget }
+  | { type: "agent.deployFlue"; sourceDir: string; provider?: string; model?: string; target?: DeployTarget; repoOwner?: string }
   | { type: "agent.redeploy"; agentId: string }
   /** Stop the agent's runtime and close the adapter; the registration is kept so it can be redeployed. */
   | { type: "agent.stop"; agentId: string }
@@ -153,6 +153,8 @@ export type ClientRequest =
   | { type: "config.set"; agentId: string; modelSpecifier: string | null; parameters?: ModelParameters | null }
   /** Run preflight checks for a deploy target before deploying (no side-effects). */
   | { type: "deploy.preflight"; provider?: string; model?: string; target: DeployTarget }
+  /** List the GitHub accounts and organizations available to push repos to (personal account first). */
+  | { type: "deploy.githubOwners" }
   /** Retrieve the last deploy log for an agent (persisted at the end of the most recent deploy). */
   | { type: "deploy.lastLog"; agentId: string }
   // ── Orchestration (workflows) ──
@@ -198,6 +200,9 @@ export type ServerEvent =
   | { type: "error"; message: string; requestType?: string }
   /** Results of a deploy.preflight request — one entry per check performed. */
   | { type: "deploy.preflight"; checks: PreflightCheck[] }
+  /** Available GitHub owners: the authenticated user's login first, followed by org logins.
+   * Empty array when gh is unavailable or not authenticated. */
+  | { type: "deploy.githubOwners"; owners: string[] }
   /** The last deploy log for an agent. `log` is null if no deploy has been completed yet. */
   | { type: "deploy.lastLog"; agentId: string; log: string | null }
   // ── Orchestration (workflows) ──

@@ -14,8 +14,9 @@ import { ModelPicker } from "../ModelPicker/ModelPicker";
 const DEPLOY_TARGETS: { value: DeployTarget; label: string; hint: string }[] = [
   { value: "docker-local", label: "Docker — local", hint: "Run a container on this machine." },
   { value: "fly", label: "Docker — Fly.io", hint: "Deploy to Fly.io (needs FLY_API_TOKEN)." },
-  { value: "github", label: "Git repo — self-host", hint: "Push a repo to deploy on Coolify / Dokploy." },
+  { value: "github", label: "Git repo — self-host", hint: "Push a repo to deploy on Coolify / other self-hosted PaaS." },
   { value: "cloudflare", label: "Cloudflare Workers", hint: "Deploy as a Worker (needs CLOUDFLARE_API_TOKEN)." },
+  { value: "dokploy", label: "Dokploy — self-host", hint: "Auto-deploy to your Dokploy instance (needs DOKPLOY_URL + DOKPLOY_API_KEY)." },
 ];
 
 const STEPS = ["Project", "Model", "Target", "Deploy"] as const;
@@ -30,8 +31,11 @@ interface Props {
   deployUnmapped: { kind: string; name: string; reason: string }[];
   /** Preflight check results (null = loading / not yet run). */
   preflightChecks: PreflightCheck[] | null;
+  /** GitHub owners available to push repos to. null = not yet fetched; [] = gh unavailable. */
+  githubOwners: string[] | null;
   onPreflight: (params: { provider?: string; model?: string; target: DeployTarget }) => void;
-  onDeploy: (req: { sourceDir: string; provider?: string; model?: string; target: DeployTarget }) => void;
+  onRequestGithubOwners: () => void;
+  onDeploy: (req: { sourceDir: string; provider?: string; model?: string; target: DeployTarget; repoOwner?: string }) => void;
   onClose: () => void;
 }
 
@@ -43,7 +47,9 @@ export function DeployWizard({
   deployLog,
   deployUnmapped,
   preflightChecks,
+  githubOwners,
   onPreflight,
+  onRequestGithubOwners,
   onDeploy,
   onClose,
 }: Props): React.JSX.Element {
@@ -52,6 +58,8 @@ export function DeployWizard({
   const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
   const logRef = useRef<HTMLPreElement>(null);
+  /** The GitHub owner (account or org) the user picked for the pushed repo. */
+  const [repoOwner, setRepoOwner] = useState<string | undefined>(undefined);
 
   // Keep the live log scrolled to the newest line.
   useEffect(() => {
@@ -84,6 +92,14 @@ export function DeployWizard({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, started]);
 
+  // Fetch the GitHub owner list the first time github/dokploy is selected.
+  useEffect(() => {
+    if ((target === "github" || target === "dokploy") && githubOwners === null) {
+      onRequestGithubOwners();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target]);
+
   async function browse(): Promise<void> {
     const dir = await pickDirectory();
     if (dir) setSourceDir(dir);
@@ -96,11 +112,15 @@ export function DeployWizard({
   function deploy(): void {
     if (!sourceDir.trim()) return;
     setStarted(true);
+    // When the target uses a pushed repo, include the chosen owner (falls back to
+    // the first in the list if the user never touched the select).
+    const effectiveOwner = repoOwner ?? (githubOwners?.[0]);
     onDeploy({
       sourceDir: sourceDir.trim(),
       provider: provider || undefined,
       model: model.trim() || undefined,
       target,
+      repoOwner: (target === "github" || target === "dokploy") ? effectiveOwner : undefined,
     });
   }
 
@@ -201,6 +221,33 @@ export function DeployWizard({
                 <span className="target-card-hint">{t.hint}</span>
               </button>
             ))}
+
+            {/* Owner picker — only for targets that push a repo to GitHub */}
+            {(target === "github" || target === "dokploy") && (
+              <div className="wizard-field">
+                <label htmlFor="repo-owner-select" className="wizard-field-label">
+                  Push repo to
+                </label>
+                <select
+                  id="repo-owner-select"
+                  className="wizard-select"
+                  value={repoOwner ?? githubOwners?.[0] ?? ""}
+                  onChange={(e) => setRepoOwner(e.target.value || undefined)}
+                  disabled={!githubOwners || githubOwners.length === 0}
+                >
+                  {!githubOwners || githubOwners.length === 0 ? (
+                    <option value="">(default account)</option>
+                  ) : (
+                    githubOwners.map((o) => (
+                      <option key={o} value={o}>{o}</option>
+                    ))
+                  )}
+                </select>
+                {!githubOwners && (
+                  <span className="wizard-field-hint">Loading owners…</span>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -219,6 +266,12 @@ export function DeployWizard({
               <span>Target</span>
               <code>{activeTarget?.label}</code>
             </div>
+            {(target === "github" || target === "dokploy") && (
+              <div className="review-row">
+                <span>Push to</span>
+                <code>{repoOwner ?? githubOwners?.[0] ?? "(default account)"}</code>
+              </div>
+            )}
 
             {/* Preflight checklist */}
             <div className="preflight-section">
