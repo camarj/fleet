@@ -194,6 +194,7 @@ export function DeployWizard({
               <button
                 key={t.value}
                 className={`target-card${target === t.value ? " selected" : ""}`}
+                aria-pressed={target === t.value}
                 onClick={() => setTarget(t.value)}
               >
                 <span className="target-card-label">{t.label}</span>

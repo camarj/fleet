@@ -58,6 +58,8 @@ export function Sidebar({
         <span
           className={`dot ${connected ? "online" : "offline"}`}
           title={connected ? "connected to Core" : "disconnected"}
+          role="status"
+          aria-label={connected ? "Connected to Core" : "Disconnected"}
         />
       </div>
 
@@ -67,6 +69,16 @@ export function Sidebar({
             key={a.id}
             className={`agent ${a.id === selectedId ? "selected" : ""}`}
             onClick={() => onSelect(a.id)}
+            role="button"
+            tabIndex={0}
+            aria-pressed={a.id === selectedId}
+            aria-label={`Select agent ${a.name}`}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onSelect(a.id);
+              }
+            }}
           >
             <div className="agent-name">
               {a.name}
@@ -78,6 +90,7 @@ export function Sidebar({
                 className="btn-ghost agent-config"
                 disabled={!connected}
                 title="Configure this agent's model"
+                aria-label={`Configure model for ${a.name}`}
                 onClick={(e) => {
                   e.stopPropagation();
                   onOpenConfig(a.id);
@@ -90,6 +103,7 @@ export function Sidebar({
                   className="btn-ghost agent-redeploy"
                   disabled={!connected}
                   title="Rebuild and deploy this agent again (picks up new API keys/settings)"
+                  aria-label={`Redeploy ${a.name}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     onRedeploy(a.id);
@@ -103,6 +117,7 @@ export function Sidebar({
                   className="btn-ghost agent-deploy-log"
                   disabled={!connected}
                   title="View the log from the last deploy"
+                  aria-label={`View deploy log for ${a.name}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     onViewDeployLog(a.id);
@@ -116,6 +131,7 @@ export function Sidebar({
                   className="btn-ghost agent-stop"
                   disabled={!connected}
                   title="Stop this agent's runtime (keeps registration for redeploy)"
+                  aria-label={`Stop ${a.name}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     onStop(a.id);
@@ -128,6 +144,7 @@ export function Sidebar({
                 className="btn-ghost agent-delete"
                 disabled={!connected}
                 title="Permanently remove this agent from Fleet"
+                aria-label={`Delete ${a.name}`}
                 onClick={(e) => {
                   e.stopPropagation();
                   setConfirmDeleteId(a.id);

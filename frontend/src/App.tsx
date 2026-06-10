@@ -150,14 +150,7 @@ export function App(): React.JSX.Element {
       } else if (e.type === "agent.updated") {
         setAgents((prev) => upsertAgent(prev, e.agent));
       } else if (e.type === "agent.removed") {
-        setAgents((prev) => {
-          const next = prev.filter((a) => a.id !== e.agentId);
-          setSelectedId((cur) => {
-            if (cur !== e.agentId) return cur;
-            return next[0]?.id ?? null;
-          });
-          return next;
-        });
+        setAgents((prev) => prev.filter((a) => a.id !== e.agentId));
       } else if (e.type === "secrets.status") {
         setSecretsProviders(e.providers);
       } else if (e.type === "deploy.progress") {
@@ -215,6 +208,15 @@ export function App(): React.JSX.Element {
       offStatus();
     };
   }, [client]);
+
+  // Keep the selection valid: if the selected agent disappears (deleted,
+  // removed on reconnect), fall back to the first remaining agent. Pure +
+  // idempotent, so it is StrictMode-safe.
+  useEffect(() => {
+    if (selectedId !== null && !agents.some((a) => a.id === selectedId)) {
+      setSelectedId(agents[0]?.id ?? null);
+    }
+  }, [agents, selectedId]);
 
   const selected = agents.find((a) => a.id === selectedId) ?? null;
 
