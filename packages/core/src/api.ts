@@ -43,6 +43,11 @@ export interface AgentSummary {
   /** True while the Core holds a live adapter for it. */
   online: boolean;
   model: string;
+  /** The base URL the Core connects to (the Flue agent endpoint). */
+  url: string;
+  /** Deploy target this agent currently lives on (e.g. "cloudflare", "fly",
+   * "docker-local"), or null for agents attached by URL (no deploy on record). */
+  target: string | null;
   /** True when Fleet has the original deploy params and can redeploy it in one click. */
   redeployable: boolean;
 }
