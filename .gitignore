@@ -21,3 +21,6 @@ apps/desktop/.sidecar-build/
 
 # Local skill-registry (leaks absolute paths / personal skills)
 .atl/
+
+# Playwright MCP smoke-test artifacts
+.playwright-mcp/
