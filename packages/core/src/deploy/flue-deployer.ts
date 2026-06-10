@@ -319,6 +319,8 @@ export class FlueDeployer {
     );
     if (build.status !== 0) throw new DeployError(`flue build --target cloudflare failed:\n${build.output}`);
 
+    // Build-success guard. The build emits the worker to dist/<worker>/wrangler.json
+    // AND a `.wrangler/deploy/config.json` redirect at the project root pointing to it.
     const outDir = findCfOutputDir(join(agentDir, "dist"));
     if (!outDir) throw new DeployError("the Cloudflare build did not produce a deployable dist/<worker>/ directory.");
 
@@ -326,8 +328,14 @@ export class FlueDeployer {
     if (!wranglerBin) throw new DeployError("could not find wrangler after installing the Cloudflare build deps.");
     const cfEnv = { ...process.env, CLOUDFLARE_API_TOKEN: token };
 
+    // Run wrangler from the PROJECT ROOT (agentDir), not the dist output dir. The
+    // modern Flue/Cloudflare-Vite build writes a deploy-config redirect at
+    // <agentDir>/.wrangler/deploy/config.json → dist/<worker>/wrangler.json.
+    // Running inside dist/<worker> makes wrangler find that built wrangler.json
+    // AND the redirect two levels up, on different base paths → it aborts with
+    // "not clear which should be used". From the root the redirect resolves cleanly.
     onProgress("deploying", "wrangler deploy");
-    const deploy = await spawnStreaming(wranglerBin, ["deploy"], { cwd: outDir, env: cfEnv }, onLog);
+    const deploy = await spawnStreaming(wranglerBin, ["deploy"], { cwd: agentDir, env: cfEnv }, onLog);
     if (deploy.status !== 0) throw new DeployError(`wrangler deploy failed:\n${deploy.output}`);
 
     const baseUrl = parseWorkersUrl(deploy.output);
@@ -336,9 +344,10 @@ export class FlueDeployer {
     }
 
     // Store the model provider key as a Worker secret (stdin → never in argv/repo).
+    // Also from the project root so the same deploy-config redirect targets the worker.
     if (key) {
       const secret = spawnSync(wranglerBin, ["secret", "put", apiKeyEnv], {
-        cwd: outDir,
+        cwd: agentDir,
         input: key,
         stdio: ["pipe", "pipe", "pipe"],
         encoding: "utf8",
