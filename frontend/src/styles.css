@@ -405,6 +405,26 @@ body {
   color: var(--muted);
 }
 
+.session-picker {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 11px;
+  font-family: inherit;
+  max-width: 260px;
+  cursor: pointer;
+}
+.session-picker:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.session-picker:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 /* Scrollable transcript area */
 .transcript-scroll {
   flex: 1;

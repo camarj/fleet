@@ -20,7 +20,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { GatewayClient } from "../../lib/gatewayClient";
-import type { AgentSummary, RunEvent, ServerEvent } from "../../lib/api";
+import type { AgentSummary, RunEvent, ServerEvent, SessionSummary } from "../../lib/api";
 
 // ── Block types ───────────────────────────────────────────────────────────────
 
@@ -357,6 +357,18 @@ function formatCost(usd: number): string {
   return `$${usd.toFixed(4)}`;
 }
 
+function sessionLabel(s: SessionSummary): string {
+  const when = new Date(s.startedAt).toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  const preview = s.preview.trim() || "(no preview)";
+  const text = preview.length > 40 ? preview.slice(0, 40) + "…" : preview;
+  return `${when} — ${text}`;
+}
+
 // ── Block renderers ───────────────────────────────────────────────────────────
 
 function UserBlockView({ block }: { block: UserBlock }) {
@@ -579,6 +591,8 @@ export function TerminalPanel({ client, agent, connected, onRedeploy }: Props): 
    * Sending a new message clears the replay and starts a fresh session.
    */
   const [historyMode, setHistoryMode] = useState(false);
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [viewingSessionId, setViewingSessionId] = useState<string | null>(null);
 
   // Session lifecycle refs (same pattern as the original xterm version).
   const sessionRef = useRef<string | null>(null);
@@ -598,6 +612,9 @@ export function TerminalPanel({ client, agent, connected, onRedeploy }: Props): 
   const historyRequestedForRef = useRef<string | null>(null);
   // Tracks which sessionId we've requested session.history for (to filter stale responses).
   const pendingHistorySessionRef = useRef<string | null>(null);
+  // Guards the one-time auto-load of the most recent session per agent, so that
+  // list REFRESHES (reconnect, post-session.done) don't clobber the user's view.
+  const autoLoadedRef = useRef<string | null>(null);
 
   // Auto-scroll.
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -620,6 +637,9 @@ export function TerminalPanel({ client, agent, connected, onRedeploy }: Props): 
     setBusy(false);
     // Reset the history-requested tracker so we re-request for the new agent.
     historyRequestedForRef.current = null;
+    setSessions([]);
+    setViewingSessionId(null);
+    autoLoadedRef.current = null;
   }, [agentId]);
 
   // Request session history when a new agent is selected (or when the
@@ -631,6 +651,14 @@ export function TerminalPanel({ client, agent, connected, onRedeploy }: Props): 
     historyRequestedForRef.current = agentId;
     client.send({ type: "sessions.list", agentId });
   }, [agentId, connected, client]);
+
+  // On disconnect, allow the next reconnect to re-request the session list
+  // (refreshes sessions accumulated offline). We deliberately do NOT reset
+  // autoLoadedRef, so reconnecting refreshes the LIST without reloading the
+  // transcript the user is viewing.
+  useEffect(() => {
+    if (!connected) historyRequestedForRef.current = null;
+  }, [connected]);
 
   // Scroll to bottom on new content, unless the user has scrolled up.
   useEffect(() => {
@@ -715,6 +743,9 @@ export function TerminalPanel({ client, agent, connected, onRedeploy }: Props): 
           });
           sessionRef.current = null;
           setBusy(false);
+          // Refresh the session list so the conversation that just finished appears in
+          // the picker. autoLoadedRef is already set, so this won't reload the transcript.
+          if (agentRef.current) client.send({ type: "sessions.list", agentId: agentRef.current.id });
           return;
         }
         case "session.error": {
@@ -752,16 +783,16 @@ export function TerminalPanel({ client, agent, connected, onRedeploy }: Props): 
           return;
         }
         case "sessions": {
-          // Only handle responses for the currently-selected agent.
-          // Skip if a live session is in progress (don't overwrite active transcript).
           if (e.agentId !== agentRef.current?.id) return;
+          setSessions(e.sessions);
+          // Auto-load the most recent (non-running) session ONCE per agent as the
+          // default view. List refreshes after that just update the dropdown.
+          if (autoLoadedRef.current === e.agentId) return;
           if (busyRef.current) return;
-          if (e.sessions.length === 0) return;
-          const mostRecent = e.sessions[0];
+          autoLoadedRef.current = e.agentId;
+          const mostRecent = e.sessions.find((s) => s.status !== "running");
           if (!mostRecent) return;
-          // Don't try to load a still-running session (shouldn't normally happen
-          // but guard anyway — an interrupted Core restart could leave one).
-          if (mostRecent.status === "running") return;
+          setViewingSessionId(mostRecent.id);
           pendingHistorySessionRef.current = mostRecent.id;
           client.send({ type: "session.history", sessionId: mostRecent.id });
           return;
@@ -814,6 +845,7 @@ export function TerminalPanel({ client, agent, connected, onRedeploy }: Props): 
     atBottomRef.current = true;
     pendingRef.current = true;
     setBusy(true);
+    setViewingSessionId(null);
     try {
       client.send({ type: "session.start", agentId: agent.id, message });
     } catch (err) {
@@ -844,7 +876,21 @@ export function TerminalPanel({ client, agent, connected, onRedeploy }: Props): 
     setHistoryMode(false);
     setLastUsage(null);
     setSessionTotals({ tokens: 0, costUsd: 0, hasPricedData: false });
+    setViewingSessionId(null);
     sessionRef.current = null;
+  }
+
+  /** Switch the transcript to a chosen past session (or back to a new one). */
+  function handlePickSession(id: string): void {
+    if (busy) return;
+    if (id === "") {
+      handleNewConversation();
+      return;
+    }
+    if (id === viewingSessionId) return;
+    setViewingSessionId(id);
+    pendingHistorySessionRef.current = id;
+    client.send({ type: "session.history", sessionId: id });
   }
 
   const statusLabel = connected
@@ -879,6 +925,23 @@ export function TerminalPanel({ client, agent, connected, onRedeploy }: Props): 
           )}
         </span>
         <span className="header-right">
+          {agent && sessions.length > 0 && (
+            <select
+              className="session-picker"
+              value={viewingSessionId ?? ""}
+              onChange={(ev) => handlePickSession(ev.target.value)}
+              disabled={busy}
+              title="Switch conversation"
+              aria-label="Conversation history"
+            >
+              <option value="">+ New conversation</option>
+              {sessions.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {sessionLabel(s)}
+                </option>
+              ))}
+            </select>
+          )}
           {historyMode && !busy && (
             <button
               className="btn-ghost btn-new-conversation"
