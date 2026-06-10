@@ -9,6 +9,7 @@
 import type { AgentKind } from "./adapters/agent-adapter.js";
 import type { ModelParameters, RunEvent, RunStatus, RuntimeErrorCode, Usage } from "./neutral.js";
 import type { SessionStatus } from "./state/index.js";
+import type { Workflow } from "./orchestration/index.js";
 
 /**
  * A single check in a deploy preflight report. `ok: false` means the deploy
@@ -82,7 +83,15 @@ export type ClientRequest =
   /** Run preflight checks for a target before deploying (no side-effects). */
   | { type: "deploy.preflight"; provider?: string; model?: string; target: DeployTargetWire }
   /** Retrieve the last deploy log for an agent (persisted at the end of the most recent deploy). */
-  | { type: "deploy.lastLog"; agentId: string };
+  | { type: "deploy.lastLog"; agentId: string }
+  // ── Orchestration (workflows) ──
+  /** Upsert a workflow (by id). The canvas sends the full graph, positions included. */
+  | { type: "workflow.save"; workflow: Workflow }
+  | { type: "workflow.list" }
+  | { type: "workflow.delete"; workflowId: string }
+  /** Run a saved workflow with the given run inputs. */
+  | { type: "workflow.run"; workflowId: string; inputs: Record<string, string> }
+  | { type: "workflow.abort"; runId: string };
 
 // ── Core → Frontend ──────────────────────────────────────────────────────────
 
@@ -123,4 +132,22 @@ export type ServerEvent =
   /** Results of a deploy.preflight request — one entry per check performed. */
   | { type: "deploy.preflight"; checks: PreflightCheck[] }
   /** The last deploy log for an agent. `log` is null if no deploy has been completed yet. */
-  | { type: "deploy.lastLog"; agentId: string; log: string | null };
+  | { type: "deploy.lastLog"; agentId: string; log: string | null }
+  // ── Orchestration (workflows) ──
+  | { type: "workflows"; workflows: Workflow[] }
+  | { type: "workflow.run.started"; runId: string; workflowId: string }
+  /** Per-node progress during a workflow run (v1 emits node-level status, not the agents' internal events). */
+  | {
+      type: "workflow.node.status";
+      runId: string;
+      nodeId: string;
+      status: "running" | "completed" | "failed";
+      output?: string;
+      error?: string;
+    }
+  | {
+      type: "workflow.run.done";
+      runId: string;
+      status: "completed" | "failed" | "aborted";
+      outputs: Record<string, string>;
+    };

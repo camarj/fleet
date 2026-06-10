@@ -21,7 +21,7 @@
 | F2 Día 2 | ✅ DONE (merged, verificado en app) | WU-06..09 | historial, preflight, banner, deploy logs |
 | F3 API honesta + converter | ✅ DONE | WU-10 ✅, WU-11 ✅ | config→redeploy honesto; deploy.unmapped + settings.local/env |
 | F4 Verificar targets en vivo | 🔒 bloqueado | WU-12..15 | necesita FLY/CLOUDFLARE tokens + Coolify/Dokploy |
-| F5 Orquestador visual | ⏳ pendiente | WU-16..19 | contrato decidido en §7 |
+| F5 Orquestador visual | ✅ DONE (PR #9) | WU-16..19 | motor DAG + API + canvas React Flow; smoke en vivo |
 | F6 Hardening | ⏳ pendiente | WU-20..23 | |
 
 **Mergeado en `main` vía PR #3** (`feat: agent lifecycle control + day-2 UX (gaps F0–F2)`, merge commit `4b315e3`). 13 commits. PR #4 (docs) también mergeado. Arrancar la próxima sesión por **F3 / WU-10** (§5).

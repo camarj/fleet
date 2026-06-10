@@ -251,7 +251,7 @@ export function App(): React.JSX.Element {
         {view === "terminal" ? (
           <TerminalPanel client={client} agent={selected} connected={connected} onRedeploy={handleRedeploy} />
         ) : (
-          <WorkflowCanvas />
+          <WorkflowCanvas client={client} agents={agents} connected={connected} />
         )}
       </main>
 
