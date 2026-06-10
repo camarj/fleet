@@ -4,6 +4,7 @@
  * operations the WebSocket server relays to the frontend.
  */
 
+import { randomUUID } from "node:crypto";
 import { FlueAdapter } from "./adapters/flue.js";
 import type { AgentAdapter, AgentKind, RunHandle } from "./adapters/agent-adapter.js";
 import { FlueDeployer, pingAgent, type DeployTarget } from "./deploy/flue-deployer.js";
@@ -11,6 +12,7 @@ import { SecretsStore } from "./secrets/store.js";
 import { computeCostUsd } from "./pricing/pricing.js";
 import { GatewayState, type StoredAgent, type SessionSummary } from "./state/index.js";
 import type { RunOptions, RunSink } from "./neutral.js";
+import { Orchestrator, type AgentRunner } from "./orchestration/index.js";
 import type { AgentSummary, ClientRequest, ServerEvent } from "./api.js";
 
 export type Emit = (event: ServerEvent) => void;
@@ -57,9 +59,13 @@ export class GatewayCore {
   readonly #onlineCache = new Map<string, boolean>();
   #healthInterval: ReturnType<typeof setInterval> | null = null;
   #healthTickInFlight = false;
+  /** Active workflow runs → their abort controller (for workflow.abort). */
+  readonly #workflowRuns = new Map<string, AbortController>();
+  readonly #orchestrator: Orchestrator;
 
   constructor(options: GatewayCoreOptions = {}) {
     this.#state = new GatewayState(options.dbPath ?? ":memory:");
+    this.#orchestrator = new Orchestrator(this.#agentRunner());
     this.#startHealthMonitor(options.healthIntervalMs ?? 15_000);
     // Attempt to reconnect any agents that were persisted from a previous run.
     // Fire-and-forget — construction is synchronous; failures are swallowed and
@@ -104,6 +110,22 @@ export class GatewayCore {
           return await this.#deployPreflight(req, emit);
         case "deploy.lastLog":
           return this.#getLastDeployLog(req, emit);
+        case "workflow.save":
+          this.#state.saveWorkflow(req.workflow);
+          emit({ type: "workflows", workflows: this.#state.listWorkflows() });
+          return;
+        case "workflow.list":
+          emit({ type: "workflows", workflows: this.#state.listWorkflows() });
+          return;
+        case "workflow.delete":
+          this.#state.deleteWorkflow(req.workflowId);
+          emit({ type: "workflows", workflows: this.#state.listWorkflows() });
+          return;
+        case "workflow.run":
+          return await this.#runWorkflow(req, emit);
+        case "workflow.abort":
+          this.#workflowRuns.get(req.runId)?.abort();
+          return;
         default: {
           const _exhaustive: never = req;
           void _exhaustive;
@@ -121,6 +143,9 @@ export class GatewayCore {
       clearInterval(this.#healthInterval);
       this.#healthInterval = null;
     }
+    // Abort any in-flight workflow runs so their agent calls stop.
+    for (const controller of this.#workflowRuns.values()) controller.abort();
+    this.#workflowRuns.clear();
     for (const reg of this.#agents.values()) {
       await reg.adapter.close().catch(() => {});
     }
@@ -290,6 +315,78 @@ export class GatewayCore {
   #getLastDeployLog(req: Extract<ClientRequest, { type: "deploy.lastLog" }>, emit: Emit): void {
     const log = this.#state.getDeployLog(req.agentId);
     emit({ type: "deploy.lastLog", agentId: req.agentId, log });
+  }
+
+  // ── Orchestration (workflows) ───────────────────────────────────────────────
+
+  /**
+   * The AgentRunner the Orchestrator uses to run one prompt against one agent.
+   * Accumulates the assistant's streamed text (Flue emits message.delta) and
+   * resolves with the final text. Never touches the engine's internals — this is
+   * the injection seam that keeps the engine adapter-agnostic.
+   */
+  #agentRunner(): AgentRunner {
+    return {
+      run: (agentId, prompt, signal) => {
+        const reg = this.#agents.get(agentId);
+        if (!reg) return Promise.reject(new Error(`agent "${agentId}" is not connected`));
+        return new Promise<string>((resolve, reject) => {
+          let text = "";
+          const sink: RunSink = {
+            onEvent: (e) => {
+              if (e.type === "message.delta" && e.role === "assistant") text += e.content;
+              else if (e.type === "message.completed" && e.role === "assistant") text = e.content;
+            },
+            onDone: (status) => (status === "aborted" ? reject(new Error("aborted")) : resolve(text)),
+            onError: (_code, message) => reject(new Error(message)),
+          };
+          const handle = reg.adapter.run({ messages: [{ role: "user", content: prompt }] }, {}, sink);
+          if (signal.aborted) void handle.abort();
+          else signal.addEventListener("abort", () => void handle.abort(), { once: true });
+        });
+      },
+    };
+  }
+
+  async #runWorkflow(req: Extract<ClientRequest, { type: "workflow.run" }>, emit: Emit): Promise<void> {
+    const wf = this.#state.getWorkflow(req.workflowId);
+    if (!wf) {
+      emit({ type: "error", message: `workflow "${req.workflowId}" not found`, requestType: req.type });
+      return;
+    }
+    // Every agent node must reference a currently-connected agent (the engine
+    // validates structure; agent availability is the Core's call).
+    const missing = [
+      ...new Set(
+        wf.nodes
+          .filter((n) => n.kind === "agent" && (!n.agentId || !this.#agents.has(n.agentId)))
+          .map((n) => n.agentId ?? n.id),
+      ),
+    ];
+    if (missing.length > 0) {
+      emit({ type: "error", message: `workflow needs these agents online: ${missing.join(", ")}`, requestType: req.type });
+      return;
+    }
+
+    const runId = `wfr_${randomUUID()}`;
+    const controller = new AbortController();
+    this.#workflowRuns.set(runId, controller);
+    this.#state.createWorkflowRun(runId, req.workflowId, req.inputs);
+    emit({ type: "workflow.run.started", runId, workflowId: req.workflowId });
+
+    const result = await this.#orchestrator.run(
+      wf,
+      req.inputs,
+      {
+        onNodeStatus: (nodeId, status, info) =>
+          emit({ type: "workflow.node.status", runId, nodeId, status, output: info?.output, error: info?.error }),
+      },
+      controller.signal,
+    );
+
+    this.#state.finishWorkflowRun(runId, result.status, result.outputs);
+    this.#workflowRuns.delete(runId);
+    emit({ type: "workflow.run.done", runId, status: result.status, outputs: result.outputs });
   }
 
   // ── Stop / Delete ─────────────────────────────────────────────────────────

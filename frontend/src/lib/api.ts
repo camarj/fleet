@@ -26,6 +26,34 @@ export interface ModelParameters {
   topP?: number;
 }
 
+// ── Orchestration (workflows) — mirror of orchestration/index.ts ──
+export type NodeKind = "input" | "agent" | "output";
+
+export interface WorkflowNode {
+  id: string;
+  kind: NodeKind;
+  /** `input` node: the run-parameter name, referenced in templates as {{input.<name>}}. */
+  name?: string;
+  /** `agent` node: which agent runs this node. */
+  agentId?: string;
+  /** `agent` node: prompt template; supports {{input.<name>}} and {{<nodeId>.output}}. */
+  promptTemplate?: string;
+  /** Canvas layout, persisted so the graph reopens exactly as drawn. */
+  position: { x: number; y: number };
+}
+
+export interface WorkflowEdge {
+  from: string;
+  to: string;
+}
+
+export interface Workflow {
+  id: string;
+  name: string;
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+}
+
 /** The agent kind. Fleet is Flue-only. */
 export type AgentKind = "flue";
 
@@ -121,7 +149,13 @@ export type ClientRequest =
   /** Run preflight checks for a deploy target before deploying (no side-effects). */
   | { type: "deploy.preflight"; provider?: string; model?: string; target: DeployTarget }
   /** Retrieve the last deploy log for an agent (persisted at the end of the most recent deploy). */
-  | { type: "deploy.lastLog"; agentId: string };
+  | { type: "deploy.lastLog"; agentId: string }
+  // ── Orchestration (workflows) ──
+  | { type: "workflow.save"; workflow: Workflow }
+  | { type: "workflow.list" }
+  | { type: "workflow.delete"; workflowId: string }
+  | { type: "workflow.run"; workflowId: string; inputs: Record<string, string> }
+  | { type: "workflow.abort"; runId: string };
 
 // ── Core → Frontend ──────────────────────────────────────────────────────────
 
@@ -160,4 +194,21 @@ export type ServerEvent =
   /** Results of a deploy.preflight request — one entry per check performed. */
   | { type: "deploy.preflight"; checks: PreflightCheck[] }
   /** The last deploy log for an agent. `log` is null if no deploy has been completed yet. */
-  | { type: "deploy.lastLog"; agentId: string; log: string | null };
+  | { type: "deploy.lastLog"; agentId: string; log: string | null }
+  // ── Orchestration (workflows) ──
+  | { type: "workflows"; workflows: Workflow[] }
+  | { type: "workflow.run.started"; runId: string; workflowId: string }
+  | {
+      type: "workflow.node.status";
+      runId: string;
+      nodeId: string;
+      status: "running" | "completed" | "failed";
+      output?: string;
+      error?: string;
+    }
+  | {
+      type: "workflow.run.done";
+      runId: string;
+      status: "completed" | "failed" | "aborted";
+      outputs: Record<string, string>;
+    };
