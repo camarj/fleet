@@ -14,8 +14,9 @@ import { ModelPicker } from "../ModelPicker/ModelPicker";
 const DEPLOY_TARGETS: { value: DeployTarget; label: string; hint: string }[] = [
   { value: "docker-local", label: "Docker — local", hint: "Run a container on this machine." },
   { value: "fly", label: "Docker — Fly.io", hint: "Deploy to Fly.io (needs FLY_API_TOKEN)." },
-  { value: "github", label: "Git repo — self-host", hint: "Push a repo to deploy on Coolify / Dokploy." },
+  { value: "github", label: "Git repo — self-host", hint: "Push a repo to deploy on Coolify / other self-hosted PaaS." },
   { value: "cloudflare", label: "Cloudflare Workers", hint: "Deploy as a Worker (needs CLOUDFLARE_API_TOKEN)." },
+  { value: "dokploy", label: "Dokploy — self-host", hint: "Auto-deploy to your Dokploy instance (needs DOKPLOY_URL + DOKPLOY_API_KEY)." },
 ];
 
 const STEPS = ["Project", "Model", "Target", "Deploy"] as const;

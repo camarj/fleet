@@ -26,11 +26,11 @@ export interface PreflightCheck {
 }
 
 /**
- * Where a converted agent is deployed (wire copy of DeployTarget). The four the
- * UI offers are docker-local, fly, cloudflare, and github (repo for self-hosted
- * Docker — Coolify/Dokploy). `local-process` stays for Docker-free tests only.
+ * Where a converted agent is deployed (wire copy of DeployTarget). The five the
+ * UI offers are docker-local, fly, cloudflare, github, and dokploy.
+ * `local-process` stays for Docker-free tests only.
  */
-export type DeployTargetWire = "docker-local" | "local-process" | "fly" | "cloudflare" | "github";
+export type DeployTargetWire = "docker-local" | "local-process" | "fly" | "cloudflare" | "github" | "dokploy";
 
 /** Compact view of an agent for the Sidebar. */
 export interface AgentSummary {

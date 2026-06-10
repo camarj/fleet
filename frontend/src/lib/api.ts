@@ -129,8 +129,8 @@ export type RuntimeErrorCode =
 
 // ── Frontend → Core ──────────────────────────────────────────────────────────
 
-/** Where a converted agent is deployed (the four offered in the UI). */
-export type DeployTarget = "docker-local" | "fly" | "github" | "cloudflare";
+/** Where a converted agent is deployed (the five offered in the UI). */
+export type DeployTarget = "docker-local" | "fly" | "github" | "cloudflare" | "dokploy";
 
 export type ClientRequest =
   | { type: "agents.list" }
