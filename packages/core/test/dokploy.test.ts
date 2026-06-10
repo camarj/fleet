@@ -33,6 +33,8 @@ const NO_PROGRESS: DeployProgress = () => {};
 const NO_LOG: DeployLog = () => {};
 
 const FAKE_CFG = { url: "https://dokploy.example.local", key: "test-api-key" };
+/** Marks a procedure whose response is an empty body (no JSON). */
+const EMPTY_BODY = Symbol("empty-body");
 const FAKE_PUSH = { owner: "fleet-owner", repo: "fleet-agent-test" };
 const FAKE_AGENT = "test-agent";
 
@@ -61,6 +63,11 @@ function makeFakeFetch(responses: Record<string, unknown>): {
     const data = responses[procedure];
     if (data === undefined) {
       return new Response(JSON.stringify(null), { status: 404, headers: { "Content-Type": "application/json" } });
+    }
+    // Sentinel: self-hosted Dokploy returns an EMPTY body from some procedures
+    // (seen live on application.deploy) — simulate that.
+    if (data === EMPTY_BODY) {
+      return new Response("", { status: 200 });
     }
     return new Response(JSON.stringify(data), { status: 200, headers: { "Content-Type": "application/json" } });
   };
@@ -91,7 +98,8 @@ const BASE_RESPONSES: Record<string, unknown> = {
   "application.saveEnvironment": true,
   "domain.generateDomain": "test-agent.traefik.me",
   "domain.create": { domainId: "dom-1" },
-  "application.deploy": true,
+  // Empty body — matches the live behavior of self-hosted Dokploy instances.
+  "application.deploy": EMPTY_BODY,
   "application.one": { applicationStatus: "done" },
 };
 

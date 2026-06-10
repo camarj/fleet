@@ -967,7 +967,16 @@ export async function dokployApi(
     const text = await (res as Response).text().catch(() => "");
     throw new DeployError(`Dokploy API ${procedure} failed (${res.status}): ${text}`);
   }
-  return (res as Response).json();
+  // Some procedures return an empty body on self-hosted instances (e.g.
+  // `application.deploy` enqueues and returns nothing) — `res.json()` would
+  // throw "Unexpected end of JSON input". Parse defensively.
+  const text = await (res as Response).text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
 }
 
 /**
