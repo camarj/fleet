@@ -56,6 +56,8 @@ export function App(): React.JSX.Element {
   const [deployUnmapped, setDeployUnmapped] = useState<{ kind: string; name: string; reason: string }[]>([]);
   const [deployOpen, setDeployOpen] = useState(false);
   const [preflightChecks, setPreflightChecks] = useState<PreflightCheck[] | null>(null);
+  /** GitHub owners the authenticated user can push repos to. null = not yet fetched. */
+  const [githubOwners, setGithubOwners] = useState<string[] | null>(null);
   const [redeployingId, setRedeployingId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [connectOpen, setConnectOpen] = useState(false);
@@ -170,6 +172,8 @@ export function App(): React.JSX.Element {
         setDeployError(e.message);
       } else if (e.type === "deploy.preflight") {
         setPreflightChecks(e.checks);
+      } else if (e.type === "deploy.githubOwners") {
+        setGithubOwners(e.owners);
       } else if (e.type === "config.updated") {
         // Only react to the agent whose config modal is open (handler is registered once).
         if (configAgentIdRef.current === e.agentId) {
@@ -286,9 +290,13 @@ export function App(): React.JSX.Element {
           deployLog={deployLog}
           deployUnmapped={deployUnmapped}
           preflightChecks={preflightChecks}
+          githubOwners={githubOwners}
           onPreflight={(params) => {
             setPreflightChecks(null); // clear while the check runs
             client.send({ type: "deploy.preflight", ...params });
+          }}
+          onRequestGithubOwners={() => {
+            client.send({ type: "deploy.githubOwners" });
           }}
           onDeploy={(req) => {
             setDeployStatus("starting");

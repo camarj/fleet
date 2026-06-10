@@ -5,6 +5,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { FlueAdapter } from "./adapters/flue.js";
 import type { AgentAdapter, AgentKind, RunHandle } from "./adapters/agent-adapter.js";
 import { FlueDeployer, pingAgent, type DeployTarget } from "./deploy/flue-deployer.js";
@@ -108,6 +109,8 @@ export class GatewayCore {
           return this.#setConfig(req, emit);
         case "deploy.preflight":
           return await this.#deployPreflight(req, emit);
+        case "deploy.githubOwners":
+          return await this.#githubOwners(emit);
         case "deploy.lastLog":
           return this.#getLastDeployLog(req, emit);
         case "workflow.save":
@@ -201,7 +204,7 @@ export class GatewayCore {
 
   async #deployFlue(req: Extract<ClientRequest, { type: "agent.deployFlue" }>, emit: Emit): Promise<void> {
     await this.#runDeploy(
-      { sourceDir: req.sourceDir, provider: req.provider, model: req.model, target: req.target ?? "docker-local" },
+      { sourceDir: req.sourceDir, provider: req.provider, model: req.model, target: req.target ?? "docker-local", repoOwner: req.repoOwner },
       emit,
     );
   }
@@ -249,7 +252,7 @@ export class GatewayCore {
    *   skipped in that case — acceptable in v1.
    */
   async #runDeploy(
-    params: { sourceDir: string; provider?: string | null; model?: string | null; target: string },
+    params: { sourceDir: string; provider?: string | null; model?: string | null; target: string; repoOwner?: string | null },
     emit: Emit,
     knownAgentId?: string,
   ): Promise<void> {
@@ -261,6 +264,7 @@ export class GatewayCore {
           provider: params.provider ?? undefined,
           model: params.model ?? undefined,
           target: params.target as DeployTarget,
+          repoOwner: params.repoOwner ?? undefined,
         },
         (step, detail) => emit({ type: "deploy.progress", step, detail }),
         (lines) => {
@@ -286,6 +290,7 @@ export class GatewayCore {
         provider: params.provider ?? null,
         model: params.model ?? null,
         target: params.target,
+        repoOwner: params.repoOwner ?? null,
       });
       // Persist the accumulated log (overwrites any previous log — one per agent in v1).
       this.#state.setDeployLog(stored.id, logBuffer.join("\n"));
@@ -315,6 +320,35 @@ export class GatewayCore {
   #getLastDeployLog(req: Extract<ClientRequest, { type: "deploy.lastLog" }>, emit: Emit): void {
     const log = this.#state.getDeployLog(req.agentId);
     emit({ type: "deploy.lastLog", agentId: req.agentId, log });
+  }
+
+  /**
+   * Enumerate the GitHub owners the authenticated gh user can push repos to:
+   * the user's own login first, then org logins (one per line from `gh api user/orgs`).
+   * Returns an empty list when gh is unavailable or not authenticated — never throws.
+   */
+  async #githubOwners(emit: Emit): Promise<void> {
+    const loginRes = spawnSync("gh", ["api", "user", "--jq", ".login"], {
+      stdio: "pipe",
+      encoding: "utf8",
+    });
+    if (loginRes.status !== 0) {
+      emit({ type: "deploy.githubOwners", owners: [] });
+      return;
+    }
+    const login = loginRes.stdout?.trim();
+    if (!login) {
+      emit({ type: "deploy.githubOwners", owners: [] });
+      return;
+    }
+    const orgsRes = spawnSync("gh", ["api", "user/orgs", "--jq", ".[].login"], {
+      stdio: "pipe",
+      encoding: "utf8",
+    });
+    const orgs = orgsRes.status === 0
+      ? (orgsRes.stdout ?? "").split("\n").map((s) => s.trim()).filter(Boolean)
+      : [];
+    emit({ type: "deploy.githubOwners", owners: [login, ...orgs] });
   }
 
   // ── Orchestration (workflows) ───────────────────────────────────────────────

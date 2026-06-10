@@ -53,6 +53,10 @@ export interface DeployRequest {
   provider?: string;
   model?: string;
   target?: DeployTarget;
+  /** GitHub account or organization that receives the generated repo. Defaults to
+   * the authenticated user's personal account when unset. Applies to `github` and
+   * `dokploy` targets only; ignored for all other targets. */
+  repoOwner?: string;
 }
 
 export type DeployStep =
@@ -121,7 +125,7 @@ export class FlueDeployer {
 
     // `github` publishes a repo for CI to build — there is nothing to connect to yet.
     if (target === "github") {
-      return { ...(await this.#runGithub(agentName, agentDir, onProgress, onLog)), unmapped };
+      return { ...(await this.#runGithub(agentName, agentDir, req.repoOwner, onProgress, onLog)), unmapped };
     }
 
     const apiKeyEnv = project.report.apiKeyEnv;
@@ -153,7 +157,7 @@ export class FlueDeployer {
         baseUrl = await this.#runCloudflare(agentName, agentDir, apiKeyEnv, key, onProgress, onLog);
         break;
       case "dokploy":
-        baseUrl = await this.#runDokploy(agentName, agentDir, apiKeyEnv, key, onProgress, onLog);
+        baseUrl = await this.#runDokploy(agentName, agentDir, apiKeyEnv, key, req.repoOwner, onProgress, onLog);
         break;
       default:
         baseUrl = await this.#runLocalProcess(agentName, agentDir, apiKeyEnv, key, onProgress, onLog);
@@ -255,6 +259,7 @@ export class FlueDeployer {
   async #pushToGithub(
     agentName: string,
     agentDir: string,
+    repoOwner: string | undefined,
     onProgress: DeployProgress,
     onLog: DeployLog,
   ): Promise<{ url: string; owner: string; repo: string }> {
@@ -275,9 +280,12 @@ export class FlueDeployer {
 
     onProgress("pushing", "GitHub repository");
     const repoName = `fleet-agent-${agentName}`;
+    // Use an owner-qualified name (org/repo) when the caller specifies an owner;
+    // bare name when not (gh defaults to the authenticated user's personal account).
+    const qualifiedName = repoOwner ? `${repoOwner}/${repoName}` : repoName;
     const res = await spawnStreaming(
       "gh",
-      ["repo", "create", repoName, "--private", "--source", ".", "--push"],
+      ["repo", "create", qualifiedName, "--private", "--source", ".", "--push"],
       { cwd: agentDir },
       onLog,
     );
@@ -291,16 +299,16 @@ export class FlueDeployer {
         throw new DeployError(`gh repo create failed:\n${res.output}`);
       }
       // Repo already exists — recover: get URL, set remote, force-push.
-      onLog([`[github] repo "${repoName}" already exists — recovering…`]);
-      const viewRes = spawnSync("gh", ["repo", "view", repoName, "--json", "url", "--jq", ".url"], {
+      onLog([`[github] repo "${qualifiedName}" already exists — recovering…`]);
+      const viewRes = spawnSync("gh", ["repo", "view", qualifiedName, "--json", "url", "--jq", ".url"], {
         stdio: "pipe",
         encoding: "utf8",
       });
       url = viewRes.stdout?.trim() ?? "";
       if (!url) {
         throw new DeployError(
-          `Repo "${repoName}" already exists but its URL could not be resolved. ` +
-          `Run \`gh repo view ${repoName}\` to confirm and set the remote manually.`,
+          `Repo "${qualifiedName}" already exists but its URL could not be resolved. ` +
+          `Run \`gh repo view ${qualifiedName}\` to confirm and set the remote manually.`,
         );
       }
       // Set or update the remote.
@@ -336,10 +344,11 @@ export class FlueDeployer {
   async #runGithub(
     agentName: string,
     agentDir: string,
+    repoOwner: string | undefined,
     onProgress: DeployProgress,
     onLog: DeployLog,
   ): Promise<Omit<DeployArtifact, "unmapped">> {
-    const { url } = await this.#pushToGithub(agentName, agentDir, onProgress, onLog);
+    const { url } = await this.#pushToGithub(agentName, agentDir, repoOwner, onProgress, onLog);
     onProgress("done");
     return {
       kind: "artifact",
@@ -365,6 +374,7 @@ export class FlueDeployer {
     agentDir: string,
     apiKeyEnv: string,
     key: string | undefined,
+    repoOwner: string | undefined,
     onProgress: DeployProgress,
     onLog: DeployLog,
   ): Promise<string> {
@@ -377,7 +387,7 @@ export class FlueDeployer {
         "Dokploy deploy needs DOKPLOY_URL and DOKPLOY_API_KEY. Set them in the environment, then retry.",
       );
     }
-    const { owner, repo } = await this.#pushToGithub(agentName, agentDir, onProgress, onLog);
+    const { owner, repo } = await this.#pushToGithub(agentName, agentDir, repoOwner, onProgress, onLog);
     const baseUrl = await runDokployOrchestration({
       cfg: { url: dokployUrl, key: dokployKey },
       agentName,
