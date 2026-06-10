@@ -380,8 +380,23 @@ export class FlueDeployer {
     writeFileSync(join(agentDir, "fly.toml"), flyToml(app));
 
     onProgress("building", `fly app ${app}`);
-    // Create the app (idempotent — a duplicate just errors, which we ignore).
-    spawnSync("flyctl", ["apps", "create", app, "--org", "personal"], { stdio: "pipe", encoding: "utf8", env: flyEnv });
+    // Create the app. A name collision is fine (idempotent re-run), but any other
+    // failure must surface its REAL error — otherwise the later `secrets import`
+    // / `deploy` fails with a confusing "Could not find App", hiding the actual
+    // cause (e.g. a high-risk account that needs verification, an invalid org, or
+    // a deploy-scoped token that can't create apps).
+    const created = spawnSync("flyctl", ["apps", "create", app, "--org", "personal"], {
+      stdio: "pipe",
+      encoding: "utf8",
+      env: flyEnv,
+    });
+    if (created.status !== 0) {
+      const detail = (created.stderr || created.stdout || "").trim();
+      const alreadyExists = /already.*(taken|exist)/i.test(detail);
+      if (!alreadyExists) {
+        throw new DeployError(`flyctl apps create failed:\n${detail}`);
+      }
+    }
 
     // Stage the provider key as a Fly secret (applied on the next deploy).
     if (key) {
