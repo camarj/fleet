@@ -59,10 +59,17 @@ workflows). `main` HEAD ≈ PR #9 merge (`b7b9402`).
   vivo de punta a punta (no se automatizó para no gastar tokens del usuario).
 
 ### Próximos pasos (en orden sugerido)
+
+> **2026-06-10**: el trabajo pendiente (F4 restante + verificaciones + deuda v1
+> + hallazgos del análisis de producto + vía zia) está unificado y priorizado
+> en **`docs/BACKLOG.md`** — esa es ahora la lista canónica. Lo de abajo queda
+> como referencia histórica.
+
 1. **F6 Hardening** (no bloquea nada, no necesita credenciales) — WU-20..23, §8.
-   Buen candidato para la próxima sesión.
+   Buen candidato para la próxima sesión. *(DONE — PRs #10–#13.)*
 2. **F4 Verificación de targets en vivo** — cuando el usuario tenga
    `FLY_API_TOKEN` / `CLOUDFLARE_API_TOKEN` y un Coolify/Dokploy. §6.
+   *(Parcial — ver BACKLOG.md §A.)*
 
 ### Decisiones/contexto que la próxima sesión debe saber
 - **F5 input nodes**: el handoff usa `{{input.X}}` pero `WorkflowNode` no tenía
