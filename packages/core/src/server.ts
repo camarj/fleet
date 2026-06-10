@@ -6,9 +6,10 @@
  * Flue — that stays between the Core and the agents.
  *
  * Env:
- *   GATEWAY_HOST  (default 127.0.0.1)
- *   GATEWAY_PORT  (default 4179)
- *   GATEWAY_DB    (default: ~/.fleet/fleet.db) — SQLite state file; use ":memory:" for ephemeral store
+ *   GATEWAY_HOST     (default 127.0.0.1)
+ *   GATEWAY_PORT     (default 4179)
+ *   GATEWAY_DB       (default: ~/.fleet/fleet.db) — SQLite state file; use ":memory:" for ephemeral store
+ *   GATEWAY_NO_AUTH  Set to "1" to skip WS token verification (dev only)
  */
 
 import { mkdirSync } from "node:fs";
@@ -17,12 +18,14 @@ import { WebSocketServer } from "ws";
 import { GatewayCore } from "./core.js";
 import type { ClientRequest, ServerEvent } from "./api.js";
 import { dbPath as resolveDbPath } from "./paths.js";
+import { loadOrCreateToken, isAuthorizedRequestUrl } from "./auth/token.js";
 
 const HOST = process.env.GATEWAY_HOST ?? "127.0.0.1";
 const PORT = Number(process.env.GATEWAY_PORT ?? 4179);
 // Persist state to a file by default so data survives Core restarts.
 // Pass GATEWAY_DB=:memory: explicitly to opt into an ephemeral store (tests do this).
 const DB_PATH = process.env.GATEWAY_DB ?? resolveDbPath();
+const NO_AUTH = process.env.GATEWAY_NO_AUTH === "1";
 
 export function startServer(host = HOST, port = PORT, dbPath = DB_PATH): { close: () => Promise<void> } {
   // Ensure the parent directory exists for file-based databases.
@@ -30,7 +33,19 @@ export function startServer(host = HOST, port = PORT, dbPath = DB_PATH): { close
     mkdirSync(dirname(dbPath), { recursive: true });
   }
   const core = new GatewayCore({ dbPath });
-  const wss = new WebSocketServer({ host, port });
+
+  const token = NO_AUTH ? null : loadOrCreateToken();
+
+  const wss = new WebSocketServer({
+    host,
+    port,
+    verifyClient: token
+      ? (info, done) => {
+          const ok = isAuthorizedRequestUrl(info.req.url, token, `ws://${host}:${port}`);
+          done(ok, ok ? undefined : 401, ok ? undefined : "Unauthorized");
+        }
+      : undefined,
+  });
 
   wss.on("connection", (socket) => {
     const emit: (event: ServerEvent) => void = (event) => {
@@ -55,7 +70,7 @@ export function startServer(host = HOST, port = PORT, dbPath = DB_PATH): { close
   });
 
   wss.on("listening", () => {
-    console.log(`[gateway-core] listening on ws://${host}:${port}`);
+    console.log(`[gateway-core] listening on ws://${host}:${port}${token ? "" : " (auth disabled)"}`);
   });
 
   const close = async (): Promise<void> => {

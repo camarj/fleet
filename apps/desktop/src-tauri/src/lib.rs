@@ -1,11 +1,25 @@
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
+#[tauri::command]
+fn gateway_token(app: tauri::AppHandle) -> Option<String> {
+    use tauri::Manager;
+    let dir = std::env::var("GATEWAY_DATA_DIR")
+        .map(std::path::PathBuf::from)
+        .ok()
+        .or_else(|| app.path().home_dir().ok().map(|h| h.join(".fleet")))?;
+    std::fs::read_to_string(dir.join("gateway-token"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![gateway_token])
         .setup(|app| {
             // In a RELEASE bundle the Core ships as a sidecar binary, and the
             // shell launches it here. In DEV (`tauri dev`) run the Core
