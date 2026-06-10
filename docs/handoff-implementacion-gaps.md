@@ -12,22 +12,72 @@
 
 ---
 
-## Estado / Progreso (actualizado 2026-06-09)
+## Estado / Progreso (actualizado 2026-06-10)
 
 | Fase | Estado | WUs | Notas |
 | --- | --- | --- | --- |
 | F0 Persistencia | ✅ DONE (merged) | WU-01 | DB a archivo `fleet.db` |
 | F1 Ciclo de vida | ✅ DONE (merged, verificado en app) | WU-02..05 | stop/delete, health+reconnect, offline guard, connect-by-URL |
 | F2 Día 2 | ✅ DONE (merged, verificado en app) | WU-06..09 | historial, preflight, banner, deploy logs |
-| F3 API honesta + converter | ✅ DONE | WU-10 ✅, WU-11 ✅ | config→redeploy honesto; deploy.unmapped + settings.local/env |
+| F3 API honesta + converter | ✅ DONE (merged PR #8) | WU-10 ✅, WU-11 ✅ | config→redeploy honesto; deploy.unmapped + settings.local/env |
 | F4 Verificar targets en vivo | 🔒 bloqueado | WU-12..15 | necesita FLY/CLOUDFLARE tokens + Coolify/Dokploy |
-| F5 Orquestador visual | ✅ DONE (PR #9) | WU-16..19 | motor DAG + API + canvas React Flow; smoke en vivo |
-| F6 Hardening | ⏳ pendiente | WU-20..23 | |
+| F5 Orquestador visual | ✅ DONE (merged PR #9) | WU-16..19 | motor DAG + API + canvas React Flow; smoke en vivo |
+| F6 Hardening | ⏳ SIGUIENTE | WU-20..23 | WS auth, a11y, shutdown sidecar, multi-conversación |
 
-**Mergeado en `main` vía PR #3** (`feat: agent lifecycle control + day-2 UX (gaps F0–F2)`, merge commit `4b315e3`). 13 commits. PR #4 (docs) también mergeado. Arrancar la próxima sesión por **F3 / WU-10** (§5).
+> Nota histórica: F0–F2 mergeadas vía PR #3 (`4b315e3`) + PR #4 (docs); PR #1/#2
+> trajeron la migración Flue. Las ramas nuevas salen siempre de `main`.
 
-> Nota: el plan original (abajo) decía "Rama base: feat/flue-migration (PR #1)".
-> PR #1 ya está mergeado a `main`; las ramas nuevas salen de `main`.
+---
+
+## 🔖 ESTADO DE SESIÓN — para continuar (cierre 2026-06-10)
+
+**Todo F0–F5 está mergeado en `main`.** El proyecto Fleet tiene: persistencia,
+control de ciclo de vida, día-2 (historial/preflight/banner/logs), API honesta
+(modelo vía redeploy + aviso de features no convertibles), y el **orquestador
+visual completo** (motor DAG en el Core + canvas React Flow para editar/correr
+workflows). `main` HEAD ≈ PR #9 merge (`b7b9402`).
+
+### Qué se hizo esta sesión
+1. **Supervisión F0–F2** (PR #5): auditoría adversarial + 4 fixes (carrera de
+   adapter en health/reconnect, catch de migraciones, gate de preflight,
+   modal de deploy-log colgado).
+2. **F3 / WU-10** (PR #6→#8): override de modelo HONESTO. `config.updated` lleva
+   `requiresRedeploy`; `agent.redeploy` aplica el override; `AgentSummary.model`
+   ahora deriva del deploy real (antes SIEMPRE era `""` para Flue). Modal
+   "Configure" por agente + `ModelPicker` compartido.
+3. **F3 / WU-11** (PR #7→#8): `deploy.unmapped` (hooks/MCP stdio/permissions) con
+   warning expandible en el wizard y el redeploy; converter lee
+   `settings.local.json` y vuelca `env` a `.env.example` (solo NOMBRES, regla #8).
+4. **F5 / WU-16..19** (PR #9): motor de orquestación DAG, persistencia + API,
+   y el canvas React Flow (`@xyflow/react` 12). Smoke en vivo OK.
+
+### Verificado / pendiente de verificar
+- F3 WU-10/11: gates verdes + smoke. **Pendiente del usuario**: probar en la app
+  cambiar modelo → redeploy → confirmar que el agente corre el modelo nuevo.
+- F5: gates verdes + smoke en vivo del canvas (render, nodos, inspector,
+  validación). **Pendiente del usuario**: correr un workflow real con ≥1 agente
+  vivo de punta a punta (no se automatizó para no gastar tokens del usuario).
+
+### Próximos pasos (en orden sugerido)
+1. **F6 Hardening** (no bloquea nada, no necesita credenciales) — WU-20..23, §8.
+   Buen candidato para la próxima sesión.
+2. **F4 Verificación de targets en vivo** — cuando el usuario tenga
+   `FLY_API_TOKEN` / `CLOUDFLARE_API_TOKEN` y un Coolify/Dokploy. §6.
+
+### Decisiones/contexto que la próxima sesión debe saber
+- **F5 input nodes**: el handoff usa `{{input.X}}` pero `WorkflowNode` no tenía
+  cómo nombrar el parámetro → se agregó `name?` a los nodos `input` (la clave del
+  run-input). Si se quiere otro modelo de inputs, solo cambia la resolución en
+  `packages/core/src/orchestration/index.ts`.
+- **F5 runner**: el adapter Flue solo emite `message.delta` (no
+  `message.completed`); el runner del Core acumula deltas para el texto final.
+- **GOTCHA de PRs stackeados** (nos mordió con #6/#7): si stackeás PRs (base de B
+  = rama de A), mergeá de ABAJO hacia arriba y RE-TARJETEÁ la base del de arriba a
+  `main` antes de mergear, o GitHub lo mergea en una rama huérfana. F5 se hizo
+  como UNA sola PR justo para evitar esto.
+- Limitaciones v1 ya registradas más abajo (WU-09 error-log, preflight wrangler,
+  findCfOutputDir `.json` vs `.jsonc`, refresco de sesiones tras reconexión,
+  merge shallow de `env`, MCP stdio solo-reportado).
 
 ### Revisión de supervisión F0–F2 (2026-06-09)
 
