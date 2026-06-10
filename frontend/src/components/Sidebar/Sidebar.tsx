@@ -20,6 +20,7 @@ interface Props {
   onRedeploy: (id: string) => void;
   onStop: (id: string) => void;
   onDelete: (id: string) => void;
+  onOpenConfig: (id: string) => void;
   onOpenSettings: () => void;
   onViewDeployLog: (id: string) => void;
 }
@@ -35,6 +36,7 @@ export function Sidebar({
   onRedeploy,
   onStop,
   onDelete,
+  onOpenConfig,
   onOpenSettings,
   onViewDeployLog,
 }: Props): React.JSX.Element {
@@ -72,6 +74,17 @@ export function Sidebar({
             </div>
             <div className="agent-meta">{a.model}</div>
             <div className="agent-actions">
+              <button
+                className="btn-ghost agent-config"
+                disabled={!connected}
+                title="Configure this agent's model"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenConfig(a.id);
+                }}
+              >
+                ⚙ Model
+              </button>
               {a.redeployable && (
                 <button
                   className="btn-ghost agent-redeploy"

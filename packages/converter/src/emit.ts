@@ -10,7 +10,7 @@
  */
 
 import { resolveModel } from "./providers.js";
-import type { ClaudeProject, ConvertOptions, FlueFile, FlueProject } from "./types.js";
+import type { ClaudeProject, ConvertOptions, FlueFile, FlueProject, UnmappedItem } from "./types.js";
 
 const FLUE_VERSION = "0.10.1";
 // Cloudflare Agents SDK — a PEER dependency of `flue build --target cloudflare`
@@ -25,7 +25,7 @@ const CF_COMPAT_DATE = "2026-04-01";
 export function emitFlueProject(project: ClaudeProject, opts: ConvertOptions = {}): FlueProject {
   const { specifier, provider } = resolveModel(project.sourceModel, opts);
   const swapped = !!opts.provider && opts.provider !== "anthropic";
-  const unmapped = [...project.unmapped];
+  const unmapped: UnmappedItem[] = [...project.unmapped];
 
   const files: FlueFile[] = [];
   const httpMcp = project.mcpServers.filter((m): m is Extract<typeof m, { kind: "http" }> => m.kind === "http");
@@ -49,7 +49,7 @@ export function emitFlueProject(project: ClaudeProject, opts: ConvertOptions = {
   files.push({ path: "Dockerfile", content: DOCKERFILE });
   files.push({ path: "wrangler.jsonc", content: emitWrangler(project.name) });
   files.push({ path: ".github/workflows/deploy.yml", content: DEPLOY_WORKFLOW });
-  files.push({ path: ".env.example", content: emitEnvExample(provider.apiKeyEnv, httpMcp) });
+  files.push({ path: ".env.example", content: emitEnvExample(provider.apiKeyEnv, httpMcp, project.env) });
   files.push({ path: ".gitignore", content: "dist/\ndata/\nnode_modules/\n.env\n" });
   files.push({
     path: "README.md",
@@ -79,7 +79,7 @@ function emitAgentModule(
   specifier: string,
   swapped: boolean,
   httpMcp: Array<{ name: string; url: string; headers?: Record<string, string>; transport?: string }>,
-  unmapped: string[],
+  unmapped: UnmappedItem[],
 ): string {
   const used = new Set<string>();
   const imports = new Set<string>(["createAgent"]);
@@ -105,7 +105,11 @@ function emitAgentModule(
     profileBlocks.push(lines.join("\n"));
   }
   if (droppedSubagentModel) {
-    unmapped.push("Subagent model overrides were dropped because the main provider was swapped; subagents inherit the main model.");
+    unmapped.push({
+      kind: "subagent-model",
+      name: "subagents",
+      reason: "Subagent model overrides were dropped because the main provider was swapped; subagents inherit the main model.",
+    });
   }
 
   // skills
@@ -294,10 +298,23 @@ jobs:
           labels: \${{ steps.meta.outputs.labels }}
 `;
 
-function emitEnvExample(apiKeyEnv: string, httpMcp: Array<{ name: string; url: string }>): string {
+function emitEnvExample(
+  apiKeyEnv: string,
+  httpMcp: Array<{ name: string; url: string }>,
+  env: Record<string, string> = {},
+): string {
   const lines = [`# Model provider key (the agent reads this at runtime).`, `${apiKeyEnv}=`];
   for (const mcp of httpMcp) {
     lines.push("", `# Optional override for the "${mcp.name}" MCP server URL.`, `${upperSnake(mcp.name)}_MCP_URL=`);
+  }
+  // Env vars declared in the source project's settings(.local).json `env` block.
+  // NAMES only (never the values — secrets stay out of the repo, per Fleet rules).
+  const names = Object.keys(env)
+    .filter((k) => k !== apiKeyEnv)
+    .sort();
+  if (names.length > 0) {
+    lines.push("", `# From the source project's .claude/settings.json "env" block — fill in real values.`);
+    for (const name of names) lines.push(`${name}=`);
   }
   return lines.join("\n") + "\n";
 }
@@ -307,7 +324,7 @@ function emitReadme(
   specifier: string,
   apiKeyEnv: string,
   httpMcp: Array<{ name: string }>,
-  unmapped: string[],
+  unmapped: UnmappedItem[],
 ): string {
   const lines: string[] = [];
   lines.push(`# ${project.name}`, "");
@@ -329,7 +346,7 @@ function emitReadme(
   lines.push(`- ${project.subagents.length} subagent(s), ${project.skills.length} skill(s), ${httpMcp.length} HTTP MCP server(s).`);
   if (unmapped.length) {
     lines.push("", `## Not mapped`, "");
-    for (const u of unmapped) lines.push(`- ${u}`);
+    for (const u of unmapped) lines.push(`- ${u.reason}`);
   }
   return lines.join("\n") + "\n";
 }

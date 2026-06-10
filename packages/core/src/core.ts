@@ -10,10 +10,22 @@ import { FlueDeployer, pingAgent, type DeployTarget } from "./deploy/flue-deploy
 import { SecretsStore } from "./secrets/store.js";
 import { computeCostUsd } from "./pricing/pricing.js";
 import { GatewayState, type StoredAgent, type SessionSummary } from "./state/index.js";
-import type { ModelOverride, RunOptions, RunSink } from "./neutral.js";
+import type { RunOptions, RunSink } from "./neutral.js";
 import type { AgentSummary, ClientRequest, ServerEvent } from "./api.js";
 
 export type Emit = (event: ServerEvent) => void;
+
+/**
+ * Split a `"provider/model-id"` specifier on its FIRST slash so model ids that
+ * themselves contain slashes (e.g. openrouter-style) stay intact. Returns null
+ * for an empty/malformed specifier (no provider or no model part).
+ */
+export function splitSpecifier(specifier: string | null): { provider: string; model: string } | null {
+  if (!specifier) return null;
+  const slash = specifier.indexOf("/");
+  if (slash <= 0 || slash === specifier.length - 1) return null;
+  return { provider: specifier.slice(0, slash), model: specifier.slice(slash + 1) };
+}
 
 interface RegisteredAgent {
   adapter: AgentAdapter;
@@ -87,9 +99,7 @@ export class GatewayCore {
         case "session.history":
           return this.#getSessionHistory(req, emit);
         case "config.set":
-          this.#state.setConfig(req.agentId, req.modelSpecifier, req.parameters ?? null);
-          emit({ type: "config.updated", agentId: req.agentId });
-          return;
+          return this.#setConfig(req, emit);
         case "deploy.preflight":
           return await this.#deployPreflight(req, emit);
         case "deploy.lastLog":
@@ -171,15 +181,38 @@ export class GatewayCore {
     );
   }
 
-  /** Redeploy an agent using the params persisted from its original deploy. */
+  /**
+   * Persist a config change and report whether it needs a redeploy to take
+   * effect. Flue bakes the model at convert time, so a model specifier that
+   * differs from what the agent currently runs only applies after a redeploy.
+   */
+  #setConfig(req: Extract<ClientRequest, { type: "config.set" }>, emit: Emit): void {
+    this.#state.setConfig(req.agentId, req.modelSpecifier, req.parameters ?? null);
+    const stored = this.#state.getAgent(req.agentId);
+    const current = stored ? this.#deployedSpecifier(req.agentId, stored.model) : "";
+    const requiresRedeploy =
+      !!req.modelSpecifier && req.modelSpecifier !== current && this.#state.hasDeploy(req.agentId);
+    emit({ type: "config.updated", agentId: req.agentId, requiresRedeploy });
+  }
+
+  /**
+   * Redeploy an agent using the params persisted from its original deploy,
+   * overlaying any pending model override from its config (the honest path for
+   * applying a model change — Flue fixes the model at convert time).
+   */
   async #redeploy(req: Extract<ClientRequest, { type: "agent.redeploy" }>, emit: Emit): Promise<void> {
     const params = this.#state.getDeploy(req.agentId);
     if (!params) {
       emit({ type: "deploy.error", message: `Agent "${req.agentId}" has no stored deploy to repeat.` });
       return;
     }
+    // Overlay the config model override (provider/model) when set, so a saved
+    // model change is what actually gets rebuilt and re-persisted by #runDeploy.
+    const cfg = this.#state.getConfig(req.agentId);
+    const override = splitSpecifier(cfg?.modelSpecifier ?? null);
+    const effective = override ? { ...params, provider: override.provider, model: override.model } : params;
     // Pass the pre-known agentId so the log can be persisted even on error.
-    await this.#runDeploy(params, emit, req.agentId);
+    await this.#runDeploy(effective, emit, req.agentId);
   }
 
   /**
@@ -210,6 +243,11 @@ export class GatewayCore {
           emit({ type: "deploy.log", lines });
         },
       );
+      // Surface any source features that did not convert (hooks, MCP stdio, …).
+      // Informational — never blocks the deploy.
+      if (result.unmapped.length > 0) {
+        emit({ type: "deploy.unmapped", items: result.unmapped });
+      }
       // `github` yields an artifact (a published repo), not a running agent.
       if (result.kind === "artifact") {
         emit({ type: "deploy.artifact", target: result.target, url: result.url, message: result.message });
@@ -331,7 +369,8 @@ export class GatewayCore {
     const sessionId = this.#state.createSession(req.agentId, req.message);
     emit({ type: "session.started", sessionId, agentId: req.agentId });
 
-    const options: RunOptions = { model: this.#resolveModel(req.agentId, req.modelOverride) };
+    // No per-run options in v1: the model is fixed at convert time (see RunOptions).
+    const options: RunOptions = {};
     let seq = 0;
 
     const sink: RunSink = {
@@ -390,13 +429,16 @@ export class GatewayCore {
     });
   }
 
-  #resolveModel(agentId: string, override?: ModelOverride): ModelOverride | undefined {
-    if (override) return override;
-    const cfg = this.#state.getConfig(agentId);
-    if (cfg?.modelSpecifier) {
-      return { specifier: cfg.modelSpecifier, parameters: cfg.parameters ?? undefined };
-    }
-    return undefined;
+  /**
+   * The model specifier the agent currently RUNS — derived from its deploy
+   * params (Flue bakes the model at convert time, so the deployed provider/model
+   * is the source of truth), falling back to the agent's own default. Empty
+   * string when nothing is known (e.g. a connected-by-URL agent with no deploy).
+   */
+  #deployedSpecifier(agentId: string, fallback: string): string {
+    const d = this.#state.getDeploy(agentId);
+    if (d?.provider && d.model) return `${d.provider}/${d.model}`;
+    return fallback;
   }
 
   #summary(a: StoredAgent, online: boolean): AgentSummary {
@@ -407,7 +449,7 @@ export class GatewayCore {
       description: a.description,
       kind: a.kind,
       online,
-      model: a.model,
+      model: this.#deployedSpecifier(a.id, a.model),
       redeployable: this.#state.hasDeploy(a.id),
     };
   }

@@ -15,7 +15,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, relative } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { ConvertError } from "./providers.js";
-import type { ClaudeProject, ClaudeSkill, ClaudeSubagent, McpServerSpec, SkillFile } from "./types.js";
+import type { ClaudeProject, ClaudeSkill, ClaudeSubagent, McpServerSpec, SkillFile, UnmappedItem } from "./types.js";
 
 export function readClaudeProject(dir: string): ClaudeProject {
   const claudeMd = join(dir, "CLAUDE.md");
@@ -25,7 +25,7 @@ export function readClaudeProject(dir: string): ClaudeProject {
   const instructions = readFileSync(claudeMd, "utf8").trim();
 
   const settings = readSettings(dir);
-  const unmapped: string[] = [];
+  const unmapped: UnmappedItem[] = [];
 
   const subagents = readSubagents(join(dir, ".claude", "agents"));
   const skills = readSkills(join(dir, ".claude", "skills"));
@@ -33,14 +33,20 @@ export function readClaudeProject(dir: string): ClaudeProject {
 
   for (const s of mcpServers) {
     if (s.kind === "stdio") {
-      unmapped.push(
-        `MCP server "${s.name}" is stdio (command: ${s.command}) — Flue's connectMcpServer is HTTP-only, so it was NOT wired. Expose it over HTTP/SSE to use it.`,
-      );
+      unmapped.push({
+        kind: "mcp-stdio",
+        name: s.name,
+        reason: `Flue's connectMcpServer is HTTP-only, so this stdio server (command: ${s.command}) was NOT wired. Expose it over HTTP/SSE to use it.`,
+      });
     }
   }
   if (settings && typeof settings === "object") {
-    if ("hooks" in settings) unmapped.push("Claude Code hooks have no Flue equivalent and were not mapped.");
-    if ("permissions" in settings) unmapped.push("Claude Code permissions have no Flue equivalent and were not mapped.");
+    if ("hooks" in settings) {
+      unmapped.push({ kind: "hooks", name: "hooks", reason: "Claude Code hooks have no Flue equivalent and were not mapped." });
+    }
+    if ("permissions" in settings) {
+      unmapped.push({ kind: "permissions", name: "permissions", reason: "Claude Code permissions have no Flue equivalent and were not mapped." });
+    }
   }
 
   return {
@@ -50,18 +56,41 @@ export function readClaudeProject(dir: string): ClaudeProject {
     subagents,
     skills,
     mcpServers,
+    env: readEnv(settings),
     unmapped,
   };
 }
 
+/**
+ * Read `.claude/settings.json` and, layered on top, `.claude/settings.local.json`
+ * (local overrides win — Claude Code's own precedence). Top-level keys are merged
+ * shallowly. Returns undefined only when neither file exists.
+ */
 function readSettings(dir: string): Record<string, unknown> | undefined {
-  const path = join(dir, ".claude", "settings.json");
+  const base = readJson(join(dir, ".claude", "settings.json"));
+  const local = readJson(join(dir, ".claude", "settings.local.json"));
+  if (!base && !local) return undefined;
+  return { ...(base ?? {}), ...(local ?? {}) };
+}
+
+function readJson(path: string): Record<string, unknown> | undefined {
   if (!existsSync(path)) return undefined;
   try {
     return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
   } catch {
     return undefined;
   }
+}
+
+/** Extract the settings `env` block as a string→string map (non-string values coerced). */
+function readEnv(settings: Record<string, unknown> | undefined): Record<string, string> {
+  const raw = settings?.["env"];
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") out[k] = String(v);
+  }
+  return out;
 }
 
 function readSubagents(agentsDir: string): ClaudeSubagent[] {
