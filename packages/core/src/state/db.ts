@@ -301,12 +301,17 @@ export class GatewayState {
       .run(wf.id, wf.name, graph, new Date().toISOString());
   }
 
-  /** All workflows, most recently updated first. */
+  /** All workflows, most recently updated first. Rows with corrupt graph JSON are skipped. */
   listWorkflows(): Workflow[] {
     const rows = this.#db
       .prepare(`SELECT id, name, graph_json FROM workflows ORDER BY updated_at DESC`)
       .all() as unknown as { id: string; name: string; graph_json: string }[];
-    return rows.map((r) => this.#rowToWorkflow(r));
+    const out: Workflow[] = [];
+    for (const r of rows) {
+      const wf = this.#rowToWorkflow(r);
+      if (wf) out.push(wf);
+    }
+    return out;
   }
 
   getWorkflow(id: string): Workflow | null {
@@ -320,9 +325,15 @@ export class GatewayState {
     this.#db.prepare(`DELETE FROM workflows WHERE id = ?`).run(id);
   }
 
-  #rowToWorkflow(row: { id: string; name: string; graph_json: string }): Workflow {
-    const graph = JSON.parse(row.graph_json) as { nodes: Workflow["nodes"]; edges: Workflow["edges"] };
-    return { id: row.id, name: row.name, nodes: graph.nodes ?? [], edges: graph.edges ?? [] };
+  /** Parse a stored row into a Workflow. Returns null (and logs) on corrupt JSON so one bad row can't break the list. */
+  #rowToWorkflow(row: { id: string; name: string; graph_json: string }): Workflow | null {
+    try {
+      const graph = JSON.parse(row.graph_json) as { nodes: Workflow["nodes"]; edges: Workflow["edges"] };
+      return { id: row.id, name: row.name, nodes: graph.nodes ?? [], edges: graph.edges ?? [] };
+    } catch {
+      console.error(`[gateway-state] skipping workflow "${row.id}": corrupt graph_json`);
+      return null;
+    }
   }
 
   createWorkflowRun(id: string, workflowId: string, inputs: Record<string, string>): void {

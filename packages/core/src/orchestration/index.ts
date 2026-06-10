@@ -81,7 +81,22 @@ export function validateWorkflow(wf: Workflow): string[] {
     if (!ids.has(e.from)) errors.push(`edge from unknown node "${e.from}"`);
     if (!ids.has(e.to)) errors.push(`edge to unknown node "${e.to}"`);
   }
-  // Don't attempt cycle detection on a structurally broken graph.
+  // Don't go further on a structurally broken graph (edges below assume valid ids).
+  if (errors.length > 0) return errors;
+
+  // A template's {{<nodeId>.output}} reference must be a declared dependency
+  // (an edge from that node), otherwise the value would silently resolve empty
+  // or stale at runtime depending on execution order.
+  const incoming = new Map<string, Set<string>>(wf.nodes.map((n) => [n.id, new Set()]));
+  for (const e of wf.edges) incoming.get(e.to)!.add(e.from);
+  for (const n of wf.nodes) {
+    if (n.kind !== "agent" || !n.promptTemplate) continue;
+    for (const ref of outputRefs(n.promptTemplate)) {
+      if (!incoming.get(n.id)!.has(ref)) {
+        errors.push(`agent node "${n.id}" references {{${ref}.output}} but has no edge from "${ref}"`);
+      }
+    }
+  }
   if (errors.length > 0) return errors;
 
   // Kahn's algorithm — if not every node is consumed, there is a cycle.
@@ -104,6 +119,19 @@ export function validateWorkflow(wf: Workflow): string[] {
   }
   if (seen !== wf.nodes.length) errors.push("workflow has a cycle");
   return errors;
+}
+
+/** Template placeholder scanner — shared by interpolate and validation. */
+const PLACEHOLDER = /\{\{\s*([\w.-]+)\s*\}\}/g;
+
+/** The node ids referenced as {{<nodeId>.output}} in a template. */
+function outputRefs(template: string): string[] {
+  const refs: string[] = [];
+  for (const m of template.matchAll(PLACEHOLDER)) {
+    const ref = m[1]!;
+    if (!ref.startsWith("input.") && ref.endsWith(".output")) refs.push(ref.slice(0, -".output".length));
+  }
+  return refs;
 }
 
 /**

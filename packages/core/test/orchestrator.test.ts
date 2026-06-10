@@ -97,6 +97,20 @@ async function main(): Promise<void> {
     validateWorkflow({ id: "w", name: "x", nodes: [node("a", "input")], edges: [{ from: "a", to: "z" }] }).some((e) => e.includes("unknown node")),
     "edge to unknown node is rejected",
   );
+  // template references a node that is not a declared dependency (no edge)
+  const danglingRef: Workflow = {
+    id: "w",
+    name: "x",
+    nodes: [
+      node("in", "input", { name: "q" }),
+      node("a", "agent", { agentId: "x", promptTemplate: "use {{ghost.output}}" }),
+    ],
+    edges: [{ from: "in", to: "a" }],
+  };
+  assert(
+    validateWorkflow(danglingRef).some((e) => e.includes("ghost") && e.includes("no edge")),
+    "template {{nodeId.output}} without a matching edge is rejected",
+  );
 
   // ── sequential chain ────────────────────────────────────────────────────────
   console.log("\n[3] sequential chain input → agent → output …");
