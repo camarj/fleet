@@ -9,6 +9,7 @@
  *      reuse path is taken.
  *   3. Deployment error: applicationStatus "error" → throws DeployError.
  *   4. Preflight: missing DOKPLOY_URL / DOKPLOY_API_KEY → failing checks.
+ *   5. Preflight: env vars absent but SecretsStore has the creds → ok:true.
  *
  * Run: pnpm --filter @inteliside/gateway-core exec tsx test/dokploy.test.ts
  */
@@ -246,6 +247,28 @@ async function main(): Promise<void> {
     } finally {
       if (savedDokployEnv.url !== undefined) process.env.DOKPLOY_URL = savedDokployEnv.url;
       if (savedDokployEnv.key !== undefined) process.env.DOKPLOY_API_KEY = savedDokployEnv.key;
+    }
+    // ── 5. Preflight: env vars absent but SecretsStore has creds → ok ────────
+    console.log("\n[5] Preflight — SecretsStore creds satisfy Dokploy preflight");
+    {
+      const savedDokployEnv5 = { url: process.env.DOKPLOY_URL, key: process.env.DOKPLOY_API_KEY };
+      delete process.env.DOKPLOY_URL;
+      delete process.env.DOKPLOY_API_KEY;
+      try {
+        const storePath = join(tmpdir(), `fleet-test-secrets-store-${process.pid}.json`);
+        const store = new SecretsStore(storePath);
+        store.set("DOKPLOY_URL", "https://dokploy.example.com");
+        store.set("DOKPLOY_API_KEY", "dk-test-api-key");
+        const deployer = new FlueDeployer(store);
+        const checks = await deployer.preflight({ target: "dokploy" });
+        const urlCheck = checks.find((c) => c.id === "dokploy-url");
+        const keyCheck = checks.find((c) => c.id === "dokploy-api-key");
+        assert(!!urlCheck && urlCheck.ok, "preflight: DOKPLOY_URL in store (env absent) → ok:true");
+        assert(!!keyCheck && keyCheck.ok, "preflight: DOKPLOY_API_KEY in store (env absent) → ok:true");
+      } finally {
+        if (savedDokployEnv5.url !== undefined) process.env.DOKPLOY_URL = savedDokployEnv5.url;
+        if (savedDokployEnv5.key !== undefined) process.env.DOKPLOY_API_KEY = savedDokployEnv5.key;
+      }
     }
   } finally {
     // Restore env vars.
