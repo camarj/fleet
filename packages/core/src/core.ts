@@ -243,6 +243,11 @@ export class GatewayCore {
           emit({ type: "deploy.log", lines });
         },
       );
+      // Surface any source features that did not convert (hooks, MCP stdio, …).
+      // Informational — never blocks the deploy.
+      if (result.unmapped.length > 0) {
+        emit({ type: "deploy.unmapped", items: result.unmapped });
+      }
       // `github` yields an artifact (a published repo), not a running agent.
       if (result.kind === "artifact") {
         emit({ type: "deploy.artifact", target: result.target, url: result.url, message: result.message });

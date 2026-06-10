@@ -20,8 +20,20 @@ export interface ClaudeProject {
   skills: ClaudeSkill[];
   /** MCP servers from `.mcp.json` / settings — only HTTP ones map to Flue. */
   mcpServers: McpServerSpec[];
-  /** Human-readable notes about anything that did NOT map (see emit report). */
-  unmapped: string[];
+  /** `env` block from settings(.local).json — surfaced into the emitted `.env.example`. */
+  env: Record<string, string>;
+  /** Structured notes about anything that did NOT map (see emit report). */
+  unmapped: UnmappedItem[];
+}
+
+/** One feature that did not convert to Flue, surfaced to the user. */
+export interface UnmappedItem {
+  /** Category, e.g. "mcp-stdio" | "hooks" | "permissions" | "subagent-model". */
+  kind: string;
+  /** The specific thing — an MCP server name, or the settings key. */
+  name: string;
+  /** Why it didn't map and, where useful, what to do about it. */
+  reason: string;
 }
 
 export interface ClaudeSubagent {
@@ -93,5 +105,5 @@ export interface ConvertReport {
   /** HTTP MCP servers that were wired. */
   mcpHttp: string[];
   /** Things that did not map (stdio MCP, hooks, permissions, …). */
-  unmapped: string[];
+  unmapped: UnmappedItem[];
 }

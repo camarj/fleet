@@ -32,6 +32,8 @@ export function App(): React.JSX.Element {
   const [deployError, setDeployError] = useState<string | null>(null);
   const [deployArtifact, setDeployArtifact] = useState<{ url: string; message: string } | null>(null);
   const [deployLog, setDeployLog] = useState<string[]>([]);
+  /** Source features that didn't convert to Flue, reported by the last deploy. */
+  const [deployUnmapped, setDeployUnmapped] = useState<{ kind: string; name: string; reason: string }[]>([]);
   const [deployOpen, setDeployOpen] = useState(false);
   const [preflightChecks, setPreflightChecks] = useState<PreflightCheck[] | null>(null);
   const [redeployingId, setRedeployingId] = useState<string | null>(null);
@@ -64,6 +66,7 @@ export function App(): React.JSX.Element {
     setDeployError(null);
     setDeployArtifact(null);
     setDeployLog([]);
+    setDeployUnmapped([]);
   }
 
   function setSaving(v: boolean): void {
@@ -142,6 +145,8 @@ export function App(): React.JSX.Element {
         setDeployError(null);
       } else if (e.type === "deploy.log") {
         setDeployLog((prev) => [...prev.slice(-400), ...e.lines]);
+      } else if (e.type === "deploy.unmapped") {
+        setDeployUnmapped(e.items);
       } else if (e.type === "deploy.artifact") {
         // A deploy with no running agent (e.g. github) — surface the artifact URL.
         setDeployStatus(null);
@@ -257,6 +262,7 @@ export function App(): React.JSX.Element {
           deployError={deployError}
           deployArtifact={deployArtifact}
           deployLog={deployLog}
+          deployUnmapped={deployUnmapped}
           preflightChecks={preflightChecks}
           onPreflight={(params) => {
             setPreflightChecks(null); // clear while the check runs

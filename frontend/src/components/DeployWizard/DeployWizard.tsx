@@ -26,6 +26,8 @@ interface Props {
   deployError: string | null;
   deployArtifact: { url: string; message: string } | null;
   deployLog: string[];
+  /** Source features that did NOT convert to Flue, reported after conversion. */
+  deployUnmapped: { kind: string; name: string; reason: string }[];
   /** Preflight check results (null = loading / not yet run). */
   preflightChecks: PreflightCheck[] | null;
   onPreflight: (params: { provider?: string; model?: string; target: DeployTarget }) => void;
@@ -39,6 +41,7 @@ export function DeployWizard({
   deployError,
   deployArtifact,
   deployLog,
+  deployUnmapped,
   preflightChecks,
   onPreflight,
   onDeploy,
@@ -270,6 +273,21 @@ export function DeployWizard({
               <div className="deploy-running">
                 <span className="spinner" /> {deployStatus ?? "starting"}…
               </div>
+            )}
+            {deployUnmapped.length > 0 && (
+              <details className="deploy-unmapped">
+                <summary>
+                  ⚠ This agent loses {deployUnmapped.length} feature
+                  {deployUnmapped.length === 1 ? "" : "s"} when converted to Flue.
+                </summary>
+                <ul>
+                  {deployUnmapped.map((u, i) => (
+                    <li key={`${u.kind}-${u.name}-${i}`}>
+                      <strong>{u.name}</strong> ({u.kind}) — {u.reason}
+                    </li>
+                  ))}
+                </ul>
+              </details>
             )}
             {deployLog.length > 0 && (
               <pre className="deploy-log" ref={logRef}>

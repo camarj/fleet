@@ -40,11 +40,15 @@ function main(): void {
   assert(r.skills.includes("refund-policy"), "skill refund-policy read");
   assert(r.mcpHttp.includes("inventory"), "http MCP inventory wired");
   assert(
-    r.unmapped.some((u) => u.includes("filesystem") && u.includes("stdio")),
-    "stdio MCP filesystem reported as unmapped",
+    r.unmapped.some((u) => u.kind === "mcp-stdio" && u.name === "filesystem"),
+    "stdio MCP filesystem reported as unmapped (structured)",
   );
-  assert(r.unmapped.some((u) => u.toLowerCase().includes("hooks")), "hooks reported as unmapped");
-  assert(r.unmapped.some((u) => u.toLowerCase().includes("permissions")), "permissions reported as unmapped");
+  assert(r.unmapped.some((u) => u.kind === "hooks"), "hooks reported as unmapped (structured)");
+  assert(r.unmapped.some((u) => u.kind === "permissions"), "permissions reported as unmapped (structured)");
+  assert(
+    r.unmapped.every((u) => typeof u.kind === "string" && typeof u.name === "string" && typeof u.reason === "string"),
+    "every unmapped item has kind/name/reason",
+  );
 
   const agent = fileContent(out, "src/agents/claude-project.ts");
   assert(agent.includes("export default createAgent(() => ({"), "agent uses createAgent");
@@ -78,7 +82,12 @@ function main(): void {
   for (const f of ["flue.config.ts", "package.json", "Dockerfile", ".env.example", "README.md", "wrangler.jsonc", ".github/workflows/deploy.yml"]) {
     assert(out.files.some((x) => x.path === f), `scaffold file ${f} emitted`);
   }
-  assert(fileContent(out, ".env.example").includes("ANTHROPIC_API_KEY="), ".env.example has the provider key var");
+  const envExample = fileContent(out, ".env.example");
+  assert(envExample.includes("ANTHROPIC_API_KEY="), ".env.example has the provider key var");
+  // settings.local.json env block → names surfaced into .env.example (WU-11)
+  assert(envExample.includes("STORE_API_BASE="), ".env.example surfaces settings.local.json env var STORE_API_BASE");
+  assert(envExample.includes("FEATURE_FLAG_X="), ".env.example surfaces settings.local.json env var FEATURE_FLAG_X");
+  assert(!envExample.includes("https://api.example.com"), ".env.example carries env NAMES only, never the values (no secret leak)");
 
   // package.json carries the Cloudflare peer dep + build/deploy scripts
   const pkg = JSON.parse(fileContent(out, "package.json"));
@@ -114,7 +123,7 @@ function main(): void {
   assert(swappedAgent.includes('model: "openai/gpt-5.5"'), "swapped main model emitted");
   assert(!swappedAgent.includes("anthropic/claude-haiku"), "subagent anthropic model dropped on swap");
   assert(
-    swapped.report.unmapped.some((u) => u.toLowerCase().includes("subagent model")),
+    swapped.report.unmapped.some((u) => u.kind === "subagent-model"),
     "swap reports dropped subagent model overrides",
   );
 

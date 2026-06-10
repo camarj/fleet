@@ -138,6 +138,8 @@ export type ServerEvent =
   | { type: "deploy.log"; lines: string[] }
   /** A deploy that produced an artifact (e.g. a published GitHub repo) instead of a running agent. */
   | { type: "deploy.artifact"; target: string; url: string; message: string }
+  /** Source-project features that did NOT convert to Flue (hooks, MCP stdio, …). Informational; does not block the deploy. */
+  | { type: "deploy.unmapped"; items: { kind: string; name: string; reason: string }[] }
   | { type: "deploy.error"; message: string }
   /**
    * A config change was saved. `requiresRedeploy` is true when the saved model

@@ -17,7 +17,7 @@ import { chmodSync, existsSync, readdirSync, rmSync, unlinkSync, writeFileSync }
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { convert, resolveModel, writeFlueProject } from "@inteliside/gateway-converter";
+import { convert, resolveModel, writeFlueProject, type UnmappedItem } from "@inteliside/gateway-converter";
 import { FlueAdapter } from "../adapters/flue.js";
 import { deployedDir } from "../paths.js";
 import type { PreflightCheck } from "../api.js";
@@ -72,6 +72,8 @@ export interface DeployedAgent {
   agentName: string;
   baseUrl: string;
   target: DeployTarget;
+  /** Features of the source project that did not convert to Flue (surfaced to the user). */
+  unmapped: UnmappedItem[];
 }
 
 /** A produced artifact that is not (yet) a running agent — e.g. a published repo. */
@@ -83,6 +85,8 @@ export interface DeployArtifact {
   url: string;
   /** Human-readable next step for the user. */
   message: string;
+  /** Features of the source project that did not convert to Flue (surfaced to the user). */
+  unmapped: UnmappedItem[];
 }
 
 export type DeployResult = DeployedAgent | DeployArtifact;
@@ -106,13 +110,14 @@ export class FlueDeployer {
     onProgress("converting");
     const project = convert(req.sourceDir, { provider: req.provider, model: req.model });
     const agentName = project.report.agentName;
+    const unmapped = project.report.unmapped;
     const agentDir = join(deployedDir(), agentName);
     rmSync(agentDir, { recursive: true, force: true });
     writeFlueProject(project, agentDir);
 
     // `github` publishes a repo for CI to build — there is nothing to connect to yet.
     if (target === "github") {
-      return await this.#runGithub(agentName, agentDir, onProgress, onLog);
+      return { ...(await this.#runGithub(agentName, agentDir, onProgress, onLog)), unmapped };
     }
 
     const apiKeyEnv = project.report.apiKeyEnv;
@@ -150,7 +155,7 @@ export class FlueDeployer {
     onProgress("connecting");
     const adapter = await FlueAdapter.connect({ baseUrl, agentName });
     onProgress("done");
-    return { kind: "connected", adapter, agentName, baseUrl, target };
+    return { kind: "connected", adapter, agentName, baseUrl, target, unmapped };
   }
 
   /** Build a Docker image for the agent and run it on its own host port. */
@@ -241,7 +246,7 @@ export class FlueDeployer {
     agentDir: string,
     onProgress: DeployProgress,
     onLog: DeployLog,
-  ): Promise<DeployArtifact> {
+  ): Promise<Omit<DeployArtifact, "unmapped">> {
     ensureCli("git", "Git is not available. Install Git, then retry.");
     ensureCli("gh", "The GitHub CLI is not available. Install `gh` and run `gh auth login`, then retry.");
 
