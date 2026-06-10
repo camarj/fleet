@@ -15,24 +15,37 @@ export type StatusListener = (connected: boolean) => void;
 
 export class GatewayClient {
   #ws: WebSocket | null = null;
-  readonly #url: string;
+  readonly #urlProvider: () => Promise<string>;
   readonly #listeners = new Set<GatewayListener>();
   readonly #statusListeners = new Set<StatusListener>();
   #shouldReconnect = true;
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(url: string) {
-    this.#url = url;
+  constructor(urlProvider: () => Promise<string>) {
+    this.#urlProvider = urlProvider;
   }
 
   /** Open the connection and keep it alive (auto-reconnect). Resolves on first open. */
   connect(): Promise<void> {
-    return new Promise((resolve) => this.#open(resolve));
+    return new Promise((resolve) => {
+      // Never let a synchronous throw in #open leave connect() hanging.
+      void this.#open(resolve).catch(() => resolve());
+    });
   }
 
-  #open(onFirstOpen?: () => void): void {
+  async #open(onFirstOpen?: () => void): Promise<void> {
     let firstOpen = onFirstOpen;
-    const ws = new WebSocket(this.#url);
+    let url: string;
+    try {
+      url = await this.#urlProvider();
+    } catch {
+      firstOpen?.();
+      firstOpen = undefined;
+      this.#emitStatus(false);
+      if (this.#shouldReconnect) this.#scheduleReconnect();
+      return;
+    }
+    const ws = new WebSocket(url);
     ws.onopen = () => {
       this.#emitStatus(true);
       firstOpen?.();
@@ -64,7 +77,7 @@ export class GatewayClient {
     if (this.#reconnectTimer) return;
     this.#reconnectTimer = setTimeout(() => {
       this.#reconnectTimer = null;
-      this.#open();
+      void this.#open();
     }, 1000);
   }
 

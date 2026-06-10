@@ -22,7 +22,7 @@
 | F3 API honesta + converter | ✅ DONE (merged PR #8) | WU-10 ✅, WU-11 ✅ | config→redeploy honesto; deploy.unmapped + settings.local/env |
 | F4 Verificar targets en vivo | 🔒 bloqueado | WU-12..15 | necesita FLY/CLOUDFLARE tokens + Coolify/Dokploy |
 | F5 Orquestador visual | ✅ DONE (merged PR #9) | WU-16..19 | motor DAG + API + canvas React Flow; smoke en vivo |
-| F6 Hardening | 🔄 EN CURSO | WU-20 ✅ (PR #10), WU-22 ✅ (rama), WU-21/23 pend. | WS auth, a11y, shutdown sidecar, multi-conversación |
+| F6 Hardening | 🔄 EN CURSO | WU-20 ✅ (merged PR #10), WU-22 ✅ (PR #11), WU-21/23 pend. | WS auth, a11y, shutdown sidecar, multi-conversación |
 
 > Nota histórica: F0–F2 mergeadas vía PR #3 (`4b315e3`) + PR #4 (docs); PR #1/#2
 > trajeron la migración Flue. Las ramas nuevas salen siempre de `main`.

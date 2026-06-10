@@ -16,11 +16,31 @@ import { ConnectAgent } from "./components/ConnectAgent/ConnectAgent";
 import { AgentConfig } from "./components/AgentConfig/AgentConfig";
 import { Modal } from "./components/Modal/Modal";
 
-const GATEWAY_URL = import.meta.env.VITE_GATEWAY_URL ?? "ws://127.0.0.1:4179";
+const GATEWAY_BASE_URL = import.meta.env.VITE_GATEWAY_URL ?? "ws://127.0.0.1:4179";
+
+async function fetchGatewayToken(): Promise<string | null> {
+  // Tauri injects __TAURI_INTERNALS__; absent in plain browser dev.
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return null;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const token = await invoke<string | null>("gateway_token");
+    return token && token.length > 0 ? token : null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveGatewayUrl(): Promise<string> {
+  const token = await fetchGatewayToken();
+  if (!token) return GATEWAY_BASE_URL;
+  const url = new URL(GATEWAY_BASE_URL);
+  url.searchParams.set("token", token);
+  return url.toString();
+}
 
 export function App(): React.JSX.Element {
   const clientRef = useRef<GatewayClient | null>(null);
-  if (!clientRef.current) clientRef.current = new GatewayClient(GATEWAY_URL);
+  if (!clientRef.current) clientRef.current = new GatewayClient(resolveGatewayUrl);
   const client = clientRef.current;
 
   const [connected, setConnected] = useState(false);
