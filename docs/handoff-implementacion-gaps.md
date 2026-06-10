@@ -20,7 +20,7 @@
 | F1 Ciclo de vida | ✅ DONE (merged, verificado en app) | WU-02..05 | stop/delete, health+reconnect, offline guard, connect-by-URL |
 | F2 Día 2 | ✅ DONE (merged, verificado en app) | WU-06..09 | historial, preflight, banner, deploy logs |
 | F3 API honesta + converter | ✅ DONE (merged PR #8) | WU-10 ✅, WU-11 ✅ | config→redeploy honesto; deploy.unmapped + settings.local/env |
-| F4 Verificar targets en vivo | 🔒 bloqueado | WU-12..15 | necesita FLY/CLOUDFLARE tokens + Coolify/Dokploy |
+| F4 Verificar targets en vivo | 🟡 parcial | WU-12..15 | WU-13 cloudflare ✓ (PR #15); WU-14 superado por el target `dokploy` automático ✓ en vivo (PR #17); WU-12 fly bloqueado (cuenta); falta Coolify manual + WU-15 swap |
 | F5 Orquestador visual | ✅ DONE (merged PR #9) | WU-16..19 | motor DAG + API + canvas React Flow; smoke en vivo |
 | F6 Hardening | ✅ DONE (código) | WU-20 ✅ (#10), WU-22 ✅ (#11), WU-21 ✅ (#12), WU-23 ✅ (#13) | WS auth, a11y, shutdown sidecar, multi-conversación |
 
