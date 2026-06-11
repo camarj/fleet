@@ -25,7 +25,7 @@
 | B1 | **Teardown/stop remoto real** (`stopDeployment()` hoy es no-op para fly/cloudflare/github/dokploy). Empezar por dokploy (`application.stop/start` ya probados). Mientras tanto: aviso honesto en los diálogos de Stop/Delete | DIR-01 + FLOW-01; extiende WU-02 (local-only fue decisión v1) | 🟡 **PR #19** (dokploy stop + diálogos honestos; review limpia, gates verdes). Falta: E2E en vivo (necesita DOKPLOY_URL/API_KEY en Settings → Infrastructure) y, a futuro, fly/cloudflare |
 | B2 | **Completar tabla de precios** (3 modelos Anthropic vs 14+ providers) + override por archivo | DIR-03 / FLOW-07 | ✅ **PR #20**: tabla generada desde el catálogo pi-ai (523 modelos, 16 providers) + override `GATEWAY_PRICES_PATH`. Bonus: corrigió precio stale de opus-4-8 (15/75→5/25, verificado) |
 | B3 | **Vista de uso/costo agregado** (tabla `usage` sin API de lectura): total + por agente/modelo, tab en Settings | DIR-02 / FLOW-10 | ✅ **PR #21**: `usage.summary` API + sección Usage en Settings (Today/7d/All, tabla por agente, footnote de runs sin precio). Verificado en vivo contra copia de la DB real |
-| B4 | **Preservar log cuando el primer deploy falla** (hoy se descarta a propósito) | DIR-05 = limitación WU-09 aceptada en v1, ahora promovida | S |
+| B4 | **Preservar log cuando el primer deploy falla** (hoy se descarta a propósito) | DIR-05 = limitación WU-09 aceptada en v1, ahora promovida | ✅ **PR #22**: snapshot global del último primer-deploy fallido (tabla `meta`) + API `deploy.lastFailedLog` + panel en el DeployWizard; se limpia cuando un deploy posterior tiene éxito |
 
 ## C. Pulido de flujos (Tier 2 — todo S)
 
