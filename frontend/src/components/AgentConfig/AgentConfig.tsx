@@ -18,6 +18,8 @@ interface Props {
   requiresRedeploy: boolean;
   /** True while a save is in flight (waiting for config.updated). */
   saving: boolean;
+  /** Error from the last save attempt, or null. Shown inside the modal. */
+  saveError: string | null;
   onSave: (modelSpecifier: string | null) => void;
   onRedeploy: () => void;
   onClose: () => void;
@@ -28,6 +30,7 @@ export function AgentConfig({
   connected,
   requiresRedeploy,
   saving,
+  saveError,
   onSave,
   onRedeploy,
   onClose,
@@ -78,6 +81,8 @@ export function AgentConfig({
             ? "The agent will run this provider + model after a redeploy."
             : "“Keep source” clears the override and uses the project’s original model."}
         </div>
+
+        {saveError && <div className="deploy-error">Failed to save: {saveError}</div>}
 
         {showRedeployCta && (
           <div className="config-redeploy">
