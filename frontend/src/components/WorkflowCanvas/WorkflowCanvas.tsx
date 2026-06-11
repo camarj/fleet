@@ -80,6 +80,8 @@ export function WorkflowCanvas({ client, agents, connected }: Props): React.JSX.
   const [outputs, setOutputs] = useState<Record<string, string> | null>(null);
   const [runModalOpen, setRunModalOpen] = useState(false);
   const [runInputs, setRunInputs] = useState<Record<string, string>>({});
+  /** True while the delete-workflow confirmation modal is open. */
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
 
   // Ask for the workflow list whenever we (re)connect.
   useEffect(() => {
@@ -159,6 +161,7 @@ export function WorkflowCanvas({ client, agents, connected }: Props): React.JSX.
     setEdges([]);
     setName("");
     setSelectedNodeId(null);
+    setConfirmDeleteOpen(false);
   }
 
   function addNode(kind: NodeKind): void {
@@ -295,7 +298,13 @@ export function WorkflowCanvas({ client, agents, connected }: Props): React.JSX.
                   ▶ Run
                 </button>
               )}
-              <button className="btn-ghost wf-del" disabled={!connected} onClick={deleteWorkflow}>
+              <button
+                className="btn-ghost wf-del"
+                disabled={!connected}
+                title="Delete this workflow"
+                aria-label="Delete this workflow"
+                onClick={() => setConfirmDeleteOpen(true)}
+              >
                 ✕
               </button>
             </div>
@@ -450,6 +459,30 @@ export function WorkflowCanvas({ client, agents, connected }: Props): React.JSX.
               </label>
             ))}
           </div>
+        </Modal>
+      )}
+
+      {/* Delete confirmation modal — a workflow has no soft-delete or undo. */}
+      {confirmDeleteOpen && currentId && (
+        <Modal
+          title="Delete workflow"
+          onClose={() => setConfirmDeleteOpen(false)}
+          dismissable
+          footer={
+            <>
+              <button className="btn-ghost" onClick={() => setConfirmDeleteOpen(false)}>
+                Cancel
+              </button>
+              <button className="btn-danger" onClick={deleteWorkflow}>
+                Delete
+              </button>
+            </>
+          }
+        >
+          <p>
+            Delete <strong>{name || "this workflow"}</strong>? The graph and its layout are removed
+            permanently — there is no undo.
+          </p>
         </Modal>
       )}
     </div>
