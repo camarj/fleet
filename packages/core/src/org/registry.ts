@@ -8,6 +8,23 @@
  * Rule #4: No Flue wire types here — this module is registry-transport-agnostic.
  */
 
+// ── Typed error ─────────────────────────────────────────────────────────────
+
+/**
+ * OrgError — all OrgRegistry implementations MUST throw this instead of a
+ * generic Error. Callers branch on `code` without string-matching, which keeps
+ * the hosted-registry swap a one-class change.
+ */
+export class OrgError extends Error {
+  constructor(
+    public readonly code: "unauthorized" | "notFound" | "networkError" | "conflict" | "alreadyExists",
+    message: string,
+  ) {
+    super(message);
+    this.name = "OrgError";
+  }
+}
+
 // ── Shared repo format types ────────────────────────────────────────────────
 
 /**
@@ -32,7 +49,8 @@ export interface SharedAgentEntry {
   model: string;
   target: "fly" | "cloudflare" | "dokploy" | "github";
   url: string;
-  sharedBy: string;  // gh login of the owner who shared
+  /** Authenticated user identity of the sharing owner (format is implementation-defined by the registry backend). */
+  sharedBy: string;
   sharedAt: string;  // ISO 8601
   config: {
     /** Env-var NAMES that callers must provide. Never include values. */
@@ -49,7 +67,8 @@ export interface OrgMeta {
   schemaVersion: number;
   orgId: string;
   name: string;
-  owner: string;     // gh login of the org creator
+  /** Authenticated user identity of the org creator (format is implementation-defined by the registry backend). */
+  owner: string;
   createdAt: string; // ISO 8601
 }
 
@@ -81,33 +100,41 @@ export interface OrgStatus {
 /**
  * OrgRegistry — backend-agnostic org operations.
  *
- * Each method maps directly to a Gateway API request (ORG-16). Error paths
- * MUST throw with human-readable messages; callers surface them as org.error
- * events (ORG-11).
+ * Each method maps directly to a Gateway API request (ORG-16). Implementations
+ * MUST throw OrgError (not a generic Error) so callers can branch on `code`
+ * without string-matching — this is what keeps the hosted-registry swap a
+ * one-class change (ORG-11).
  *
  * inviteMember is optional: the gh admin scope may not be available, in which
  * case the implementation omits it and the Core tells the user to invite on
  * GitHub directly.
  */
 export interface OrgRegistry {
-  /** Resolve the authenticated GitHub login. */
+  /** Resolve the authenticated user identity. */
   whoami(): Promise<string>;
 
   /**
-   * Create a new org: commit org.json to the repo, persist the owner binding.
-   * Transitions local state: none → owner (ADR-3b).
+   * Create a new org: commit org.json to the registry repo and return OrgMeta.
+   * The CALLER is responsible for persisting the local binding (OrgStore is not
+   * the registry's concern). Transitions local state: none → owner (ADR-3b).
+   *
+   * MUST throw OrgError('alreadyExists') if org.json is already present in the repo.
    */
   createOrg(repo: string, name: string): Promise<OrgMeta>;
 
   /**
-   * Join an existing org: read org.json, verify collaborator access, persist
-   * the member binding. Transitions local state: none → member.
+   * Join an existing org: read org.json, verify collaborator access, and return
+   * OrgMeta. The CALLER is responsible for persisting the local binding (OrgStore
+   * is not the registry's concern). Transitions local state: none → member.
    */
   bindOrg(repo: string): Promise<OrgMeta>;
 
   /**
    * Pull the full shared-agent directory: list agents/*.json then fetch each.
    * Returns all entries whose schemaVersion is ≤ the known max.
+   *
+   * Throws OrgError on network/auth failure. Individual entries that fail schema
+   * validation MUST be skipped (with a console.warn); partial results are acceptable.
    */
   pullDirectory(): Promise<SharedAgentEntry[]>;
 
@@ -126,6 +153,12 @@ export interface OrgRegistry {
    * List live collaborators from the GitHub repo (ADR-4: no members.json).
    */
   listMembers(): Promise<OrgMember[]>;
+
+  /**
+   * Read-only re-read of org.json. Used by sync loops that need the current
+   * remote state without triggering any collaborator-verification side effects.
+   */
+  getOrgMeta(): Promise<OrgMeta>;
 
   /**
    * Optional: add a collaborator via GitHub API.

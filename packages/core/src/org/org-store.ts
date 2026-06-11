@@ -12,7 +12,7 @@
  * the new one — the caller's (OrgManager's) responsibility).
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { orgBindingPath } from "../paths.js";
 import type { OrgRole } from "./registry.js";
@@ -55,7 +55,13 @@ export class OrgStore {
       if (!raw || typeof raw !== "object") return null;
       const b = raw as Record<string, unknown>;
       // Skip entries with a schemaVersion we don't understand (forward compat).
-      if (typeof b.schemaVersion !== "number" || b.schemaVersion > CURRENT_SCHEMA_VERSION) {
+      // Also reject non-number, NaN, and sub-minimum versions.
+      if (
+        typeof b.schemaVersion !== "number" ||
+        Number.isNaN(b.schemaVersion) ||
+        b.schemaVersion < 1 ||
+        b.schemaVersion > CURRENT_SCHEMA_VERSION
+      ) {
         console.warn("[OrgStore] Unknown schemaVersion — ignoring binding file.");
         return null;
       }
@@ -65,10 +71,12 @@ export class OrgStore {
     }
   }
 
-  /** Persist a new binding. Creates parent directories as needed. */
+  /** Persist a new binding atomically. Creates parent directories as needed. */
   save(binding: OrgBinding): void {
     mkdirSync(dirname(this.#path), { recursive: true });
-    writeFileSync(this.#path, JSON.stringify(binding, null, 2), { encoding: "utf8" });
+    const tmp = `${this.#path}.tmp`;
+    writeFileSync(tmp, JSON.stringify(binding, null, 2), { encoding: "utf8" });
+    renameSync(tmp, this.#path);
   }
 
   /**

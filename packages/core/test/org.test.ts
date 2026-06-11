@@ -12,7 +12,7 @@
  * Run: pnpm --filter @inteliside/gateway-core exec tsx test/org.test.ts
  */
 
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -28,7 +28,7 @@ import type {
   OrgRole,
   SharedAgentEntry,
 } from "../src/org/index.js";
-import { OrgStore } from "../src/org/index.js";
+import { OrgError, OrgStore } from "../src/org/index.js";
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) {
@@ -47,8 +47,6 @@ class FakeRegistry implements OrgRegistry {
   #orgMeta: OrgMeta | null = null;
   #agents: Map<string, SharedAgentEntry> = new Map();
   #members: OrgMember[] = [];
-  // Simulate pull failure for the pull-failure prune path test.
-  simulatePullFailure = false;
 
   constructor(login: string) {
     this.#login = login;
@@ -59,6 +57,9 @@ class FakeRegistry implements OrgRegistry {
   }
 
   async createOrg(repo: string, name: string): Promise<OrgMeta> {
+    if (this.#orgMeta !== null) {
+      throw new OrgError("alreadyExists", `Fake: org already exists at ${repo}`);
+    }
     this.#orgMeta = {
       schemaVersion: 1,
       orgId: `org_${Date.now()}`,
@@ -71,12 +72,11 @@ class FakeRegistry implements OrgRegistry {
   }
 
   async bindOrg(repo: string): Promise<OrgMeta> {
-    if (!this.#orgMeta) throw new Error(`Fake: no org at ${repo}`);
+    if (!this.#orgMeta) throw new OrgError("notFound", `Fake: no org at ${repo}`);
     return this.#orgMeta;
   }
 
   async pullDirectory(): Promise<SharedAgentEntry[]> {
-    if (this.simulatePullFailure) throw new Error("Fake: pull failure");
     return Array.from(this.#agents.values());
   }
 
@@ -90,6 +90,11 @@ class FakeRegistry implements OrgRegistry {
 
   async listMembers(): Promise<OrgMember[]> {
     return [...this.#members];
+  }
+
+  async getOrgMeta(): Promise<OrgMeta> {
+    if (!this.#orgMeta) throw new OrgError("notFound", "Fake: no org meta available");
+    return this.#orgMeta;
   }
 
   async inviteMember(login: string): Promise<void> {
@@ -177,6 +182,11 @@ async function testFakeRegistryContract(): Promise<void> {
   const afterInvite = await fake.listMembers();
   assert(afterInvite.length === 2, "listMembers grows after inviteMember");
   assert(afterInvite.find((m) => m.login === "bob") !== undefined, "bob is in members after invite");
+
+  // getOrgMeta
+  const orgMeta = await fake.getOrgMeta();
+  assert(orgMeta.orgId === meta.orgId, "getOrgMeta returns the current org meta");
+  assert(orgMeta.name === "My Org", "getOrgMeta: name matches");
 }
 
 // ── Level 2: SharedAgentEntry type-shape — no secrets (ORG-14) ─────────────
@@ -345,20 +355,132 @@ function testSchemaVersionForwardCompat(): void {
   assert(store.isBound() === false, "isBound() is false for unreadable future binding");
 }
 
+// ── Level 7: OrgStore — corrupt JSON file returns null (W5) ────────────────
+
+function testCorruptFileReturnsNull(): void {
+  console.log("\n[7] OrgStore: corrupt JSON file → load() returns null …");
+
+  const storePath = join(DATA_DIR, "org-binding-corrupt.json");
+  writeFileSync(storePath, "not valid json{{", "utf8");
+  const store = new OrgStore(storePath);
+  assert(store.load() === null, "load() returns null for corrupt JSON file");
+  assert(store.isBound() === false, "isBound() is false for corrupt JSON file");
+}
+
+// ── Level 8: OrgStore — nested non-existent directory (W6) ─────────────────
+
+function testNestedPathSave(): void {
+  console.log("\n[8] OrgStore: nested non-existent subdirectory → save succeeds …");
+
+  const storePath = join(DATA_DIR, "nested", "deep", "org-binding.json");
+  const store = new OrgStore(storePath);
+  const binding: OrgBinding = {
+    schemaVersion: 1,
+    repo: "alice/fleet-org",
+    orgId: "org_nested",
+    orgName: "Nested Org",
+    myLogin: "alice",
+    role: "owner",
+    lastSyncedAt: null,
+  };
+  store.save(binding);
+  const loaded = store.load();
+  assert(loaded !== null, "save() succeeds in nested non-existent directory");
+  assert(loaded?.orgId === "org_nested", "loaded orgId matches after nested-path save");
+}
+
+// ── Level 9: OrgStore — overwrite without clear() (W7) ─────────────────────
+
+function testOverwrite(): void {
+  console.log("\n[9] OrgStore: save overwrite — second save wins …");
+
+  const storePath = join(DATA_DIR, "org-binding-overwrite.json");
+  const store = new OrgStore(storePath);
+
+  const binding1: OrgBinding = {
+    schemaVersion: 1,
+    repo: "alice/fleet-org",
+    orgId: "org_first",
+    orgName: "First Org",
+    myLogin: "alice",
+    role: "owner",
+    lastSyncedAt: null,
+  };
+  const binding2: OrgBinding = {
+    schemaVersion: 1,
+    repo: "bob/fleet-org",
+    orgId: "org_second",
+    orgName: "Second Org",
+    myLogin: "bob",
+    role: "member",
+    lastSyncedAt: null,
+  };
+
+  store.save(binding1);
+  store.save(binding2);
+  const loaded = store.load();
+  assert(loaded?.orgId === "org_second", "load() returns binding2 after overwrite");
+  assert(loaded?.myLogin === "bob", "load: myLogin reflects binding2 after overwrite");
+}
+
+// ── Level 10: OrgError typed error codes ───────────────────────────────────
+
+async function testOrgErrorCodes(): Promise<void> {
+  console.log("\n[10] OrgError: typed error codes …");
+
+  // bindOrg on unknown org → OrgError('notFound')
+  const fake = new FakeRegistry("alice");
+  try {
+    await fake.bindOrg("unknown/org");
+    assert(false, "bindOrg on unknown org should throw OrgError");
+  } catch (err) {
+    assert(err instanceof OrgError, "bindOrg throws OrgError on missing org");
+    assert((err as OrgError).code === "notFound", "OrgError.code is notFound for missing org");
+    assert((err as OrgError).name === "OrgError", "OrgError.name is 'OrgError'");
+  }
+
+  // createOrg twice → OrgError('alreadyExists')
+  await fake.createOrg("alice/fleet-org", "My Org");
+  try {
+    await fake.createOrg("alice/fleet-org", "My Org Again");
+    assert(false, "createOrg on existing org should throw OrgError");
+  } catch (err) {
+    assert(err instanceof OrgError, "createOrg throws OrgError when org already exists");
+    assert((err as OrgError).code === "alreadyExists", "OrgError.code is alreadyExists for duplicate org");
+  }
+
+  // getOrgMeta on fresh registry (no org) → OrgError('notFound')
+  const fresh = new FakeRegistry("bob");
+  try {
+    await fresh.getOrgMeta();
+    assert(false, "getOrgMeta on unbound registry should throw OrgError");
+  } catch (err) {
+    assert(err instanceof OrgError, "getOrgMeta throws OrgError when no org is set");
+    assert((err as OrgError).code === "notFound", "OrgError.code is notFound for getOrgMeta with no org");
+  }
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
   rmSync(DATA_DIR, { recursive: true, force: true });
   mkdirSync(DATA_DIR, { recursive: true });
 
-  await testFakeRegistryContract();
-  testSharedAgentEntryNoSecrets();
-  testOrgStoreRoundTrip();
-  testOrgStorePersistence();
-  await testRoleDerivation();
-  testSchemaVersionForwardCompat();
+  try {
+    await testFakeRegistryContract();
+    testSharedAgentEntryNoSecrets();
+    testOrgStoreRoundTrip();
+    testOrgStorePersistence();
+    await testRoleDerivation();
+    testSchemaVersionForwardCompat();
+    testCorruptFileReturnsNull();
+    testNestedPathSave();
+    testOverwrite();
+    await testOrgErrorCodes();
+  } finally {
+    rmSync(DATA_DIR, { recursive: true, force: true });
+  }
 
-  rmSync(DATA_DIR, { recursive: true, force: true });
   console.log(process.exitCode ? "\nFAILED" : "\nALL GOOD");
   process.exit(process.exitCode ? 1 : 0);
 }
