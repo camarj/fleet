@@ -1543,3 +1543,140 @@ button:disabled {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+
+/* settings subsection label (used in Infrastructure and Org sections) */
+.settings-group-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  margin: 14px 0 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ── Org section (Settings) ───────────────────────────────────────────────── */
+.org-error {
+  font-size: 11px;
+  color: #f85149;
+  background: rgba(248, 81, 73, 0.08);
+  border: 1px solid rgba(248, 81, 73, 0.3);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+.org-info-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.org-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+.badge.org-owner {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.org-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+  flex-wrap: wrap;
+}
+.org-leave-btn {
+  color: #f85149;
+  border-color: transparent;
+}
+.org-leave-btn:hover:not(:disabled) {
+  border-color: #f85149;
+}
+.org-leave-confirm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+.org-members-toggle {
+  font-size: 11px;
+  padding: 3px 8px;
+  width: 100%;
+  text-align: left;
+  margin-bottom: 4px;
+}
+.org-members-list {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.org-member-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 6px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 4px;
+  font-size: 12px;
+}
+.org-share-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.org-share-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.org-share-item:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+.org-share-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.org-share-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.org-share-btn {
+  font-size: 11px;
+  padding: 2px 10px;
+  flex-shrink: 0;
+}
+.org-share-btn.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* ── Sidebar org grouping ─────────────────────────────────────────────────── */
+.agent-group-header {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  padding: 8px 10px 4px;
+  font-weight: 600;
+  list-style: none;
+}
+.agent-shared-by {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 1px;
+  font-style: italic;
+}
