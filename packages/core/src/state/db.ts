@@ -43,6 +43,24 @@ export interface AgentConfig {
   updatedAt: string;
 }
 
+/**
+ * Snapshot of the most recent FIRST deploy that failed before an agent was
+ * registered (so there is no agent row to key its log by). Stored globally in
+ * the meta table; each new first-deploy failure overwrites the previous one.
+ */
+export interface FailedDeploy {
+  sourceDir: string;
+  provider: string | null;
+  model: string | null;
+  target: string;
+  /** The error that aborted the deploy. */
+  message: string;
+  /** Accumulated command output up to the failure (may be empty). */
+  log: string;
+  /** ISO timestamp of the failure. */
+  failedAt: string;
+}
+
 /** The original deploy inputs, kept so an agent can be redeployed in one click. */
 export interface DeployParams {
   sourceDir: string;
@@ -112,6 +130,11 @@ CREATE TABLE IF NOT EXISTS usage (
   cost_usd      REAL,
   duration_ms   INTEGER,
   recorded_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS workflows (
@@ -286,6 +309,39 @@ export class GatewayState {
       | { log: string | null }
       | undefined;
     return row?.log ?? null;
+  }
+
+  /**
+   * Overwrite the snapshot of the most recent first-deploy failure. A failed
+   * FIRST deploy has no agent row to key its log by (the agent only exists
+   * after it registers), so the last one is kept globally in the meta table.
+   */
+  setLastFailedDeploy(failed: FailedDeploy): void {
+    this.#db
+      .prepare(
+        `INSERT INTO meta (key, value) VALUES ('last_failed_deploy', ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      )
+      .run(JSON.stringify(failed));
+  }
+
+  /** Return the most recent first-deploy failure, or null if none was recorded. */
+  getLastFailedDeploy(): FailedDeploy | null {
+    const row = this.#db.prepare(`SELECT value FROM meta WHERE key = 'last_failed_deploy'`).get() as unknown as
+      | { value: string }
+      | undefined;
+    if (!row) return null;
+    try {
+      return JSON.parse(row.value) as FailedDeploy;
+    } catch {
+      // A corrupt row must not take the whole request down — treat it as absent.
+      return null;
+    }
+  }
+
+  /** Forget the recorded first-deploy failure (called when a later deploy succeeds). */
+  clearLastFailedDeploy(): void {
+    this.#db.prepare(`DELETE FROM meta WHERE key = 'last_failed_deploy'`).run();
   }
 
   /**

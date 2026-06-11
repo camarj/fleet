@@ -153,6 +153,24 @@ export interface UsageTotals {
   unpricedRuns: number;
 }
 
+/**
+ * Snapshot of the most recent FIRST deploy that failed before an agent was
+ * registered. Such a deploy has no agent row to key its log by, so the Core
+ * keeps the last one globally (overwritten by each new first-deploy failure).
+ */
+export interface FailedDeploy {
+  sourceDir: string;
+  provider: string | null;
+  model: string | null;
+  target: string;
+  /** The error that aborted the deploy. */
+  message: string;
+  /** Accumulated command output up to the failure (may be empty). */
+  log: string;
+  /** ISO timestamp of the failure. */
+  failedAt: string;
+}
+
 // ── Frontend → Core ──────────────────────────────────────────────────────────
 
 /** Where a converted agent is deployed (the five offered in the UI). */
@@ -189,6 +207,8 @@ export type ClientRequest =
   | { type: "deploy.githubOwners" }
   /** Retrieve the last deploy log for an agent (persisted at the end of the most recent deploy). */
   | { type: "deploy.lastLog"; agentId: string }
+  /** Retrieve the most recent first-deploy failure (no agent was registered), or null if none. */
+  | { type: "deploy.lastFailedLog" }
   /** Aggregate token/cost usage per agent+model. `since` is an inclusive ISO timestamp; omit for all time. */
   | { type: "usage.summary"; since?: string | null }
   // ── Orchestration (workflows) ──
@@ -240,6 +260,8 @@ export type ServerEvent =
   | { type: "deploy.githubOwners"; owners: string[] }
   /** The last deploy log for an agent. `log` is null if no deploy has been completed yet. */
   | { type: "deploy.lastLog"; agentId: string; log: string | null }
+  /** The most recent first-deploy failure. `failed` is null when none has been recorded. */
+  | { type: "deploy.lastFailedLog"; failed: FailedDeploy | null }
   /** Aggregated usage per agent+model plus grand totals for the requested window. */
   | { type: "usage.summary"; since: string | null; rows: UsageAgentSummary[]; totals: UsageTotals }
   // ── Orchestration (workflows) ──

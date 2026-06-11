@@ -8,7 +8,11 @@
 
 import type { AgentKind } from "./adapters/agent-adapter.js";
 import type { ModelParameters, RunEvent, RunStatus, RuntimeErrorCode, Usage } from "./neutral.js";
-import type { SessionStatus } from "./state/index.js";
+import type { FailedDeploy, SessionStatus } from "./state/index.js";
+
+// The wire shape of a first-deploy failure is the stored shape — re-exported so
+// the frontend mirror (frontend/src/lib/api.ts) has a single source to copy.
+export type { FailedDeploy } from "./state/index.js";
 import type { Workflow } from "./orchestration/index.js";
 
 /**
@@ -123,6 +127,8 @@ export type ClientRequest =
   | { type: "deploy.githubOwners" }
   /** Retrieve the last deploy log for an agent (persisted at the end of the most recent deploy). */
   | { type: "deploy.lastLog"; agentId: string }
+  /** Retrieve the most recent first-deploy failure (no agent was registered), or null if none. */
+  | { type: "deploy.lastFailedLog" }
   /** Aggregate token/cost usage per agent+model. `since` is an inclusive ISO timestamp; omit for all time. */
   | { type: "usage.summary"; since?: string | null }
   // ── Orchestration (workflows) ──
@@ -177,6 +183,8 @@ export type ServerEvent =
   | { type: "deploy.githubOwners"; owners: string[] }
   /** The last deploy log for an agent. `log` is null if no deploy has been completed yet. */
   | { type: "deploy.lastLog"; agentId: string; log: string | null }
+  /** The most recent first-deploy failure. `failed` is null when none has been recorded. */
+  | { type: "deploy.lastFailedLog"; failed: FailedDeploy | null }
   /** Aggregated usage per agent+model plus grand totals for the requested window. */
   | { type: "usage.summary"; since: string | null; rows: UsageAgentSummary[]; totals: UsageTotals }
   // ── Orchestration (workflows) ──
