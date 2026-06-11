@@ -29,13 +29,13 @@
 
 ## C. Pulido de flujos (Tier 2 — todo S)
 
-| ID | Ítem | Origen |
-| --- | --- | --- |
-| C1 | Empty state / onboarding de primer uso (3 pasos con CTAs) | FLOW-08 |
-| C2 | CTA "Connect" tras deploy target `github` (hoy: sidebar vacío sin siguiente paso) | FLOW-06 |
-| C3 | Confirmación antes de borrar un workflow | FLOW-03 |
-| C4 | Error visible cuando falla el guardado de config | FLOW-02 |
-| C5 | Mostrar `description`/`version` del agente (sidebar + AgentConfig) | FLOW-12 |
+| ID | Ítem | Origen | Estado |
+| --- | --- | --- | --- |
+| C1 | Empty state / onboarding de primer uso (3 pasos con CTAs) | FLOW-08 | ✅ **PR #23** |
+| C2 | CTA "Connect" tras deploy target `github` (hoy: sidebar vacío sin siguiente paso) | FLOW-06 | ✅ **PR #23** |
+| C3 | Confirmación antes de borrar un workflow | FLOW-03 | ✅ **PR #23** |
+| C4 | Error visible cuando falla el guardado de config | FLOW-02 | ✅ **PR #23** |
+| C5 | Mostrar `description`/`version` del agente (sidebar + AgentConfig) | FLOW-12 | ✅ **PR #23** |
 
 ## D. Capacidades (Tier 3 — M)
 
