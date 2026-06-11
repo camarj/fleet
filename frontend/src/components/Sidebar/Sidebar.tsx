@@ -10,6 +10,9 @@ import type { AgentSummary } from "../../lib/api";
 import { Modal } from "../Modal/Modal";
 import { INFRA_CREDENTIAL_IDS } from "../../lib/providers";
 
+/** Remote targets whose deployment Fleet cannot stop — it keeps running after Stop/Delete. */
+const REMOTE_KEEPS_RUNNING: ReadonlySet<string> = new Set(["fly", "cloudflare", "github"]);
+
 interface Props {
   agents: AgentSummary[];
   selectedId: string | null;
@@ -139,7 +142,13 @@ export function Sidebar({
                 <button
                   className="btn-ghost agent-stop"
                   disabled={!connected}
-                  title="Stop this agent's runtime (keeps registration for redeploy)"
+                  title={
+                    a.target === "dokploy"
+                      ? "Stop this agent and its remote Dokploy application (keeps registration for redeploy)"
+                      : a.target && REMOTE_KEEPS_RUNNING.has(a.target)
+                        ? `Disconnect this agent — the ${a.target} deployment keeps running and must be stopped manually`
+                        : "Stop this agent's runtime (keeps registration for redeploy)"
+                  }
                   aria-label={`Stop ${a.name}`}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -202,6 +211,19 @@ export function Sidebar({
             Delete <strong>{confirmDeleteAgent.name}</strong>? This removes it from Fleet along with
             its deploy parameters. The action cannot be undone.
           </p>
+          {confirmDeleteAgent.target === "dokploy" && (
+            <p className="modal-note">
+              The remote Dokploy application will be stopped, but its application record, domain,
+              and GitHub repo are not deleted — clean those up in Dokploy/GitHub if you want them
+              gone.
+            </p>
+          )}
+          {confirmDeleteAgent.target && REMOTE_KEEPS_RUNNING.has(confirmDeleteAgent.target) && (
+            <p className="modal-note">
+              ⚠ The deployment on {confirmDeleteAgent.target} keeps running (and billing) after
+              this — stop it manually via the provider's dashboard or CLI.
+            </p>
+          )}
         </Modal>
       )}
     </aside>

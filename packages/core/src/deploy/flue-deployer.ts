@@ -591,10 +591,12 @@ export class FlueDeployer {
   /**
    * Stop a single deployed agent's runtime (called by GatewayCore on agent.stop / agent.delete).
    * For docker-local: removes the container. For local-process: kills the child.
-   * For remote targets (fly, cloudflare, github, dokploy): no-op — remote infra teardown is out
-   * of scope for v1; the Core just disconnects the adapter locally.
+   * For dokploy: stops the remote application via the Dokploy API (best-effort; the
+   * application record, domain, and GitHub repo are NOT deleted).
+   * For fly, cloudflare, github: no-op — remote infra teardown must be done manually
+   * (flyctl/wrangler/PaaS UI).
    */
-  stopDeployment(agentName: string, target: DeployTarget): void {
+  async stopDeployment(agentName: string, target: DeployTarget): Promise<void> {
     if (target === "docker-local") {
       const container = `fleet-${agentName}`;
       spawnSync("docker", ["rm", "-f", container], { stdio: "ignore" });
@@ -609,6 +611,16 @@ export class FlueDeployer {
         }
       }
       this.#processes.delete(agentName);
+    } else if (target === "dokploy") {
+      const url = this.#infraCred("DOKPLOY_URL");
+      const key = this.#infraCred("DOKPLOY_API_KEY");
+      // Without credentials there is nothing Fleet can do remotely.
+      if (!url || !key) return;
+      await stopDokployApplication({
+        cfg: { url, key },
+        agentName,
+        projectName: this.#infraCred("DOKPLOY_PROJECT"),
+      });
     }
   }
 
@@ -1017,6 +1029,92 @@ export async function dokployApi(
   }
 }
 
+type DokployApp = { applicationId: string; name: string; applicationStatus: string; appName?: string };
+type DokployEnv = { name: string; environmentId: string; isDefault: boolean; applications?: DokployApp[] };
+type DokployProject = { projectId: string; name: string; environments: DokployEnv[] };
+
+/**
+ * Resolve the Dokploy project, its default environment, and (when present) the
+ * application named `agentName`. Shared by deploy and stop so both follow the
+ * same project/environment selection rules (DOKPLOY_PROJECT, single-project
+ * fallback, isDefault environment).
+ */
+async function resolveDokployTarget(
+  api: (method: "GET" | "POST", procedure: string, body?: unknown) => Promise<unknown>,
+  opts: { agentName: string; projectName?: string },
+): Promise<{ project: DokployProject; defaultEnv: DokployEnv; existingApp: DokployApp | undefined }> {
+  const projects = (await api("GET", "project.all")) as DokployProject[];
+  if (!Array.isArray(projects) || projects.length === 0) {
+    throw new DeployError("No projects found in Dokploy. Create a project first, then retry.");
+  }
+
+  let project: DokployProject;
+  const projectName = opts.projectName ?? process.env.DOKPLOY_PROJECT;
+  if (projectName) {
+    const found = projects.find((p) => p.name === projectName);
+    if (!found) {
+      throw new DeployError(
+        `Project "${projectName}" not found (DOKPLOY_PROJECT). Available: ${projects.map((p) => p.name).join(", ")}.`,
+      );
+    }
+    project = found;
+  } else if (projects.length === 1) {
+    project = projects[0]!;
+  } else {
+    throw new DeployError(
+      `Multiple projects found. Set DOKPLOY_PROJECT to one of: ${projects.map((p) => p.name).join(", ")}.`,
+    );
+  }
+
+  const envs = project.environments ?? [];
+  if (envs.length === 0) {
+    throw new DeployError(`Project "${project.name}" has no environments.`);
+  }
+  const defaultEnv = envs.find((e) => e.isDefault) ?? (envs.length === 1 ? envs[0] : null);
+  if (!defaultEnv) {
+    throw new DeployError(
+      `No default environment in project "${project.name}". Set isDefault on one environment in Dokploy.`,
+    );
+  }
+
+  const existingApp = (defaultEnv.applications ?? []).find((a) => a.name === opts.agentName);
+  return { project, defaultEnv, existingApp };
+}
+
+/**
+ * Stop the Dokploy application backing a deployed agent (`application.stop`).
+ * Best-effort remote companion to local teardown: the application record, its
+ * domain, and the pushed GitHub repo are deliberately NOT deleted — only the
+ * running container stops. Returns true when a stop was issued, false when no
+ * application with that name exists.
+ *
+ * exported for tests — pass fetchImpl to inject a fake fetch.
+ */
+export async function stopDokployApplication(opts: {
+  cfg: { url: string; key: string };
+  agentName: string;
+  projectName?: string;
+  onLog?: DeployLog;
+  fetchImpl?: typeof fetch;
+}): Promise<boolean> {
+  const onLog = opts.onLog ?? (() => {});
+  const api = (method: "GET" | "POST", procedure: string, body?: unknown) =>
+    dokployApi(opts.cfg, method, procedure, body, opts.fetchImpl ?? fetch);
+
+  const { existingApp } = await resolveDokployTarget(api, {
+    agentName: opts.agentName,
+    projectName: opts.projectName,
+  });
+  if (!existingApp) {
+    onLog([`[dokploy] no application named "${opts.agentName}" found — nothing to stop`]);
+    return false;
+  }
+
+  await api("POST", "application.stop", { applicationId: existingApp.applicationId });
+  onLog([`[dokploy] application "${opts.agentName}" (${existingApp.applicationId}) stopped`]);
+  return true;
+}
+
 /**
  * Drive the Dokploy REST API to create/configure/deploy the agent and poll until
  * it is live. Takes the GitHub owner/repo produced by `#pushToGithub` so this
@@ -1072,49 +1170,15 @@ export async function runDokployOrchestration(opts: {
     githubId = providers[0]!.githubId;
   }
 
-  // 2. Resolve project + default environment
+  // 2. Resolve project + default environment (+ existing application, if any)
   onLog(["[dokploy] resolving project and environment…"]);
-  type DokployApp = { applicationId: string; name: string; applicationStatus: string; appName?: string };
-  type DokployEnv = { name: string; environmentId: string; isDefault: boolean; applications?: DokployApp[] };
-  type DokployProject = { projectId: string; name: string; environments: DokployEnv[] };
-
-  const projects = (await api("GET", "project.all")) as DokployProject[];
-  if (!Array.isArray(projects) || projects.length === 0) {
-    throw new DeployError("No projects found in Dokploy. Create a project first, then retry.");
-  }
-
-  let project: DokployProject;
-  const projectName = opts.projectName ?? process.env.DOKPLOY_PROJECT;
-  if (projectName) {
-    const found = projects.find((p) => p.name === projectName);
-    if (!found) {
-      throw new DeployError(
-        `Project "${projectName}" not found (DOKPLOY_PROJECT). Available: ${projects.map((p) => p.name).join(", ")}.`,
-      );
-    }
-    project = found;
-  } else if (projects.length === 1) {
-    project = projects[0]!;
-  } else {
-    throw new DeployError(
-      `Multiple projects found. Set DOKPLOY_PROJECT to one of: ${projects.map((p) => p.name).join(", ")}.`,
-    );
-  }
-
-  const envs = project.environments ?? [];
-  if (envs.length === 0) {
-    throw new DeployError(`Project "${project.name}" has no environments.`);
-  }
-  const defaultEnv = envs.find((e) => e.isDefault) ?? (envs.length === 1 ? envs[0] : null);
-  if (!defaultEnv) {
-    throw new DeployError(
-      `No default environment in project "${project.name}". Set isDefault on one environment in Dokploy.`,
-    );
-  }
+  const { project, defaultEnv, existingApp } = await resolveDokployTarget(api, {
+    agentName,
+    projectName: opts.projectName,
+  });
 
   // 3. Find or create application
   onLog([`[dokploy] project="${project.name}" environment="${defaultEnv.name}"`]);
-  const existingApp = (defaultEnv.applications ?? []).find((a) => a.name === agentName);
   let applicationId: string;
   let appName: string;
 
