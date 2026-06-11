@@ -77,9 +77,18 @@ export class OrgManager {
    *
    * MUST throw OrgError('alreadyExists') when org.json already exists.
    * MUST throw OrgError('unauthorized') on auth / permission failure.
+   * MUST throw OrgError('conflict') when already bound to any org (explicit beats
+   * implicit cleanup; the UI in PR3 will offer Leave).
    * Caller is responsible for emitting org.status after this resolves.
    */
   async createOrg(repo: string, name: string): Promise<OrgMeta> {
+    const existing = this.#store.load();
+    if (existing) {
+      throw new OrgError(
+        "conflict",
+        `Already bound to org "${existing.orgId}" — leave the current org first.`,
+      );
+    }
     const meta = await this.#registry.createOrg(repo, name);
     const myLogin = await this.#registry.whoami();
     this.#store.save({
@@ -99,10 +108,19 @@ export class OrgManager {
    * Role is derived: "owner" when whoami === meta.owner, "member" otherwise.
    *
    * MUST throw OrgError on auth or access failure.
+   * MUST throw OrgError('conflict') when already bound to a DIFFERENT org id.
+   * Re-bind to the SAME org id is allowed (refresh binding).
    * Caller is responsible for emitting org.status after this resolves.
    */
   async bindOrg(repo: string): Promise<OrgMeta> {
     const meta = await this.#registry.bindOrg(repo);
+    const existing = this.#store.load();
+    if (existing && existing.orgId !== meta.orgId) {
+      throw new OrgError(
+        "conflict",
+        `Already bound to org "${existing.orgId}" — leave the current org first.`,
+      );
+    }
     const myLogin = await this.#registry.whoami();
     const role = myLogin === meta.owner ? "owner" : "member";
     this.#store.save({
@@ -163,9 +181,19 @@ export class OrgManager {
     // Step 2 — upsert all pulled entries.
     const pulledIds = new Set<string>();
     for (const entry of entries) {
+      // C1: skip entries whose id collides with a LOCAL agent (no org_agents row).
+      // One bad entry must not abort the whole sync (partial-results philosophy).
+      if (this.#state.getAgent(entry.id) !== null && !this.#state.isOrgAgent(entry.id)) {
+        console.warn(
+          `[OrgManager] reconcile: shared agent id "${entry.id}" collides with a local agent — skipped.`,
+        );
+        continue;
+      }
       this.#state.upsertOrgAgent(entry, orgId);
       pulledIds.add(entry.id);
     }
+
+    // Steps 2–3 are not atomic; a crash here leaves stale rows that the next reconcile prunes.
 
     // Step 3 — prune vanished entries (scoped to orgId only).
     const existingIds = this.#state.listOrgAgentIds(orgId);
@@ -187,6 +215,10 @@ export class OrgManager {
   /**
    * Share an agent. ORG-06 guard: rejects non-routable targets (docker-local /
    * local-process) and empty url. Throws OrgError('conflict') on violation.
+   *
+   * ORG-07 guard (reject token-protected agents) is deferred to PR2: the Core
+   * handler validates agent config before calling this layer. PR2 task T13 must
+   * implement it.
    */
   async shareAgent(entry: SharedAgentEntry): Promise<void> {
     if (!ROUTABLE_TARGETS.has(entry.target as string)) {

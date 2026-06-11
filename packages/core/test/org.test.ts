@@ -1003,7 +1003,8 @@ async function testOrgManagerAndDb(): Promise<void> {
 
     // lastSyncedAt was touched
     const binding = store.load();
-    assert(binding?.lastSyncedAt !== null, "reconcile: lastSyncedAt updated after reconcile");
+    assert(binding !== null, "reconcile: binding still exists after reconcile");
+    assert(binding!.lastSyncedAt !== null, "reconcile: lastSyncedAt updated after reconcile");
   }
 
   // ── 12b: prune — removes vanished org rows; LOCAL agents intact ───────────
@@ -1230,6 +1231,126 @@ async function testOrgManagerAndDb(): Promise<void> {
     assert(state.getAgent("leave-agent-1") === null, "leave: org agent 1 removed from DB");
     assert(state.getAgent("leave-agent-2") === null, "leave: org agent 2 removed from DB");
     assert(state.listOrgAgentIds(orgId).length === 0, "leave: no org_agents rows remain after leave");
+  }
+
+  // ── 12l: C1 — local-agent collision guard ────────────────────────────────
+  // A shared entry whose id matches a LOCAL agent must be SKIPPED (warn, no throw).
+  // The local agent row is preserved intact; no org_agents row is created.
+  // The rest of the directory still reconciles normally.
+
+  {
+    const { manager, fake, state, store } = makeManager("alice");
+    fake.seedOrg({ schemaVersion: 1, orgId, name: "Mgr Org", owner: "alice", createdAt: new Date().toISOString() });
+    store.save({ schemaVersion: 1, repo: "alice/fleet-org", orgId, orgName: "Mgr Org", myLogin: "alice", role: "owner", lastSyncedAt: null });
+
+    // Seed a local agent (no org_agents row) with id "collision-agent".
+    state.upsertAgent(
+      { id: "collision-agent", name: "My Local Agent", version: "2.0.0", description: "local", model: "claude-3-opus" },
+      "flue",
+      "https://my-local.fly.dev",
+    );
+
+    // Registry contains the same id "collision-agent" plus a safe entry.
+    await fake.shareAgent(makeEntry("collision-agent", { name: "Remote Agent", url: "https://org.fly.dev/collision-agent" }));
+    await fake.shareAgent(makeEntry("other-org-agent"));
+
+    await manager.reconcile();
+
+    // Local agent row UNCHANGED — name/sourceRef intact.
+    const localAgent = state.getAgent("collision-agent");
+    assert(localAgent !== null, "C1: local agent row still exists after collision reconcile");
+    assert(localAgent!.name === "My Local Agent", "C1: local agent name NOT overwritten by shared entry");
+    assert(localAgent!.sourceRef === "https://my-local.fly.dev", "C1: local agent sourceRef NOT overwritten");
+
+    // NO org_agents satellite row created for the collision id.
+    assert(state.getOrgAgent("collision-agent") === null, "C1: no org_agents row created for collision id");
+    assert(state.isOrgAgent("collision-agent") === false, "C1: collision-agent remains a local agent");
+
+    // The rest of the directory still reconciled normally.
+    assert(state.getAgent("other-org-agent") !== null, "C1: non-colliding entry reconciled normally");
+    assert(state.getOrgAgent("other-org-agent") !== null, "C1: org_agents row created for non-colliding entry");
+  }
+
+  // ── 12m: W1 — double-bind conflict guard ─────────────────────────────────
+  // bindOrg to a DIFFERENT org when already bound → OrgError('conflict').
+  // createOrg when already bound → OrgError('conflict').
+  // bindOrg to the SAME org id when already bound → allowed (refresh binding).
+
+  {
+    // Seed an initial binding (alice is already bound to orgId).
+    const existingBinding = { schemaVersion: 1 as const, repo: "alice/org-1", orgId: "org_already_bound", orgName: "Existing Org", myLogin: "alice", role: "owner" as const, lastSyncedAt: null };
+    const boundStore = new OrgStore(join(DATA_DIR, `mgr-doublebind-${Date.now()}.json`));
+    const boundState = new GatewayState(":memory:");
+    boundStore.save(existingBinding);
+
+    // bindOrg to a DIFFERENT org id → throws conflict.
+    const fakeOther = new FakeRegistry("alice");
+    fakeOther.seedOrg({ schemaVersion: 1, orgId: "org_different_456", name: "Other Org", owner: "alice", createdAt: new Date().toISOString() });
+    const managerOther = new OrgManager(fakeOther, boundStore, boundState);
+    let differentOrgThrew = false;
+    try {
+      await managerOther.bindOrg("alice/org-2");
+    } catch (err) {
+      assert(err instanceof OrgError, "W1: bindOrg to different org throws OrgError");
+      assert((err as OrgError).code === "conflict", "W1: OrgError.code is conflict for different org bind");
+      differentOrgThrew = true;
+    }
+    assert(differentOrgThrew, "W1: bindOrg to different org was rejected");
+    // Binding is unchanged (the throw prevented the re-save).
+    assert(boundStore.load()?.orgId === "org_already_bound", "W1: original binding preserved after rejected rebind");
+
+    // createOrg when already bound → throws conflict.
+    const fakeCreate = new FakeRegistry("alice");
+    const managerCreate = new OrgManager(fakeCreate, boundStore, boundState);
+    let createBoundThrew = false;
+    try {
+      await managerCreate.createOrg("alice/org-new", "New Org");
+    } catch (err) {
+      assert(err instanceof OrgError, "W1: createOrg when already bound throws OrgError");
+      assert((err as OrgError).code === "conflict", "W1: OrgError.code is conflict for createOrg when already bound");
+      createBoundThrew = true;
+    }
+    assert(createBoundThrew, "W1: createOrg when already bound was rejected");
+
+    // bindOrg to the SAME org id → allowed (refresh binding).
+    const fakeSame = new FakeRegistry("alice");
+    fakeSame.seedOrg({ schemaVersion: 1, orgId: "org_already_bound", name: "Existing Org", owner: "alice", createdAt: new Date().toISOString() });
+    const managerSame = new OrgManager(fakeSame, boundStore, boundState);
+    let sameOrgThrew = false;
+    try {
+      await managerSame.bindOrg("alice/org-1");
+    } catch {
+      sameOrgThrew = true;
+    }
+    assert(!sameOrgThrew, "W1: bindOrg to SAME org id is allowed (refresh binding)");
+    assert(boundStore.load()?.orgId === "org_already_bound", "W1: binding orgId unchanged after same-org rebind");
+  }
+
+  // ── 12n: W4 — empty successful pull prunes all org agents ─────────────────
+  // INTENTIONAL per the partial-results ADR: an empty successful pullDirectory()
+  // means the org owner unshared all agents. This is distinct from a pull failure
+  // (which must NOT prune — see 12c). An empty org → prune all rows.
+
+  {
+    const { manager, fake, state, store } = makeManager("alice");
+    fake.seedOrg({ schemaVersion: 1, orgId, name: "Mgr Org", owner: "alice", createdAt: new Date().toISOString() });
+    store.save({ schemaVersion: 1, repo: "alice/fleet-org", orgId, orgName: "Mgr Org", myLogin: "alice", role: "owner", lastSyncedAt: null });
+
+    // Seed and reconcile 2 org agents.
+    await fake.shareAgent(makeEntry("empty-pull-1"));
+    await fake.shareAgent(makeEntry("empty-pull-2"));
+    await manager.reconcile();
+    assert(state.listOrgAgentIds(orgId).length === 2, "empty-pull setup: 2 org agents in DB");
+
+    // Clear the FakeRegistry directory (successful pull returning []).
+    await fake.unshareAgent("empty-pull-1");
+    await fake.unshareAgent("empty-pull-2");
+    await manager.reconcile();
+
+    // Both org agents pruned — INTENTIONAL: empty org = empty directory.
+    assert(state.getAgent("empty-pull-1") === null, "empty-pull: agent-1 pruned after empty directory");
+    assert(state.getAgent("empty-pull-2") === null, "empty-pull: agent-2 pruned after empty directory");
+    assert(state.listOrgAgentIds(orgId).length === 0, "empty-pull: no org_agents rows remain after empty directory reconcile");
   }
 }
 

@@ -440,7 +440,7 @@ export class GatewayState {
   /**
    * Hard-delete the agents row for this org agent. The ON DELETE CASCADE
    * removes the org_agents satellite row and all sessions/usage automatically.
-   * MUST only be called for org agents (isOrgAgent guard at call site).
+   * Safety guaranteed by callers sourcing ids exclusively from listOrgAgentIds(orgId).
    */
   deleteOrgAgent(id: string): void {
     this.#db.prepare(`DELETE FROM agents WHERE id = ?`).run(id);
