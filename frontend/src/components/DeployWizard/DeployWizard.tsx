@@ -6,7 +6,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import type { DeployTarget, PreflightCheck } from "../../lib/api";
+import type { DeployTarget, FailedDeploy, PreflightCheck } from "../../lib/api";
 import { Modal } from "../Modal/Modal";
 import { isTauri, onDirectoryDrop, pickDirectory } from "../../lib/dialog";
 import { ModelPicker } from "../ModelPicker/ModelPicker";
@@ -33,6 +33,8 @@ interface Props {
   preflightChecks: PreflightCheck[] | null;
   /** GitHub owners available to push repos to. null = not yet fetched; [] = gh unavailable. */
   githubOwners: string[] | null;
+  /** The most recent first-deploy failure persisted by the Core, or null if none. */
+  lastFailedDeploy: FailedDeploy | null;
   onPreflight: (params: { provider?: string; model?: string; target: DeployTarget }) => void;
   onRequestGithubOwners: () => void;
   onDeploy: (req: { sourceDir: string; provider?: string; model?: string; target: DeployTarget; repoOwner?: string }) => void;
@@ -48,6 +50,7 @@ export function DeployWizard({
   deployUnmapped,
   preflightChecks,
   githubOwners,
+  lastFailedDeploy,
   onPreflight,
   onRequestGithubOwners,
   onDeploy,
@@ -186,6 +189,19 @@ export function DeployWizard({
               {isTauri() ? "…or drag a project folder here" : "Folder selection works in the desktop app."}
             </div>
           </div>
+        )}
+
+        {/* Last first-deploy failure — persisted by the Core so it survives closing
+            the wizard (and Core restarts). Collapsed by default. */}
+        {step === 0 && !started && lastFailedDeploy && (
+          <details className="deploy-unmapped">
+            <summary>
+              ⚠ Last deploy failed — {lastFailedDeploy.sourceDir.split(/[\\/]/).pop()} →{" "}
+              {lastFailedDeploy.target} ({new Date(lastFailedDeploy.failedAt).toLocaleString()})
+            </summary>
+            <div className="deploy-error">{lastFailedDeploy.message}</div>
+            {lastFailedDeploy.log && <pre className="deploy-log">{lastFailedDeploy.log}</pre>}
+          </details>
         )}
 
         {/* Step 2 — Provider & model */}

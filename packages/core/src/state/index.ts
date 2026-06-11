@@ -4,4 +4,5 @@ export {
   type AgentConfig,
   type SessionStatus,
   type SessionSummary,
+  type FailedDeploy,
 } from "./db.js";

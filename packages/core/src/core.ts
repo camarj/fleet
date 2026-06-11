@@ -113,6 +113,8 @@ export class GatewayCore {
           return await this.#githubOwners(emit);
         case "deploy.lastLog":
           return this.#getLastDeployLog(req, emit);
+        case "deploy.lastFailedLog":
+          return emit({ type: "deploy.lastFailedLog", failed: this.#state.getLastFailedDeploy() });
         case "usage.summary":
           return this.#usageSummary(req, emit);
         case "workflow.save":
@@ -248,10 +250,10 @@ export class GatewayCore {
   /**
    * Shared convert+deploy+connect flow for both first deploy and redeploy.
    *
-   * @param knownAgentId  The agentId we're redeploying (if known). Enables log
-   *   persistence on error. For a first deploy the agentId only becomes known
-   *   after the agent registers successfully, so error-path log persistence is
-   *   skipped in that case — acceptable in v1.
+   * @param knownAgentId  The agentId we're redeploying (if known). On error the
+   *   partial log is persisted on that agent's deploy row. For a first deploy
+   *   the agentId only becomes known after the agent registers, so a failure is
+   *   persisted as the global last-failed-deploy snapshot instead.
    */
   async #runDeploy(
     params: { sourceDir: string; provider?: string | null; model?: string | null; target: string; repoOwner?: string | null },
@@ -281,6 +283,8 @@ export class GatewayCore {
       }
       // `github` yields an artifact (a published repo), not a running agent.
       if (result.kind === "artifact") {
+        // The last deploy outcome is no longer a failure — drop the snapshot.
+        this.#state.clearLastFailedDeploy();
         emit({ type: "deploy.artifact", target: result.target, url: result.url, message: result.message });
         return;
       }
@@ -296,15 +300,28 @@ export class GatewayCore {
       });
       // Persist the accumulated log (overwrites any previous log — one per agent in v1).
       this.#state.setDeployLog(stored.id, logBuffer.join("\n"));
+      // The last deploy outcome is no longer a failure — drop the snapshot.
+      this.#state.clearLastFailedDeploy();
       emit({ type: "agent.registered", agent: this.#summary(stored, true) });
     } catch (err) {
-      // Persist the partial log when redeploying a known agent (agentId was passed in).
-      // For a first deploy that fails before agent registration there is no agentId to key
-      // the log by — the log is intentionally dropped in that case.
-      if (knownAgentId && logBuffer.length > 0) {
-        this.#state.setDeployLog(knownAgentId, logBuffer.join("\n"));
+      const message = (err as Error).message;
+      if (knownAgentId) {
+        // Redeploy of a known agent — persist the partial log on its deploy row.
+        if (logBuffer.length > 0) this.#state.setDeployLog(knownAgentId, logBuffer.join("\n"));
+      } else {
+        // First deploy — no agent row exists yet to key the log by, so keep it
+        // as the global last-failed-deploy snapshot (deploy.lastFailedLog).
+        this.#state.setLastFailedDeploy({
+          sourceDir: params.sourceDir,
+          provider: params.provider ?? null,
+          model: params.model ?? null,
+          target: params.target,
+          message,
+          log: logBuffer.join("\n"),
+          failedAt: new Date().toISOString(),
+        });
       }
-      emit({ type: "deploy.error", message: (err as Error).message });
+      emit({ type: "deploy.error", message });
     }
   }
 

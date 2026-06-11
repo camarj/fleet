@@ -5,7 +5,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { GatewayClient } from "./lib/gatewayClient";
-import type { AgentSummary, PreflightCheck, ServerEvent } from "./lib/api";
+import type { AgentSummary, FailedDeploy, PreflightCheck, ServerEvent } from "./lib/api";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { TerminalPanel } from "./components/TerminalPanel/TerminalPanel";
 import { WorkflowCanvas } from "./components/WorkflowCanvas/WorkflowCanvas";
@@ -56,6 +56,8 @@ export function App(): React.JSX.Element {
   /** Source features that didn't convert to Flue, reported by the last deploy. */
   const [deployUnmapped, setDeployUnmapped] = useState<{ kind: string; name: string; reason: string }[]>([]);
   const [deployOpen, setDeployOpen] = useState(false);
+  /** The most recent first-deploy failure persisted by the Core (null = none). */
+  const [lastFailedDeploy, setLastFailedDeploy] = useState<FailedDeploy | null>(null);
   const [preflightChecks, setPreflightChecks] = useState<PreflightCheck[] | null>(null);
   /** GitHub owners the authenticated user can push repos to. null = not yet fetched. */
   const [githubOwners, setGithubOwners] = useState<string[] | null>(null);
@@ -187,6 +189,8 @@ export function App(): React.JSX.Element {
       } else if (e.type === "deploy.lastLog") {
         deployLogPendingRef.current = false;
         setDeployLastLog(e.log);
+      } else if (e.type === "deploy.lastFailedLog") {
+        setLastFailedDeploy(e.failed);
       } else if (e.type === "error" && connectPendingRef.current) {
         // Surface connect failures inside the modal rather than silently dropping them.
         connectPendingRef.current = false;
@@ -237,6 +241,8 @@ export function App(): React.JSX.Element {
         onSelect={setSelectedId}
         onOpenDeploy={() => {
           resetDeploy();
+          // Refresh the persisted first-deploy failure so the wizard can offer its log.
+          client.send({ type: "deploy.lastFailedLog" });
           setDeployOpen(true);
         }}
         onOpenConnect={() => {
@@ -294,6 +300,7 @@ export function App(): React.JSX.Element {
           deployUnmapped={deployUnmapped}
           preflightChecks={preflightChecks}
           githubOwners={githubOwners}
+          lastFailedDeploy={lastFailedDeploy}
           onPreflight={(params) => {
             setPreflightChecks(null); // clear while the check runs
             client.send({ type: "deploy.preflight", ...params });
