@@ -1354,6 +1354,315 @@ async function testOrgManagerAndDb(): Promise<void> {
   }
 }
 
+// ── Level 13: Core API handlers — org.* wire via GatewayCore (T15, PR2) ─────
+//
+// Uses GatewayCore with dbPath:":memory:" and orgRegistry:FakeRegistry so no
+// gh process, no disk DB, no network. Covers: org.status none→bound, org.create,
+// org.join, org.leave, org.sync, org.share guards (local target + token-protected
+// + org-agent source), org.unshare, org.members, ORG-12 agent.stop/delete/
+// redeploy/config.set on org agents, and AgentSummary origin/sharedBy.
+
+import { GatewayCore } from "../src/core.js";
+import type { ClientRequest, ServerEvent, AgentSummary } from "../src/api.js";
+
+/** Send one request to a GatewayCore instance and collect all emitted events. */
+async function coreHandle(core: GatewayCore, req: ClientRequest): Promise<ServerEvent[]> {
+  const events: ServerEvent[] = [];
+  await core.handle(req, (e) => events.push(e));
+  return events;
+}
+
+/** Find the first event of a given type in an array. */
+function findEvent<T extends ServerEvent["type"]>(
+  events: ServerEvent[],
+  type: T,
+): Extract<ServerEvent, { type: T }> | undefined {
+  return events.find((e) => e.type === type) as Extract<ServerEvent, { type: T }> | undefined;
+}
+
+/**
+ * Remove the org-binding.json written by OrgStore to DATA_DIR so each
+ * Level-13 sub-test starts with a clean state. GatewayCore instances share
+ * the same DATA_DIR (GATEWAY_DATA_DIR env var), so test isolation requires
+ * explicit cleanup between sub-tests.
+ */
+function clearOrgBindingFile(): void {
+  const bindingPath = join(DATA_DIR, "org-binding.json");
+  rmSync(bindingPath, { force: true });
+}
+
+async function testCoreOrgHandlers(): Promise<void> {
+  console.log("\n[13] Core API handlers: org.* wire …");
+
+  // ── 13a: org.status when not bound ────────────────────────────────────────
+
+  {
+    clearOrgBindingFile();
+    const fake = new FakeRegistry("alice");
+    const core = new GatewayCore({ dbPath: ":memory:", orgRegistry: fake, healthIntervalMs: 60_000 });
+    const events = await coreHandle(core, { type: "org.status" });
+    const status = findEvent(events, "org.status");
+    assert(status !== undefined, "13a: org.status emitted when not bound");
+    assert(status?.bound === false, "13a: bound is false when not bound");
+    await core.shutdown();
+  }
+
+  // ── 13b: org.create — creates binding, emits org.status bound=true ────────
+
+  {
+    clearOrgBindingFile();
+    const fake = new FakeRegistry("alice");
+    const core = new GatewayCore({ dbPath: ":memory:", orgRegistry: fake, healthIntervalMs: 60_000 });
+    const events = await coreHandle(core, { type: "org.create", repo: "alice/fleet-org", name: "Test Org" });
+    const status = findEvent(events, "org.status");
+    assert(status !== undefined, "13b: org.create emits org.status");
+    assert(status?.bound === true, "13b: bound is true after org.create");
+    assert(status?.role === "owner", "13b: role is owner after org.create");
+    assert(status?.orgName === "Test Org", "13b: orgName matches");
+    assert(status?.myLogin === "alice", "13b: myLogin is alice");
+    const errors = events.filter((e) => e.type === "org.error");
+    assert(errors.length === 0, "13b: no org.error on successful create");
+    await core.shutdown();
+  }
+
+  // ── 13c: org.join — binds as member, emits org.status ────────────────────
+
+  {
+    clearOrgBindingFile();
+    // Seed a fake registry that already has an org (simulates the member scenario)
+    const fake = new FakeRegistry("bob");
+    await fake.createOrg("alice/fleet-org", "Team Org");
+    // Override owner so bob is a member
+    const ownerFake = new FakeRegistry("alice");
+    await ownerFake.createOrg("alice/fleet-org", "Team Org");
+    // bob uses a registry that serves alice's org meta
+    const aliceMeta: OrgMeta = { schemaVersion: 1, orgId: "org_team", name: "Team Org", owner: "alice", createdAt: new Date().toISOString() };
+    const memberFake = new FakeRegistry("bob");
+    memberFake.seedOrg(aliceMeta);
+
+    const core = new GatewayCore({ dbPath: ":memory:", orgRegistry: memberFake, healthIntervalMs: 60_000 });
+    const events = await coreHandle(core, { type: "org.join", repo: "alice/fleet-org" });
+    const status = findEvent(events, "org.status");
+    assert(status !== undefined, "13c: org.join emits org.status");
+    assert(status?.bound === true, "13c: bound is true after org.join");
+    assert(status?.role === "member", "13c: role is member when whoami !== owner");
+    await core.shutdown();
+  }
+
+  // ── 13d: org.leave — clears binding, emits org.status bound=false ─────────
+
+  {
+    clearOrgBindingFile();
+    const fake = new FakeRegistry("alice");
+    const core = new GatewayCore({ dbPath: ":memory:", orgRegistry: fake, healthIntervalMs: 60_000 });
+    await coreHandle(core, { type: "org.create", repo: "alice/fleet-org", name: "Leave Org" });
+    // Confirm bound
+    const beforeLeave = await coreHandle(core, { type: "org.status" });
+    assert(findEvent(beforeLeave, "org.status")?.bound === true, "13d: bound before leave");
+    // Leave
+    const leaveEvents = await coreHandle(core, { type: "org.leave" });
+    const status = findEvent(leaveEvents, "org.status");
+    assert(status !== undefined, "13d: org.leave emits org.status");
+    assert(status?.bound === false, "13d: bound is false after leave");
+    // Confirm no longer bound
+    const afterLeave = await coreHandle(core, { type: "org.status" });
+    assert(findEvent(afterLeave, "org.status")?.bound === false, "13d: still unbound after leave");
+    await core.shutdown();
+  }
+
+  // ── 13e: org.sync — reconciles and emits org.synced + agents + org.status ─
+
+  {
+    clearOrgBindingFile();
+    const fake = new FakeRegistry("alice");
+    const core = new GatewayCore({ dbPath: ":memory:", orgRegistry: fake, healthIntervalMs: 60_000 });
+    await coreHandle(core, { type: "org.create", repo: "alice/fleet-org", name: "Sync Org" });
+    // Share an entry directly into fake registry to test sync pull
+    await fake.shareAgent(makeEntry("sync-agent-1", { target: "fly" }));
+    const syncEvents = await coreHandle(core, { type: "org.sync" });
+    const synced = findEvent(syncEvents, "org.synced");
+    assert(synced !== undefined, "13e: org.sync emits org.synced");
+    assert(synced?.count === 1, "13e: org.synced count is 1");
+    assert(typeof synced?.at === "string" && synced.at.length > 0, "13e: org.synced.at is an ISO string");
+    const agentsEvt = findEvent(syncEvents, "agents");
+    assert(agentsEvt !== undefined, "13e: org.sync emits agents list");
+    await core.shutdown();
+  }
+
+  // ── 13f: org.sync when not bound — emits org.error ────────────────────────
+
+  {
+    clearOrgBindingFile();
+    const fake = new FakeRegistry("alice");
+    const core = new GatewayCore({ dbPath: ":memory:", orgRegistry: fake, healthIntervalMs: 60_000 });
+    const events = await coreHandle(core, { type: "org.sync" });
+    const err = findEvent(events, "org.error");
+    assert(err !== undefined, "13f: org.sync when not bound emits org.error");
+    await core.shutdown();
+  }
+
+  // ── 13g: org.share — rejects org-sourced agent ────────────────────────────
+
+  {
+    clearOrgBindingFile();
+    const fake = new FakeRegistry("alice");
+    const core = new GatewayCore({ dbPath: ":memory:", orgRegistry: fake, healthIntervalMs: 60_000 });
+    // Setup: create org, sync one shared agent from the registry
+    await coreHandle(core, { type: "org.create", repo: "alice/fleet-org", name: "Share Org" });
+    await fake.shareAgent(makeEntry("org-agent-share-test", { target: "fly" }));
+    await coreHandle(core, { type: "org.sync" });
+    // Attempt to share an org-sourced agent
+    const events = await coreHandle(core, { type: "org.share", agentId: "org-agent-share-test" });
+    const err = findEvent(events, "org.error");
+    assert(err !== undefined, "13g: org.share on org agent emits org.error");
+    assert(
+      err!.message.toLowerCase().includes("org-sourced") || err!.message.toLowerCase().includes("locally owned"),
+      "13g: org.error message explains org-sourced restriction",
+    );
+    await core.shutdown();
+  }
+
+  // ── 13h: org.share — rejects non-existent agent ───────────────────────────
+
+  {
+    clearOrgBindingFile();
+    const fake = new FakeRegistry("alice");
+    const core = new GatewayCore({ dbPath: ":memory:", orgRegistry: fake, healthIntervalMs: 60_000 });
+    await coreHandle(core, { type: "org.create", repo: "alice/fleet-org", name: "Share Org" });
+    const events = await coreHandle(core, { type: "org.share", agentId: "nonexistent-id" });
+    const err = findEvent(events, "org.error");
+    assert(err !== undefined, "13h: org.share on nonexistent agent emits org.error");
+    await core.shutdown();
+  }
+
+  // ── 13i: org.members — emits org.members when bound ──────────────────────
+
+  {
+    clearOrgBindingFile();
+    const fake = new FakeRegistry("alice");
+    const core = new GatewayCore({ dbPath: ":memory:", orgRegistry: fake, healthIntervalMs: 60_000 });
+    await coreHandle(core, { type: "org.create", repo: "alice/fleet-org", name: "Members Org" });
+    await fake.inviteMember("bob");
+    const events = await coreHandle(core, { type: "org.members" });
+    const membersEvt = findEvent(events, "org.members");
+    assert(membersEvt !== undefined, "13i: org.members emits org.members event");
+    assert(Array.isArray(membersEvt?.members), "13i: org.members.members is an array");
+    assert(membersEvt!.members.some((m) => m.login === "alice"), "13i: alice is in members");
+    await core.shutdown();
+  }
+
+  // ── 13j: org.members when not bound — emits org.error ────────────────────
+
+  {
+    clearOrgBindingFile();
+    const fake = new FakeRegistry("alice");
+    const core = new GatewayCore({ dbPath: ":memory:", orgRegistry: fake, healthIntervalMs: 60_000 });
+    const events = await coreHandle(core, { type: "org.members" });
+    const err = findEvent(events, "org.error");
+    assert(err !== undefined, "13j: org.members when not bound emits org.error");
+    await core.shutdown();
+  }
+
+  // ── 13k: AgentSummary origin/sharedBy after org.sync ─────────────────────
+
+  {
+    clearOrgBindingFile();
+    const fake = new FakeRegistry("alice");
+    const core = new GatewayCore({ dbPath: ":memory:", orgRegistry: fake, healthIntervalMs: 60_000 });
+    await coreHandle(core, { type: "org.create", repo: "alice/fleet-org", name: "Origin Org" });
+    const entry = makeEntry("origin-test-agent", { sharedBy: "bob", target: "cloudflare" });
+    await fake.shareAgent(entry);
+    await coreHandle(core, { type: "org.sync" });
+    // Get agents list
+    const listEvents = await coreHandle(core, { type: "agents.list" });
+    const agentsEvt = findEvent(listEvents, "agents");
+    assert(agentsEvt !== undefined, "13k: agents.list emits agents event");
+    const orgAgent = agentsEvt!.agents.find((a: AgentSummary) => a.id === "origin-test-agent");
+    assert(orgAgent !== undefined, "13k: org agent appears in agents list");
+    assert(orgAgent!.origin === "org", "13k: org agent has origin='org'");
+    assert(orgAgent!.sharedBy === "bob", "13k: org agent has correct sharedBy");
+    assert(orgAgent!.target === "cloudflare", "13k: org agent has correct target from org_agents");
+    assert(orgAgent!.redeployable === false, "13k: org agent is not redeployable");
+    await core.shutdown();
+  }
+
+  // ── 13l: ORG-12 — agent.stop rejected for org agent ──────────────────────
+
+  {
+    clearOrgBindingFile();
+    const fake = new FakeRegistry("alice");
+    const core = new GatewayCore({ dbPath: ":memory:", orgRegistry: fake, healthIntervalMs: 60_000 });
+    await coreHandle(core, { type: "org.create", repo: "alice/fleet-org", name: "Stop Guard Org" });
+    await fake.shareAgent(makeEntry("stop-guard-agent", { target: "fly" }));
+    await coreHandle(core, { type: "org.sync" });
+    const events = await coreHandle(core, { type: "agent.stop", agentId: "stop-guard-agent" });
+    const err = findEvent(events, "error");
+    assert(err !== undefined, "13l: agent.stop on org agent emits error");
+    assert(
+      err!.message.toLowerCase().includes("org") || err!.message.toLowerCase().includes("connect-only"),
+      "13l: error message references org/connect-only",
+    );
+    await core.shutdown();
+  }
+
+  // ── 13m: ORG-12 — agent.delete rejected for org agent ────────────────────
+
+  {
+    clearOrgBindingFile();
+    const fake = new FakeRegistry("alice");
+    const core = new GatewayCore({ dbPath: ":memory:", orgRegistry: fake, healthIntervalMs: 60_000 });
+    await coreHandle(core, { type: "org.create", repo: "alice/fleet-org", name: "Delete Guard Org" });
+    await fake.shareAgent(makeEntry("delete-guard-agent", { target: "fly" }));
+    await coreHandle(core, { type: "org.sync" });
+    const events = await coreHandle(core, { type: "agent.delete", agentId: "delete-guard-agent" });
+    const err = findEvent(events, "error");
+    assert(err !== undefined, "13m: agent.delete on org agent emits error");
+    assert(
+      err!.message.toLowerCase().includes("org") || err!.message.toLowerCase().includes("connect-only"),
+      "13m: error message references org/connect-only",
+    );
+    await core.shutdown();
+  }
+
+  // ── 13n: ORG-12 — config.set rejected for org agent ──────────────────────
+
+  {
+    clearOrgBindingFile();
+    const fake = new FakeRegistry("alice");
+    const core = new GatewayCore({ dbPath: ":memory:", orgRegistry: fake, healthIntervalMs: 60_000 });
+    await coreHandle(core, { type: "org.create", repo: "alice/fleet-org", name: "Config Guard Org" });
+    await fake.shareAgent(makeEntry("config-guard-agent", { target: "fly" }));
+    await coreHandle(core, { type: "org.sync" });
+    const events = await coreHandle(core, { type: "config.set", agentId: "config-guard-agent", modelSpecifier: "anthropic/claude-haiku-4-6" });
+    const err = findEvent(events, "error");
+    assert(err !== undefined, "13n: config.set on org agent emits error");
+    assert(
+      err!.message.toLowerCase().includes("org") || err!.message.toLowerCase().includes("connect-only"),
+      "13n: error message references org/connect-only",
+    );
+    await core.shutdown();
+  }
+
+  // ── 13o: ORG-12 — agent.redeploy rejected for org agent (emits deploy.error) ─
+
+  {
+    clearOrgBindingFile();
+    const fake = new FakeRegistry("alice");
+    const core = new GatewayCore({ dbPath: ":memory:", orgRegistry: fake, healthIntervalMs: 60_000 });
+    await coreHandle(core, { type: "org.create", repo: "alice/fleet-org", name: "Redeploy Guard Org" });
+    await fake.shareAgent(makeEntry("redeploy-guard-agent", { target: "fly" }));
+    await coreHandle(core, { type: "org.sync" });
+    const events = await coreHandle(core, { type: "agent.redeploy", agentId: "redeploy-guard-agent" });
+    const err = findEvent(events, "deploy.error");
+    assert(err !== undefined, "13o: agent.redeploy on org agent emits deploy.error");
+    assert(
+      err!.message.toLowerCase().includes("org") || err!.message.toLowerCase().includes("connect-only"),
+      "13o: deploy.error message references org/connect-only",
+    );
+    await core.shutdown();
+  }
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -1373,6 +1682,7 @@ async function main(): Promise<void> {
     await testOrgErrorCodes();
     await testGitHubRegistryExecSeam();
     await testOrgManagerAndDb();
+    await testCoreOrgHandlers();
   } finally {
     rmSync(DATA_DIR, { recursive: true, force: true });
   }

@@ -9,10 +9,13 @@
 import type { AgentKind } from "./adapters/agent-adapter.js";
 import type { ModelParameters, RunEvent, RunStatus, RuntimeErrorCode, Usage } from "./neutral.js";
 import type { FailedDeploy, SessionStatus } from "./state/index.js";
+import type { OrgMember, OrgRole } from "./org/registry.js";
 
 // The wire shape of a first-deploy failure is the stored shape — re-exported so
 // the frontend mirror (frontend/src/lib/api.ts) has a single source to copy.
 export type { FailedDeploy } from "./state/index.js";
+// Re-export org types so consumers of api.ts don't need to reach into org/*.
+export type { OrgMember, OrgRole } from "./org/registry.js";
 import type { Workflow } from "./orchestration/index.js";
 
 /**
@@ -54,6 +57,17 @@ export interface AgentSummary {
   target: string | null;
   /** True when Fleet has the original deploy params and can redeploy it in one click. */
   redeployable: boolean;
+  /**
+   * Whether this agent is locally owned ("local") or received from an org registry
+   * ("org"). Derived from the presence of an org_agents provenance row (ADR-1/ADR-2).
+   * "org" agents are connect-only — stop/delete/redeploy/config are blocked.
+   */
+  origin: "local" | "org";
+  /**
+   * The registry login of the user who shared this agent (G1: a GitHub login).
+   * null for locally owned agents (origin === "local").
+   */
+  sharedBy: string | null;
 }
 
 /** Compact summary of a past session returned by `sessions.list`. */
@@ -138,7 +152,24 @@ export type ClientRequest =
   | { type: "workflow.delete"; workflowId: string }
   /** Run a saved workflow with the given run inputs. */
   | { type: "workflow.run"; workflowId: string; inputs: Record<string, string> }
-  | { type: "workflow.abort"; runId: string };
+  | { type: "workflow.abort"; runId: string }
+  // ── Org registry (G1) ──
+  /** Create a new org and bind this instance as owner. */
+  | { type: "org.create"; repo: string; name: string }
+  /** Join an existing org as a member (requires collaborator access on the registry repo). */
+  | { type: "org.join"; repo: string }
+  /** Leave the current org: clears the local binding and purges all org agent rows. */
+  | { type: "org.leave" }
+  /** Manually trigger a pull+reconcile from the remote registry. */
+  | { type: "org.sync" }
+  /** Share a locally deployed remote agent to the org registry. */
+  | { type: "org.share"; agentId: string }
+  /** Remove a previously shared agent from the org registry. */
+  | { type: "org.unshare"; agentId: string }
+  /** List live org members (GitHub collaborators). */
+  | { type: "org.members" }
+  /** Request the current org binding state (responds with org.status). */
+  | { type: "org.status" };
 
 // ── Core → Frontend ──────────────────────────────────────────────────────────
 
@@ -187,6 +218,37 @@ export type ServerEvent =
   | { type: "deploy.lastFailedLog"; failed: FailedDeploy | null }
   /** Aggregated usage per agent+model plus grand totals for the requested window. */
   | { type: "usage.summary"; since: string | null; rows: UsageAgentSummary[]; totals: UsageTotals }
+  // ── Org registry (G1) ──
+  /**
+   * Current org binding state. When `bound: false`, all other fields are absent.
+   * `sharedAgentIds` lists agent ids AS RECEIVED from the directory (other members'
+   * shares). The owner's OWN shared agents are skipped by the local-collision guard
+   * in reconcile and will NOT appear here — the frontend must track share-toggle state
+   * for the owner's own agents locally/optimistically (G1 limitation).
+   */
+  | {
+      type: "org.status";
+      bound: boolean;
+      orgName?: string;
+      repo?: string;
+      myLogin?: string;
+      role?: OrgRole;
+      /**
+       * Agent ids received from the remote registry as of the last sync (from local DB).
+       * Does NOT include the owner's own shared agents (skipped by the C1 collision guard).
+       */
+      sharedAgentIds?: string[];
+    }
+  /** Live org member list (GitHub collaborators). */
+  | { type: "org.members"; members: OrgMember[] }
+  /** Emitted after a successful pull+reconcile. */
+  | { type: "org.synced"; count: number; at: string }
+  /**
+   * Any org operation failure (gh auth failure, network error, guard violation).
+   * `requestType` identifies the org.* request that produced this error — useful
+   * for correlating error events on the frontend.
+   */
+  | { type: "org.error"; message: string; requestType?: string }
   // ── Orchestration (workflows) ──
   | { type: "workflows"; workflows: Workflow[] }
   | { type: "workflow.run.started"; runId: string; workflowId: string }
