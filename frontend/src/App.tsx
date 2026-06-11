@@ -5,8 +5,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { GatewayClient } from "./lib/gatewayClient";
-import type { AgentSummary, FailedDeploy, OrgMember, PreflightCheck, ServerEvent } from "./lib/api";
-import type { OrgStatus } from "./components/Settings/OrgSection";
+import type { AgentSummary, FailedDeploy, OrgMember, OrgStatus, PreflightCheck, ServerEvent } from "./lib/api";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { TerminalPanel } from "./components/TerminalPanel/TerminalPanel";
 import { WorkflowCanvas } from "./components/WorkflowCanvas/WorkflowCanvas";
@@ -91,7 +90,8 @@ export function App(): React.JSX.Element {
   // ── Org registry (G1) ──────────────────────────────────────────────────────
   /** Current org binding state. null = not yet received from Core. */
   const [orgStatus, setOrgStatus] = useState<OrgStatus | null>(null);
-  const [orgMembers, setOrgMembers] = useState<OrgMember[]>([]);
+  /** null = org.members response not yet received (distinguishes unloaded from empty). */
+  const [orgMembers, setOrgMembers] = useState<OrgMember[] | null>(null);
   const [orgError, setOrgError] = useState<{ message: string; requestType?: string } | null>(null);
 
   function resetDeploy(): void {
@@ -230,8 +230,9 @@ export function App(): React.JSX.Element {
           // Preserve lastSyncedAt across org.status updates (it arrives via org.synced).
           lastSyncedAt: prev?.lastSyncedAt,
         }));
-        setOrgError(null);
-        if (!e.bound) setOrgMembers([]);
+        // Do NOT clear orgError here — a stale error must stay visible until the
+        // user sends a new org.* request. Background syncs must not eat it.
+        if (!e.bound) setOrgMembers(null); // reset to unloaded on unbind
       } else if (e.type === "org.members") {
         setOrgMembers(e.members);
       } else if (e.type === "org.synced") {
@@ -273,18 +274,22 @@ export function App(): React.JSX.Element {
   }
 
   function handleSyncOrg(): void {
+    setOrgError(null);
     client.send({ type: "org.sync" });
   }
 
   function handleShareAgent(agentId: string): void {
+    setOrgError(null);
     client.send({ type: "org.share", agentId });
   }
 
   function handleUnshareAgent(agentId: string): void {
+    setOrgError(null);
     client.send({ type: "org.unshare", agentId });
   }
 
   function handleRequestMembers(): void {
+    setOrgError(null);
     client.send({ type: "org.members" });
   }
 

@@ -197,14 +197,14 @@ export function Sidebar({
 
       <ul className="agent-list">
         {hasOrgGroup && (
-          <li key="__group-my-agents" className="agent-group-header" role="presentation">
+          <li className="agent-group-header" role="presentation">
             My agents
           </li>
         )}
         {myAgents.map((a) => renderAgent(a))}
         {hasOrgGroup && (
           <>
-            <li key="__group-org-agents" className="agent-group-header" role="presentation">
+            <li className="agent-group-header" role="presentation">
               Org agents
             </li>
             {orgAgents.map((a) => renderAgent(a))}

@@ -7,9 +7,8 @@
 import { useEffect, useState } from "react";
 import { Modal } from "../Modal/Modal";
 import { PROVIDER_IDS } from "../../lib/providers";
-import type { AgentSummary, OrgMember, UsageAgentSummary, UsageTotals } from "../../lib/api";
+import type { AgentSummary, OrgMember, OrgStatus, UsageAgentSummary, UsageTotals } from "../../lib/api";
 import { OrgSection } from "./OrgSection";
-import type { OrgStatus } from "./OrgSection";
 
 const PROVIDERS = PROVIDER_IDS;
 
@@ -69,7 +68,8 @@ interface Props {
   onClose: () => void;
   // ── Org registry (G1) ──
   orgStatus: OrgStatus | null;
-  orgMembers: OrgMember[];
+  /** null = org.members response not yet received; [] = loaded but empty. */
+  orgMembers: OrgMember[] | null;
   orgError: { message: string; requestType?: string } | null;
   agents: AgentSummary[];
   onCreateOrg: (repo: string, name: string) => void;
