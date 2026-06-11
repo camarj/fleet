@@ -1,20 +1,8 @@
 /**
- * GitHubRegistry — OrgRegistry implementation backed by `gh api` (GitHub Contents REST).
+ * GitHubRegistry — OrgRegistry backed by `gh api` (GitHub Contents REST).
  *
- * Access mechanism: one file per agent → share/unshare/read are single-file ops that map
- * cleanly onto the GitHub Contents API:
- *   GET  repos/{o}/{r}/contents/agents/<id>.json → {content(base64), sha}
- *   PUT  … -f content=<b64> [-f sha=<sha>]      → create or update (safe last-write-wins)
- *   DELETE … -f sha=<sha>                        → delete
- *
- * No temp-clone needed; the per-file `sha` provides safe last-write-wins (ADR-3a, R5).
- * Rate limits: authenticated gh = 5000 req/hr; a sync of N agents = N+2 calls (fine for G1).
- *
- * Exec seam: the `exec` constructor parameter is injectable for tests (default: real
- * spawnSync). Tests swap in a GhExecFn that returns mocked results without any network.
- *
- * Rule #8: NEVER write secrets here. Entries carry only display metadata + env-var NAMES.
- * Rule #4: No Flue wire types here — this module is registry-transport-agnostic.
+ * One file per agent in `agents/<id>.json`; per-file `sha` provides safe
+ * last-write-wins (ADR-3a). Exec seam is injectable for tests. Never write secrets (rule #8).
  */
 
 import { spawnSync } from "node:child_process";
@@ -55,8 +43,9 @@ function defaultExec(args: string[]): { status: number | null; stdout: string; s
  *   - Inline text:  "HTTP 404"
  *   - JSON payload: `"status":"404"`
  *
- * @param result     - The failed exec result (status !== 0).
- * @param contextMsg - Optional human-readable context injected at the front of the error message.
+ * 422 handling: sha-semantic errors (sha is required, provided sha, or 422+sha) → conflict;
+ * admin/membership errors (422+must be an organization member/must have admin) → unauthorized;
+ * other 422s fall through to the generic networkError fallback.
  */
 export function classifyGhError(
   result: { status: number | null; stdout: string; stderr: string },
@@ -82,7 +71,8 @@ export function classifyGhError(
     combined.includes('"status":"403"') ||
     combined.includes("must have push access") ||
     combined.includes("must be a collaborator") ||
-    combined.includes("403")
+    ((combined.includes("http 422") || combined.includes('"status":"422"')) &&
+      (combined.includes("must be an organization member") || combined.includes("must have admin")))
   ) {
     return new OrgError(
       "unauthorized",
@@ -93,10 +83,10 @@ export function classifyGhError(
   if (
     combined.includes("http 409") ||
     combined.includes('"status":"409"') ||
-    combined.includes("http 422") ||
-    combined.includes('"status":"422"') ||
     combined.includes("sha is required") ||
-    combined.includes("provided sha")
+    combined.includes("provided sha") ||
+    ((combined.includes("http 422") || combined.includes('"status":"422"')) &&
+      combined.includes("sha"))
   ) {
     return new OrgError(
       "conflict",
@@ -149,6 +139,22 @@ function isValidSchemaVersion(v: unknown): v is number {
   );
 }
 
+/** Allowlist regex for caller-controlled path segments (agent ids, GitHub logins). */
+const PATH_SEGMENT_RE = /^[a-zA-Z0-9_-]+$/;
+
+/**
+ * Throw OrgError('notFound') when a caller-controlled path segment contains
+ * characters outside the allowlist, preventing path traversal.
+ */
+function validatePathSegment(value: string, label: string): void {
+  if (!PATH_SEGMENT_RE.test(value)) {
+    throw new OrgError("notFound", `Invalid ${label} "${value}" — only [a-zA-Z0-9_-] allowed.`);
+  }
+}
+
+/** Safe filename allowlist for agents/ directory entries (traversal guard). */
+const SAFE_AGENT_NAME_RE = /^[a-zA-Z0-9_-]+\.json$/;
+
 // ── GitHubRegistry ────────────────────────────────────────────────────────────
 
 /**
@@ -161,14 +167,33 @@ export class GitHubRegistry implements OrgRegistry {
   readonly #repo: string;
   readonly #exec: GhExecFn;
 
-  /**
-   * @param repo  Full "owner/repo" path of the private registry repository.
-   * @param exec  Optional exec seam. Defaults to the real spawnSync-based gh invocation.
-   *              Inject a custom GhExecFn in tests to avoid any network calls.
-   */
   constructor(repo: string, exec: GhExecFn = defaultExec) {
     this.#repo = repo;
     this.#exec = exec;
+  }
+
+  // ── Private helpers ────────────────────────────────────────────────────────
+
+  /** Decode, parse, and validate org.json content from a GitHub Contents API response. */
+  #decodeOrgMeta(raw: string, repo: string): OrgMeta {
+    let meta: OrgMeta;
+    try {
+      const fileInfo = JSON.parse(raw) as { content: string };
+      const json = decodeBase64Content(fileInfo.content);
+      meta = JSON.parse(json) as OrgMeta;
+    } catch {
+      throw new OrgError(
+        "conflict",
+        `org.json in ${repo} is not valid JSON. The registry may be corrupted.`,
+      );
+    }
+    if (!isValidSchemaVersion(meta.schemaVersion)) {
+      throw new OrgError(
+        "conflict",
+        `org.json in ${repo} has unsupported schemaVersion ${meta.schemaVersion} (max known: ${SCHEMA_VERSION_MAX}).`,
+      );
+    }
+    return meta;
   }
 
   // ── Identity ───────────────────────────────────────────────────────────────
@@ -198,11 +223,6 @@ export class GitHubRegistry implements OrgRegistry {
   // ── Org lifecycle ──────────────────────────────────────────────────────────
 
   /**
-   * Create a new org registry:
-   * 1. Check if org.json already exists (throw alreadyExists if so).
-   * 2. Create the private GitHub repo (idempotent: ignores "already exists" errors).
-   * 3. Commit org.json.
-   *
    * MUST throw OrgError('alreadyExists') when org.json is already present.
    * The CALLER is responsible for persisting the local binding (OrgStore).
    */
@@ -266,27 +286,7 @@ export class GitHubRegistry implements OrgRegistry {
         `Could not read org.json from ${repo}. Verify repo access and gh authentication.`,
       );
     }
-
-    let meta: OrgMeta;
-    try {
-      const fileInfo = JSON.parse(res.stdout) as { content: string; sha: string };
-      const json = decodeBase64Content(fileInfo.content);
-      meta = JSON.parse(json) as OrgMeta;
-    } catch {
-      throw new OrgError(
-        "conflict",
-        `org.json in ${repo} is not valid JSON. The registry may be corrupted.`,
-      );
-    }
-
-    if (!isValidSchemaVersion(meta.schemaVersion)) {
-      throw new OrgError(
-        "conflict",
-        `org.json in ${repo} has unsupported schemaVersion ${meta.schemaVersion} (max known: ${SCHEMA_VERSION_MAX}).`,
-      );
-    }
-
-    return meta;
+    return this.#decodeOrgMeta(res.stdout, repo);
   }
 
   // ── Directory sync ─────────────────────────────────────────────────────────
@@ -296,7 +296,7 @@ export class GitHubRegistry implements OrgRegistry {
    *
    * Algorithm:
    * 1. List agents/ — if 404, return [] (no agents shared yet, not an error).
-   * 2. For each .json file, fetch and decode.
+   * 2. For each .json file whose name matches the safe allowlist, fetch and decode.
    * 3. Skip entries with unknown schemaVersion (forward compat) with console.warn.
    * 4. Skip entries that fail to parse (corrupt file) with console.warn.
    *
@@ -330,7 +330,14 @@ export class GitHubRegistry implements OrgRegistry {
       );
     }
 
-    const jsonFiles = entries.filter((e) => e.type === "file" && e.name.endsWith(".json"));
+    const jsonFiles = entries.filter((e) => {
+      if (e.type !== "file") return false;
+      if (!SAFE_AGENT_NAME_RE.test(e.name)) {
+        console.warn(`[GitHubRegistry] pullDirectory: skipping entry "${e.name}" — name does not match safe allowlist.`);
+        return false;
+      }
+      return true;
+    });
     const results: SharedAgentEntry[] = [];
 
     for (const file of jsonFiles) {
@@ -372,6 +379,7 @@ export class GitHubRegistry implements OrgRegistry {
    * Entry MUST NOT contain secrets (rule #8, ORG-14).
    */
   async shareAgent(entry: SharedAgentEntry): Promise<void> {
+    validatePathSegment(entry.id, "agent id");
     const path = `agents/${entry.id}.json`;
     const content = encodeBase64Content(JSON.stringify(entry, null, 2));
 
@@ -391,7 +399,7 @@ export class GitHubRegistry implements OrgRegistry {
           args.push("-f", `sha=${fileInfo.sha}`);
         }
       } catch {
-        // Could not parse sha — proceed without it (PUT will create rather than update).
+        // gh returned malformed output for an existing file; the PUT below will fail with 422 and surface as OrgError.
       }
     }
 
@@ -408,6 +416,7 @@ export class GitHubRegistry implements OrgRegistry {
    * requires the file sha in the request body.
    */
   async unshareAgent(agentId: string): Promise<void> {
+    validatePathSegment(agentId, "agent id");
     const path = `agents/${agentId}.json`;
 
     const getRes = this.#exec(["api", `repos/${this.#repo}/contents/${path}`]);
@@ -450,7 +459,7 @@ export class GitHubRegistry implements OrgRegistry {
    * ADR-4: no members.json — authoritative membership is always live collaborators.
    */
   async listMembers(): Promise<OrgMember[]> {
-    const res = this.#exec(["api", `repos/${this.#repo}/collaborators`]);
+    const res = this.#exec(["api", `repos/${this.#repo}/collaborators`, "-F", "per_page=100", "--paginate"]);
     if (res.status !== 0) {
       throw classifyGhError(res, `Failed to list collaborators for ${this.#repo}`);
     }
@@ -482,27 +491,7 @@ export class GitHubRegistry implements OrgRegistry {
     if (res.status !== 0) {
       throw classifyGhError(res, `Could not read org.json from ${this.#repo}`);
     }
-
-    let meta: OrgMeta;
-    try {
-      const fileInfo = JSON.parse(res.stdout) as { content: string };
-      const json = decodeBase64Content(fileInfo.content);
-      meta = JSON.parse(json) as OrgMeta;
-    } catch {
-      throw new OrgError(
-        "conflict",
-        `org.json in ${this.#repo} is not valid JSON.`,
-      );
-    }
-
-    if (!isValidSchemaVersion(meta.schemaVersion)) {
-      throw new OrgError(
-        "conflict",
-        `org.json in ${this.#repo} has unsupported schemaVersion ${meta.schemaVersion} (max: ${SCHEMA_VERSION_MAX}).`,
-      );
-    }
-
-    return meta;
+    return this.#decodeOrgMeta(res.stdout, this.#repo);
   }
 
   // ── Admin ──────────────────────────────────────────────────────────────────
@@ -513,6 +502,7 @@ export class GitHubRegistry implements OrgRegistry {
    * When absent, the Core instructs the user to invite via GitHub directly.
    */
   async inviteMember(login: string): Promise<void> {
+    validatePathSegment(login, "login");
     const res = this.#exec([
       "api", "--method", "PUT",
       `repos/${this.#repo}/collaborators/${login}`,

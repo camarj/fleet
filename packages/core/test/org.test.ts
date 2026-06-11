@@ -508,6 +508,22 @@ async function testGitHubRegistryExecSeam(): Promise<void> {
   const err422 = classifyGhError({ status: 1, stdout: '{"message":"sha is required","status":"422"}', stderr: "gh: Unprocessable Entity (HTTP 422)" });
   assert(err422.code === "conflict", "classifyGhError: 422 sha-required → conflict");
 
+  // 422 + sha reference (narrowed sha-semantic conflict — C1)
+  const err422sha = classifyGhError({ status: 1, stdout: '{"message":"Reference update requires sha","status":"422"}', stderr: "gh: Unprocessable Entity (HTTP 422)" });
+  assert(err422sha.code === "conflict", "classifyGhError: 422 with sha reference → conflict (C1)");
+
+  // bare 422 without sha — must NOT map to conflict (C1)
+  const err422bare = classifyGhError({ status: 1, stdout: '{"message":"Validation Failed","status":"422"}', stderr: "gh: Unprocessable Entity (HTTP 422)" });
+  assert(err422bare.code === "networkError", "classifyGhError: bare 422 without sha → networkError (C1)");
+
+  // 422 + must be an organization member → unauthorized (C1)
+  const err422org = classifyGhError({ status: 1, stdout: '{"message":"Must be an organization member","status":"422"}', stderr: "gh: Unprocessable Entity (HTTP 422)" });
+  assert(err422org.code === "unauthorized", "classifyGhError: 422 must-be-org-member → unauthorized (C1)");
+
+  // 422 + must have admin → unauthorized (C1)
+  const err422admin = classifyGhError({ status: 1, stdout: '{"message":"Must have admin access","status":"422"}', stderr: "gh: Unprocessable Entity (HTTP 422)" });
+  assert(err422admin.code === "unauthorized", "classifyGhError: 422 must-have-admin → unauthorized (C1)");
+
   const errNet = classifyGhError({ status: null, stdout: "", stderr: "Could not resolve host: api.github.com" });
   assert(errNet.code === "networkError", "classifyGhError: null status → networkError");
 
@@ -749,7 +765,7 @@ async function testGitHubRegistryExecSeam(): Promise<void> {
   };
   const shareRegistry = new GitHubRegistry("owner/fleet-org", shareExec);
   await shareRegistry.shareAgent(makeEntry("share-me"));
-  assert(shareArgs.some(s => s.includes("existingsha")), "shareAgent: PUT args include the fetched sha");
+  assert(shareArgs.includes("sha=existingsha"), "shareAgent: PUT args include the exact sha=existingsha element (N2)");
   assert(shareArgs.some((a) => a.startsWith("content=")), "shareAgent: PUT args include base64 content");
 
   // ── 11m: shareAgent — no sha when file does not exist ────────────────────
@@ -786,7 +802,7 @@ async function testGitHubRegistryExecSeam(): Promise<void> {
   const unshareRegistry = new GitHubRegistry("owner/fleet-org", unshareExec);
   await unshareRegistry.unshareAgent("del-me");
   assert(deleteArgs.includes("--method"), "unshareAgent: DELETE is called");
-  assert(deleteArgs.some(s => s.includes("deletesha")), "unshareAgent: DELETE args include fetched sha");
+  assert(deleteArgs.includes("sha=deletesha"), "unshareAgent: DELETE args include the exact sha=deletesha element (N2)");
 
   // ── 11o: getOrgMeta — happy path ─────────────────────────────────────────
 
@@ -844,6 +860,71 @@ async function testGitHubRegistryExecSeam(): Promise<void> {
   assert(members[0].login === "alice" && members[0].role === "owner", "listMembers: admin → role=owner");
   assert(members[1].login === "bob" && members[1].role === "member", "listMembers: write → role=member");
   assert(members[2].login === "carol" && members[2].role === "member", "listMembers: read → role=member");
+
+  // ── 11r: inviteMember — happy path (W5) ──────────────────────────────────
+
+  const inviteHappyExec = makeExec([
+    {
+      match: (a) => a.includes("--method") && a.includes("PUT") && a.some((s) => s.includes("collaborators/newmember")),
+      result: { status: 0, stdout: "{}", stderr: "" },
+    },
+  ]);
+  const inviteRegistry = new GitHubRegistry("owner/fleet-org", inviteHappyExec);
+  let inviteThrew = false;
+  try {
+    await inviteRegistry.inviteMember("newmember");
+  } catch {
+    inviteThrew = true;
+  }
+  assert(!inviteThrew, "inviteMember: happy path resolves without throwing");
+
+  // ── 11s: inviteMember — 422 must-be-org-member → OrgError unauthorized (W5, pins C1) ─
+
+  const invite422Exec = makeExec([
+    {
+      match: (a) => a.includes("--method") && a.includes("PUT") && a.some((s) => s.includes("collaborators/")),
+      result: {
+        status: 1,
+        stdout: '{"message":"Must be an organization member","status":"422"}',
+        stderr: "gh: Unprocessable Entity (HTTP 422)",
+      },
+    },
+  ]);
+  const invite422Registry = new GitHubRegistry("owner/fleet-org", invite422Exec);
+  try {
+    await invite422Registry.inviteMember("someuser");
+    assert(false, "inviteMember: should throw on 422 must-be-org-member");
+  } catch (err) {
+    assert(err instanceof OrgError, "inviteMember: throws OrgError on 422 membership error");
+    assert((err as OrgError).code === "unauthorized", "inviteMember: OrgError.code is unauthorized on 422 must-be-org-member (C1)");
+  }
+
+  // ── 11t: unshareAgent — traversal input → throws OrgError notFound (W2, W5) ─
+
+  const traversalRegistry = new GitHubRegistry("owner/fleet-org", makeExec([]));
+  try {
+    await traversalRegistry.unshareAgent("../org.json");
+    assert(false, "unshareAgent: should throw on traversal path segment");
+  } catch (err) {
+    assert(err instanceof OrgError, "unshareAgent: throws OrgError on invalid agent id (W2)");
+    assert((err as OrgError).code === "notFound", "unshareAgent: OrgError.code is notFound for traversal id (W2)");
+  }
+
+  // ── 11u: listMembers — args include --paginate (W1, W5) ──────────────────
+
+  let listMembersArgs: string[] = [];
+  const paginateExec: GhExecFn = (args) => {
+    if (args.some((s) => s.includes("collaborators"))) {
+      listMembersArgs = args;
+      return { status: 0, stdout: "[]", stderr: "" };
+    }
+    return { status: 1, stdout: "", stderr: "unexpected" };
+  };
+  const paginateRegistry = new GitHubRegistry("owner/fleet-org", paginateExec);
+  await paginateRegistry.listMembers();
+  assert(listMembersArgs.includes("--paginate"), "listMembers: args include --paginate (W1)");
+  assert(listMembersArgs.includes("-F"), "listMembers: args include -F flag for per_page");
+  assert(listMembersArgs.some((s) => s.includes("per_page=100")), "listMembers: args include per_page=100");
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
