@@ -62,6 +62,13 @@ export function AgentConfig({
   return (
     <Modal title={`Configure — ${agent.name}`} onClose={onClose} footer={footer} dismissable>
       <div className="wizard-field">
+        {agent.description && <p className="agent-config-desc">{agent.description}</p>}
+        {agent.version && (
+          <div className="review-row">
+            <span>Version</span>
+            <code>{agent.version}</code>
+          </div>
+        )}
         <div className="review-row">
           <span>Current model</span>
           <code>{agent.model || "keep source"}</code>

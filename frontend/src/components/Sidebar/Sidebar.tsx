@@ -85,9 +85,17 @@ export function Sidebar({
             }}
           >
             <div className="agent-name">
-              {a.name}
+              <span className="agent-name-text">
+                {a.name}
+                {a.version && <span className="agent-version">v{a.version}</span>}
+              </span>
               <span className={`badge ${a.online ? "online" : ""}`}>{a.online ? "online" : "offline"}</span>
             </div>
+            {a.description && (
+              <div className="agent-desc" title={a.description}>
+                {a.description}
+              </div>
+            )}
             <div className="agent-meta">
               {a.target && <span className={`agent-target ${a.target}`}>{a.target}</span>}
               {a.url && (
