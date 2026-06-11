@@ -30,3 +30,8 @@ export function tokenPath(): string {
 export function dbPath(): string {
   return join(dataDir(), "fleet.db");
 }
+
+/** Local org binding file. Stores the bound repo, orgId, and user role (no secrets). */
+export function orgBindingPath(): string {
+  return join(dataDir(), "org-binding.json");
+}
