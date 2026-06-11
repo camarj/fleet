@@ -308,6 +308,13 @@ export function App(): React.JSX.Element {
           onRequestGithubOwners={() => {
             client.send({ type: "deploy.githubOwners" });
           }}
+          onOpenConnect={() => {
+            setDeployOpen(false);
+            setPreflightChecks(null);
+            resetDeploy();
+            setConnectError(null);
+            setConnectOpen(true);
+          }}
           onDeploy={(req) => {
             setDeployStatus("starting");
             setDeployError(null);

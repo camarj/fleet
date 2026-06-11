@@ -37,6 +37,8 @@ interface Props {
   lastFailedDeploy: FailedDeploy | null;
   onPreflight: (params: { provider?: string; model?: string; target: DeployTarget }) => void;
   onRequestGithubOwners: () => void;
+  /** Close the wizard and open the Connect modal (next step after a repo artifact). */
+  onOpenConnect: () => void;
   onDeploy: (req: { sourceDir: string; provider?: string; model?: string; target: DeployTarget; repoOwner?: string }) => void;
   onClose: () => void;
 }
@@ -53,6 +55,7 @@ export function DeployWizard({
   lastFailedDeploy,
   onPreflight,
   onRequestGithubOwners,
+  onOpenConnect,
   onDeploy,
   onClose,
 }: Props): React.JSX.Element {
@@ -336,6 +339,10 @@ export function DeployWizard({
                   {deployArtifact.url}
                 </a>
                 <span>{deployArtifact.message}</span>
+                <span>Once your PaaS has it running, connect it to Fleet:</span>
+                <button className="btn-primary" onClick={onOpenConnect}>
+                  ⟳ Connect agent…
+                </button>
               </div>
             ) : succeeded ? (
               <div className="result-ok">✓ Agent deployed and connected.</div>
