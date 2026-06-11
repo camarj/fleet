@@ -182,7 +182,7 @@ export function Sidebar({
           </li>
         ))}
         {agents.length === 0 && (
-          <li className="onboarding">
+          <li className="onboarding" role="presentation">
             <p className="onboarding-title">Welcome to Fleet</p>
             <p className="onboarding-hint">Three steps to your first agent:</p>
             <ol className="onboarding-steps">

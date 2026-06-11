@@ -89,7 +89,11 @@ export function AgentConfig({
             : "“Keep source” clears the override and uses the project’s original model."}
         </div>
 
-        {saveError && <div className="deploy-error">Failed to save: {saveError}</div>}
+        {saveError && (
+          <div className="deploy-error" role="alert">
+            Failed to save: {saveError}
+          </div>
+        )}
 
         {showRedeployCta && (
           <div className="config-redeploy">

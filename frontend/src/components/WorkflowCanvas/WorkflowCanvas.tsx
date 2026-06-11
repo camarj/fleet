@@ -80,8 +80,9 @@ export function WorkflowCanvas({ client, agents, connected }: Props): React.JSX.
   const [outputs, setOutputs] = useState<Record<string, string> | null>(null);
   const [runModalOpen, setRunModalOpen] = useState(false);
   const [runInputs, setRunInputs] = useState<Record<string, string>>({});
-  /** True while the delete-workflow confirmation modal is open. */
-  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  /** Workflow snapshot taken when the delete confirmation opened, or null when closed.
+   * Captured at open time so a programmatic workflow switch can't retarget the delete. */
+  const [confirmDelete, setConfirmDelete] = useState<{ id: string; name: string } | null>(null);
 
   // Ask for the workflow list whenever we (re)connect.
   useEffect(() => {
@@ -154,14 +155,17 @@ export function WorkflowCanvas({ client, agents, connected }: Props): React.JSX.
   }
 
   function deleteWorkflow(): void {
-    if (!currentId) return;
-    client.send({ type: "workflow.delete", workflowId: currentId });
-    setCurrentId(null);
-    setNodes([]);
-    setEdges([]);
-    setName("");
-    setSelectedNodeId(null);
-    setConfirmDeleteOpen(false);
+    if (!confirmDelete) return;
+    client.send({ type: "workflow.delete", workflowId: confirmDelete.id });
+    // Only clear the canvas if the deleted workflow is still the one on screen.
+    if (currentId === confirmDelete.id) {
+      setCurrentId(null);
+      setNodes([]);
+      setEdges([]);
+      setName("");
+      setSelectedNodeId(null);
+    }
+    setConfirmDelete(null);
   }
 
   function addNode(kind: NodeKind): void {
@@ -303,7 +307,7 @@ export function WorkflowCanvas({ client, agents, connected }: Props): React.JSX.
                 disabled={!connected}
                 title="Delete this workflow"
                 aria-label="Delete this workflow"
-                onClick={() => setConfirmDeleteOpen(true)}
+                onClick={() => currentId && setConfirmDelete({ id: currentId, name })}
               >
                 ✕
               </button>
@@ -463,14 +467,14 @@ export function WorkflowCanvas({ client, agents, connected }: Props): React.JSX.
       )}
 
       {/* Delete confirmation modal — a workflow has no soft-delete or undo. */}
-      {confirmDeleteOpen && currentId && (
+      {confirmDelete && (
         <Modal
           title="Delete workflow"
-          onClose={() => setConfirmDeleteOpen(false)}
+          onClose={() => setConfirmDelete(null)}
           dismissable
           footer={
             <>
-              <button className="btn-ghost" onClick={() => setConfirmDeleteOpen(false)}>
+              <button className="btn-ghost" onClick={() => setConfirmDelete(null)}>
                 Cancel
               </button>
               <button className="btn-danger" onClick={deleteWorkflow}>
@@ -480,8 +484,8 @@ export function WorkflowCanvas({ client, agents, connected }: Props): React.JSX.
           }
         >
           <p>
-            Delete <strong>{name || "this workflow"}</strong>? The graph and its layout are removed
-            permanently — there is no undo.
+            Delete <strong>{confirmDelete.name || "this workflow"}</strong>? The graph and its
+            layout are removed permanently — there is no undo.
           </p>
         </Modal>
       )}

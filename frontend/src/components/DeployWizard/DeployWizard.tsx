@@ -140,7 +140,9 @@ export function DeployWizard({
   const anyPreflightFailed = preflightChecks !== null && preflightChecks.some((c) => !c.ok);
 
   const footer = started ? (
-    <button className="btn-primary" onClick={onClose} disabled={!finished}>
+    // When the result is an artifact, the primary next step is the Connect CTA
+    // in the body — demote the dismissal so the two don't compete.
+    <button className={deployArtifact ? "btn-ghost" : "btn-primary"} onClick={onClose} disabled={!finished}>
       {finished ? "Done" : "Deploying…"}
     </button>
   ) : (
