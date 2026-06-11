@@ -157,6 +157,8 @@ export class GatewayState {
     this.#addColumnIfMissing(`ALTER TABLE deploys ADD COLUMN log TEXT`);
     // feat(deploy): add `repo_owner` column — GitHub account or org that received the pushed repo.
     this.#addColumnIfMissing(`ALTER TABLE deploys ADD COLUMN repo_owner TEXT`);
+    // B3: usage.summary filters by recorded_at — keep it off the full-scan path.
+    this.#db.exec(`CREATE INDEX IF NOT EXISTS idx_usage_recorded_at ON usage(recorded_at)`);
   }
 
   /**
@@ -449,6 +451,73 @@ export class GatewayState {
         new Date().toISOString(),
       );
   }
+
+  /**
+   * Aggregate token/cost usage per agent+model, optionally since an ISO
+   * timestamp (inclusive; recorded_at is UTC ISO so string compare is sound).
+   * cost_usd is NULL for unpriced models: SUM skips NULLs, so costUsd covers
+   * only priced rows and unpricedRuns counts the rest. Ordered by cost
+   * (priced first, highest spend on top), then by tokens.
+   */
+  aggregateUsage(since?: string | null): UsageAggregateRow[] {
+    const rows = this.#db
+      .prepare(
+        `SELECT s.agent_id                          AS agent_id,
+                a.name                              AS agent_name,
+                u.model                             AS model,
+                SUM(u.input_tokens)                 AS input_tokens,
+                SUM(u.output_tokens)                AS output_tokens,
+                SUM(u.total_tokens)                 AS total_tokens,
+                SUM(u.cost_usd)                     AS cost_usd,
+                COUNT(*)                            AS runs,
+                COUNT(*) - COUNT(u.cost_usd)        AS unpriced_runs
+         FROM usage u
+         JOIN sessions s ON s.id = u.session_id
+         JOIN agents   a ON a.id = s.agent_id
+         WHERE (? IS NULL OR u.recorded_at >= ?)
+         GROUP BY s.agent_id, u.model
+         ORDER BY (cost_usd IS NULL) ASC, cost_usd DESC, total_tokens DESC`,
+      )
+      .all(since ?? null, since ?? null) as unknown as UsageAggregateDbRow[];
+    return rows.map((r) => ({
+      agentId: r.agent_id,
+      agentName: r.agent_name,
+      model: r.model,
+      inputTokens: r.input_tokens,
+      outputTokens: r.output_tokens,
+      totalTokens: r.total_tokens,
+      costUsd: r.cost_usd ?? null,
+      runs: r.runs,
+      unpricedRuns: r.unpriced_runs,
+    }));
+  }
+}
+
+/** One aggregated usage row (per agent+model). */
+export interface UsageAggregateRow {
+  agentId: string;
+  agentName: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  /** Sum over priced rows only; null when no row in the group has a price. */
+  costUsd: number | null;
+  runs: number;
+  /** Rows whose model has no price (excluded from costUsd). */
+  unpricedRuns: number;
+}
+
+interface UsageAggregateDbRow {
+  agent_id: string;
+  agent_name: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_usd: number | null;
+  runs: number;
+  unpriced_runs: number;
 }
 
 interface AgentDbRow {

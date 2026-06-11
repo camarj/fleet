@@ -1452,3 +1452,37 @@ button:disabled {
   color: var(--green);
   border-color: var(--green);
 }
+.settings-section-title {
+  margin: 18px 0 6px;
+  font-size: 13px;
+}
+.usage-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.usage-totals {
+  font-size: 12px;
+  color: var(--muted);
+}
+.usage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.usage-table th,
+.usage-table td {
+  text-align: left;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.usage-table th {
+  color: var(--muted);
+  font-weight: 500;
+}
+.usage-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
