@@ -13,8 +13,8 @@
 
 | ID | Ítem | Origen | Estado |
 | --- | --- | --- | --- |
-| A1 | **WU-15**: swap de provider/model en vivo (cambiar modelo → redeploy → confirmar que el agente corre el nuevo). Cubre también la verificación manual pendiente de F3 (WU-10/11) | handoff §6 | Listo para hacer con docker-local o dokploy |
-| A2 | **F5**: correr un workflow real end-to-end con ≥1 agente vivo desde el canvas | handoff §🔖 | Pendiente del usuario |
+| A1 | **WU-15**: swap de provider/model en vivo (cambiar modelo → redeploy → confirmar que el agente corre el nuevo). Cubre también la verificación manual pendiente de F3 (WU-10/11) | handoff §6 | 🟡 Mecánica del swap VERIFICADA en vivo 2026-06-10 (docker-local, anthropic→opencode-go: Configure→Save→Redeploy→el agente responde como Kimi; WU-10 y WU-11 confirmados en la UI). Falta la pata "ambos providers responden": la key `anthropic` del secrets store es inválida (401 directo contra la API) — reponer key y chatear una vez |
+| A2 | **F5**: correr un workflow real end-to-end con ≥1 agente vivo desde el canvas | handoff §🔖 | ✅ VERIFICADO 2026-06-10: canvas → input(topic)→agent(kimi, template `{{input.topic}}`)→output; run "Ecuador"→"Quito", `workflow_runs` persistido `completed`. F5 cerrada |
 | A3 | **Target `github`→Coolify**: verificación manual en vivo | handoff §6 (WU-14 parcial) | Necesita instancia Coolify |
 | A4 | **WU-12**: Fly.io en vivo | handoff §6 | ⛔ BLOQUEADO — cuenta marcada high-risk (PR #14 dejó el error visible) |
 
@@ -22,7 +22,7 @@
 
 | ID | Ítem | Origen | Esfuerzo |
 | --- | --- | --- | --- |
-| B1 | **Teardown/stop remoto real** (`stopDeployment()` hoy es no-op para fly/cloudflare/github/dokploy). Empezar por dokploy (`application.stop/start` ya probados). Mientras tanto: aviso honesto en los diálogos de Stop/Delete | DIR-01 + FLOW-01; extiende WU-02 (local-only fue decisión v1) | S aviso + M por target |
+| B1 | **Teardown/stop remoto real** (`stopDeployment()` hoy es no-op para fly/cloudflare/github/dokploy). Empezar por dokploy (`application.stop/start` ya probados). Mientras tanto: aviso honesto en los diálogos de Stop/Delete | DIR-01 + FLOW-01; extiende WU-02 (local-only fue decisión v1) | 🟡 **PR #19** (dokploy stop + diálogos honestos; review limpia, gates verdes). Falta: E2E en vivo (necesita DOKPLOY_URL/API_KEY en Settings → Infrastructure) y, a futuro, fly/cloudflare |
 | B2 | **Completar tabla de precios** (3 modelos Anthropic vs 14+ providers) + override por archivo | DIR-03 / FLOW-07 | S |
 | B3 | **Vista de uso/costo agregado** (tabla `usage` sin API de lectura): total + por agente/modelo, tab en Settings | DIR-02 / FLOW-10 | S–M |
 | B4 | **Preservar log cuando el primer deploy falla** (hoy se descarta a propósito) | DIR-05 = limitación WU-09 aceptada en v1, ahora promovida | S |
