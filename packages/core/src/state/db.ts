@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentInfo, AgentKind } from "../adapters/agent-adapter.js";
 import type { ModelParameters, RunEvent, Usage } from "../neutral.js";
 import type { Workflow } from "../orchestration/index.js";
+import type { SharedAgentEntry } from "../org/registry.js";
 
 export type SessionStatus = "running" | "completed" | "aborted" | "error";
 
@@ -70,6 +71,21 @@ export interface DeployParams {
   /** GitHub account or organization that received the pushed repo; null means the
    * authenticated user's personal account (the gh CLI default). */
   repoOwner: string | null;
+}
+
+/**
+ * One row from the `org_agents` provenance satellite.
+ *
+ * origin is DERIVED from this row's existence: an agent is "org" iff it has
+ * an org_agents row, otherwise "local". Symmetric with the `deploys` satellite
+ * (ADR-1).
+ */
+export interface StoredOrgAgent {
+  agentId: string;
+  orgId: string;
+  sharedBy: string;
+  target: string;
+  sharedAt: string;
 }
 
 const SCHEMA = `
@@ -153,6 +169,16 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   started_at   TEXT NOT NULL,
   ended_at     TEXT
 );
+
+CREATE TABLE IF NOT EXISTS org_agents (
+  agent_id  TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+  org_id    TEXT NOT NULL,
+  shared_by TEXT NOT NULL,
+  target    TEXT NOT NULL,
+  shared_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_org_agents_org ON org_agents(org_id);
 `;
 
 export class GatewayState {
@@ -350,6 +376,83 @@ export class GatewayState {
    */
   deleteAgent(id: string): void {
     this.#db.prepare(`DELETE FROM agents WHERE id = ?`).run(id);
+  }
+
+  // ── Org agents (org_agents provenance satellite) ───────────────────────────
+
+  /**
+   * Upsert a shared agent: creates/updates the `agents` row (via the existing
+   * upsertAgent path, sourceRef = entry.url, kind = "flue", no deploys row)
+   * and the `org_agents` provenance satellite row scoped to orgId.
+   *
+   * origin is DERIVED: an agent is "org" iff its org_agents row exists.
+   * Symmetric with hasDeploy / getDeploy for local agents (ADR-1).
+   */
+  upsertOrgAgent(entry: SharedAgentEntry, orgId: string): void {
+    this.upsertAgent(
+      {
+        id: entry.id,
+        name: entry.name,
+        version: entry.version,
+        description: entry.description,
+        model: entry.model,
+      },
+      "flue",
+      entry.url,
+    );
+    this.#db
+      .prepare(
+        `INSERT INTO org_agents (agent_id, org_id, shared_by, target, shared_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(agent_id) DO UPDATE SET
+           org_id    = excluded.org_id,
+           shared_by = excluded.shared_by,
+           target    = excluded.target,
+           shared_at = excluded.shared_at`,
+      )
+      .run(entry.id, orgId, entry.sharedBy, entry.target, entry.sharedAt);
+  }
+
+  /** Return the org_agents provenance row for this agent id, or null. */
+  getOrgAgent(id: string): StoredOrgAgent | null {
+    const row = this.#db
+      .prepare(`SELECT * FROM org_agents WHERE agent_id = ?`)
+      .get(id) as unknown as OrgAgentDbRow | undefined;
+    return row ? rowToOrgAgent(row) : null;
+  }
+
+  /** All org_agents rows for the given orgId. */
+  listOrgAgents(orgId: string): StoredOrgAgent[] {
+    const rows = this.#db
+      .prepare(`SELECT * FROM org_agents WHERE org_id = ?`)
+      .all(orgId) as unknown as OrgAgentDbRow[];
+    return rows.map(rowToOrgAgent);
+  }
+
+  /** Agent ids that have an org_agents row for the given orgId (used for prune diff). */
+  listOrgAgentIds(orgId: string): string[] {
+    const rows = this.#db
+      .prepare(`SELECT agent_id FROM org_agents WHERE org_id = ?`)
+      .all(orgId) as unknown as { agent_id: string }[];
+    return rows.map((r) => r.agent_id);
+  }
+
+  /**
+   * Hard-delete the agents row for this org agent. The ON DELETE CASCADE
+   * removes the org_agents satellite row and all sessions/usage automatically.
+   * MUST only be called for org agents (isOrgAgent guard at call site).
+   */
+  deleteOrgAgent(id: string): void {
+    this.#db.prepare(`DELETE FROM agents WHERE id = ?`).run(id);
+  }
+
+  /**
+   * True when the given id has an org_agents provenance row (i.e. origin is
+   * "org"). Used by Core.ts guards (ORG-12): stop/delete/redeploy/config.set
+   * on org agents MUST be rejected.
+   */
+  isOrgAgent(id: string): boolean {
+    return !!this.#db.prepare(`SELECT 1 FROM org_agents WHERE agent_id = ?`).get(id);
   }
 
   // ── Workflows ──────────────────────────────────────────────────────────────
@@ -633,5 +736,23 @@ function rowToAgent(row: AgentDbRow): StoredAgent {
     kind: row.kind as AgentKind,
     sourceRef: row.source_ref,
     updatedAt: row.updated_at,
+  };
+}
+
+interface OrgAgentDbRow {
+  agent_id: string;
+  org_id: string;
+  shared_by: string;
+  target: string;
+  shared_at: string;
+}
+
+function rowToOrgAgent(row: OrgAgentDbRow): StoredOrgAgent {
+  return {
+    agentId: row.agent_id,
+    orgId: row.org_id,
+    sharedBy: row.shared_by,
+    target: row.target,
+    sharedAt: row.shared_at,
   };
 }
