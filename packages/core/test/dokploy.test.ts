@@ -10,6 +10,8 @@
  *   3. Deployment error: applicationStatus "error" → throws DeployError.
  *   4. Preflight: missing DOKPLOY_URL / DOKPLOY_API_KEY → failing checks.
  *   5. Preflight: env vars absent but SecretsStore has the creds → ok:true.
+ *   6. Stop: application.stop is called with the applicationId resolved by name.
+ *   7. Stop: agent without a matching application → no-op, returns false.
  *
  * Run: pnpm --filter @inteliside/gateway-core exec tsx test/dokploy.test.ts
  */
@@ -17,7 +19,9 @@
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-const { runDokployOrchestration, DeployError, FlueDeployer } = await import("../src/deploy/flue-deployer.js");
+const { runDokployOrchestration, stopDokployApplication, DeployError, FlueDeployer } = await import(
+  "../src/deploy/flue-deployer.js"
+);
 const { SecretsStore } = await import("../src/secrets/store.js");
 import type { DeployProgress, DeployLog } from "../src/deploy/flue-deployer.js";
 
@@ -44,9 +48,11 @@ function makeFakeFetch(responses: Record<string, unknown>): {
   fetch: typeof fetch;
   calls: string[];
   apiKeysSeen: string[];
+  bodies: Record<string, unknown>;
 } {
   const calls: string[] = [];
   const apiKeysSeen: string[] = [];
+  const bodies: Record<string, unknown> = {};
 
   const fakeFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const urlStr = String(input);
@@ -60,6 +66,13 @@ function makeFakeFetch(responses: Record<string, unknown>): {
     const procedureMatch = urlStr.match(/\/api\/([^?]+)/);
     const procedure = procedureMatch?.[1] ?? "unknown";
     calls.push(`${method}:${procedure}`);
+    if (typeof init?.body === "string") {
+      try {
+        bodies[procedure] = JSON.parse(init.body);
+      } catch {
+        bodies[procedure] = init.body;
+      }
+    }
 
     const data = responses[procedure];
     if (data === undefined) {
@@ -73,7 +86,7 @@ function makeFakeFetch(responses: Record<string, unknown>): {
     return new Response(JSON.stringify(data), { status: 200, headers: { "Content-Type": "application/json" } });
   };
 
-  return { fetch: fakeFetch as typeof fetch, calls, apiKeysSeen };
+  return { fetch: fakeFetch as typeof fetch, calls, apiKeysSeen, bodies };
 }
 
 // Base canned responses for a fresh deploy (no existing app, no DOKPLOY_DOMAIN).
@@ -269,6 +282,55 @@ async function main(): Promise<void> {
         if (savedDokployEnv5.url !== undefined) process.env.DOKPLOY_URL = savedDokployEnv5.url;
         if (savedDokployEnv5.key !== undefined) process.env.DOKPLOY_API_KEY = savedDokployEnv5.key;
       }
+    }
+    // ── 6. stopDokployApplication: stops the existing app by name ────────────
+    console.log("\n[6] Stop — application.stop is called with the resolved applicationId");
+    {
+      const stopResponses: Record<string, unknown> = {
+        "project.all": [
+          {
+            projectId: "proj-1",
+            name: "fleet-project",
+            environments: [
+              {
+                environmentId: "env-1",
+                isDefault: true,
+                name: "Production",
+                applications: [
+                  { applicationId: "app-existing-1", appName: "app-existing-1", name: FAKE_AGENT, applicationStatus: "done" },
+                ],
+              },
+            ],
+          },
+        ],
+        "application.stop": EMPTY_BODY,
+      };
+      const { fetch: f6, calls: c6, bodies: b6 } = makeFakeFetch(stopResponses);
+      const stopped = await stopDokployApplication({ cfg: FAKE_CFG, agentName: FAKE_AGENT, fetchImpl: f6 });
+      assert(stopped === true, "stop: returns true when the application exists");
+      assert(c6.includes("POST:application.stop"), `stop: application.stop is called (got: ${c6.join(", ")})`);
+      assert(
+        (b6["application.stop"] as { applicationId?: string })?.applicationId === "app-existing-1",
+        "stop: application.stop receives the resolved applicationId",
+      );
+    }
+
+    // ── 7. stopDokployApplication: missing app → no stop call, returns false ─
+    console.log("\n[7] Stop — missing application is a no-op");
+    {
+      const noAppResponses: Record<string, unknown> = {
+        "project.all": [
+          {
+            projectId: "proj-1",
+            name: "fleet-project",
+            environments: [{ environmentId: "env-1", isDefault: true, name: "Production", applications: [] }],
+          },
+        ],
+      };
+      const { fetch: f7, calls: c7 } = makeFakeFetch(noAppResponses);
+      const stopped = await stopDokployApplication({ cfg: FAKE_CFG, agentName: FAKE_AGENT, fetchImpl: f7 });
+      assert(stopped === false, "stop: returns false when no application matches");
+      assert(!c7.includes("POST:application.stop"), "stop: application.stop is NOT called when the app is missing");
     }
   } finally {
     // Restore env vars.

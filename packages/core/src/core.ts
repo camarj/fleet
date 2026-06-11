@@ -435,15 +435,19 @@ export class GatewayCore {
     const stored = this.#state.getAgent(agentId);
     const deployParams = this.#state.getDeploy(agentId);
 
-    // Stop local runtime infra if applicable.
+    // Stop runtime infra if applicable. For dokploy this also stops the remote
+    // application (best-effort) — a failure to reach the Dokploy API must never
+    // block the local teardown.
     if (deployParams && stored) {
       const t = deployParams.target;
-      if (t === "docker-local" || t === "local-process") {
-        this.#deployer.stopDeployment(stored.name, t as DeployTarget);
+      if (t === "docker-local" || t === "local-process" || t === "dokploy") {
+        await this.#deployer.stopDeployment(stored.name, t as DeployTarget).catch((err) => {
+          console.error(`[gateway-core] remote stop failed for "${stored.name}" (${t}):`, err);
+        });
       }
-      // NOTE: For remote targets (fly, cloudflare, github) in v1, only the local
-      // adapter is disconnected below — remote infrastructure teardown is out of
-      // scope for v1 and must be done manually (e.g. via flyctl/wrangler/PaaS UI).
+      // NOTE: For fly, cloudflare and github, only the local adapter is
+      // disconnected below — remote infrastructure teardown must be done
+      // manually (e.g. via flyctl/wrangler/PaaS UI).
     }
 
     // Close the live adapter and remove it from the active registry.
