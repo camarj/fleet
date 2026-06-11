@@ -75,6 +75,8 @@ export function App(): React.JSX.Element {
   const [configRequiresRedeploy, setConfigRequiresRedeploy] = useState(false);
   /** True while a config.set is in flight (waiting for config.updated). */
   const [configSaving, setConfigSaving] = useState(false);
+  /** Error returned by the Core for the last config.set, shown inside the modal. */
+  const [configError, setConfigError] = useState<string | null>(null);
   /** Ref mirror of configSaving for the once-registered error handler. */
   const configSavingRef = useRef(false);
   /** The agentId whose deploy log modal is currently open, or null. */
@@ -104,6 +106,7 @@ export function App(): React.JSX.Element {
     configAgentIdRef.current = id;
     setConfigRequiresRedeploy(false);
     setSaving(false);
+    setConfigError(null);
   }
 
   function closeConfig(): void {
@@ -111,13 +114,18 @@ export function App(): React.JSX.Element {
     configAgentIdRef.current = null;
     setConfigRequiresRedeploy(false);
     setSaving(false);
+    setConfigError(null);
   }
 
   function handleSaveConfig(modelSpecifier: string | null): void {
     if (!configAgentId) return;
     setSaving(true);
+    setConfigError(null);
     const sent = client.send({ type: "config.set", agentId: configAgentId, modelSpecifier });
-    if (!sent) setSaving(false);
+    if (!sent) {
+      setSaving(false);
+      setConfigError("Not connected to the Core — reconnecting. Try again in a moment.");
+    }
   }
 
   function handleRedeploy(id: string): void {
@@ -200,9 +208,11 @@ export function App(): React.JSX.Element {
         deployLogPendingRef.current = false;
         setDeployLogError(e.message);
       } else if (e.type === "error" && configSavingRef.current) {
-        // A config.set failed (e.g. the agent was deleted) — stop the saving spinner.
+        // A config.set failed (e.g. the agent was deleted) — stop the spinner
+        // and surface the error inside the modal instead of dropping it.
         configSavingRef.current = false;
         setConfigSaving(false);
+        setConfigError(e.message);
       }
     });
     // Refresh lists on every (re)connect; reflect live connection state.
@@ -308,6 +318,13 @@ export function App(): React.JSX.Element {
           onRequestGithubOwners={() => {
             client.send({ type: "deploy.githubOwners" });
           }}
+          onOpenConnect={() => {
+            setDeployOpen(false);
+            setPreflightChecks(null);
+            resetDeploy();
+            setConnectError(null);
+            setConnectOpen(true);
+          }}
           onDeploy={(req) => {
             setDeployStatus("starting");
             setDeployError(null);
@@ -364,6 +381,7 @@ export function App(): React.JSX.Element {
               connected={connected}
               requiresRedeploy={configRequiresRedeploy}
               saving={configSaving}
+              saveError={configError}
               onSave={handleSaveConfig}
               onRedeploy={() => {
                 const id = configAgentId;

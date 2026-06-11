@@ -85,9 +85,17 @@ export function Sidebar({
             }}
           >
             <div className="agent-name">
-              {a.name}
+              <span className="agent-name-text">
+                {a.name}
+                {a.version && <span className="agent-version">v{a.version}</span>}
+              </span>
               <span className={`badge ${a.online ? "online" : ""}`}>{a.online ? "online" : "offline"}</span>
             </div>
+            {a.description && (
+              <div className="agent-desc" title={a.description}>
+                {a.description}
+              </div>
+            )}
             <div className="agent-meta">
               {a.target && <span className={`agent-target ${a.target}`}>{a.target}</span>}
               {a.url && (
@@ -173,7 +181,33 @@ export function Sidebar({
             </div>
           </li>
         ))}
-        {agents.length === 0 && <li className="empty">No agents yet — deploy one below</li>}
+        {agents.length === 0 && (
+          <li className="onboarding" role="presentation">
+            <p className="onboarding-title">Welcome to Fleet</p>
+            <p className="onboarding-hint">Three steps to your first agent:</p>
+            <ol className="onboarding-steps">
+              <li>
+                <span>Add your provider API key</span>
+                <button className="btn-ghost" onClick={onOpenSettings}>
+                  ⚙ Open Settings
+                </button>
+              </li>
+              <li>
+                <span>Deploy a Claude Code project as a Flue agent</span>
+                <button className="btn-ghost" onClick={onOpenDeploy} disabled={!connected}>
+                  + Deploy agent
+                </button>
+              </li>
+              <li>
+                <span>…or connect a Flue agent that is already running</span>
+                <button className="btn-ghost" onClick={onOpenConnect} disabled={!connected}>
+                  ⟳ Connect agent
+                </button>
+              </li>
+            </ol>
+            <p className="onboarding-hint">Then pick the agent and chat from the Terminal tab.</p>
+          </li>
+        )}
       </ul>
 
       <div className="sidebar-actions">
