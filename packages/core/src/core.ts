@@ -15,7 +15,7 @@ import { GatewayState, type StoredAgent, type SessionSummary } from "./state/ind
 import type { RunOptions, RunSink } from "./neutral.js";
 import { Orchestrator, type AgentRunner } from "./orchestration/index.js";
 import type { AgentSummary, ClientRequest, ServerEvent } from "./api.js";
-import { OrgManager } from "./org/org-manager.js";
+import { OrgManager, ROUTABLE_TARGETS } from "./org/org-manager.js";
 import { GitHubRegistry } from "./org/github-registry.js";
 import { OrgStore } from "./org/org-store.js";
 import { OrgError } from "./org/registry.js";
@@ -253,15 +253,15 @@ export class GatewayCore {
    * Shared internal path used by both manual `agent.connectFlue` and org sync.
    * Returns the stored agent row so callers can build summaries or emit events.
    */
-  async #registerConnectedAgent(baseUrl: string, agentName: string, token?: string): Promise<StoredAgent> {
-    const adapter = await FlueAdapter.connect({ baseUrl, agentName, token });
+  async #registerConnectedAgent(baseUrl: string, agentName: string, token?: string, instanceId?: string): Promise<StoredAgent> {
+    const adapter = await FlueAdapter.connect({ baseUrl, agentName, token, instanceId });
     const stored = this.#state.upsertAgent(adapter.info(), "flue", baseUrl);
     this.#agents.set(stored.id, { adapter, kind: "flue", sourceRef: baseUrl, hasToken: !!token });
     return stored;
   }
 
   async #connectFlue(req: Extract<ClientRequest, { type: "agent.connectFlue" }>, emit: Emit): Promise<void> {
-    const stored = await this.#registerConnectedAgent(req.baseUrl, req.agentName, req.token);
+    const stored = await this.#registerConnectedAgent(req.baseUrl, req.agentName, req.token, req.instanceId);
     emit({ type: "agent.registered", agent: this.#summary(stored, true) });
   }
 
@@ -793,7 +793,7 @@ export class GatewayCore {
   // ── Org registry (G1) ─────────────────────────────────────────────────────
 
   /**
-   * Build or return the active OrgManager for the given repo. Creates a new
+   * Build the active OrgManager for the given repo. Creates a new
    * GitHubRegistry for the repo (or uses the injected override for tests).
    */
   #makeOrgManager(repo: string): OrgManager {
@@ -879,7 +879,7 @@ export class GatewayCore {
       await this.#orgManager.createOrg(req.repo, req.name);
       emit({ type: "org.status", ...this.#buildOrgStatus() });
     } catch (err) {
-      emit({ type: "org.error", message: orgErrorMessage(err) });
+      emit({ type: "org.error", message: orgErrorMessage(err), requestType: "org.create" });
     }
   }
 
@@ -890,7 +890,7 @@ export class GatewayCore {
       await this.#orgManager.bindOrg(req.repo);
       emit({ type: "org.status", ...this.#buildOrgStatus() });
     } catch (err) {
-      emit({ type: "org.error", message: orgErrorMessage(err) });
+      emit({ type: "org.error", message: orgErrorMessage(err), requestType: "org.join" });
     }
   }
 
@@ -905,7 +905,8 @@ export class GatewayCore {
       return;
     }
     try {
-      // Close adapters for org agents before DB prune so no ghost connections linger.
+      // Close adapters and drain in-flight sessions for org agents so no ghost
+      // connections or ghost sessions linger after the org binding is cleared.
       for (const id of this.#state.listOrgAgentIds(binding.orgId)) {
         const reg = this.#agents.get(id);
         if (reg) {
@@ -913,6 +914,13 @@ export class GatewayCore {
           this.#agents.delete(id);
           this.#onlineCache.delete(id);
         }
+        // Drain sessions (mirrors #teardownAgent — abort each active session and
+        // eagerly remove it from the session map so no ghost sessions remain).
+        for (const sessionId of (this.#agentSessions.get(id) ?? [])) {
+          await this.#sessions.get(sessionId)?.abort().catch(() => {});
+          this.#sessions.delete(sessionId);
+        }
+        this.#agentSessions.delete(id);
       }
       if (this.#orgManager) {
         await this.#orgManager.leave();
@@ -925,7 +933,7 @@ export class GatewayCore {
       // Broadcast refreshed agent list (org agents removed).
       emit({ type: "agents", agents: this.#state.listAgents().map((a) => this.#summary(a, this.#agents.has(a.id))) });
     } catch (err) {
-      emit({ type: "org.error", message: orgErrorMessage(err) });
+      emit({ type: "org.error", message: orgErrorMessage(err), requestType: "org.leave" });
     }
   }
 
@@ -933,7 +941,7 @@ export class GatewayCore {
   async #orgSync(emit: Emit): Promise<void> {
     const manager = this.#orgManager;
     if (!manager?.isBound()) {
-      emit({ type: "org.error", message: "Not bound to any org — join or create an org first" });
+      emit({ type: "org.error", message: "Not bound to any org — join or create an org first", requestType: "org.sync" });
       return;
     }
     try {
@@ -943,7 +951,7 @@ export class GatewayCore {
       emit({ type: "org.status", ...this.#buildOrgStatus() });
       emit({ type: "agents", agents: this.#state.listAgents().map((a) => this.#summary(a, this.#agents.has(a.id))) });
     } catch (err) {
-      emit({ type: "org.error", message: orgErrorMessage(err) });
+      emit({ type: "org.error", message: orgErrorMessage(err), requestType: "org.sync" });
     }
   }
 
@@ -958,30 +966,33 @@ export class GatewayCore {
   async #orgShare(req: Extract<ClientRequest, { type: "org.share" }>, emit: Emit): Promise<void> {
     const manager = this.#orgManager;
     if (!manager?.isBound()) {
-      emit({ type: "org.error", message: "Not bound to any org — join or create an org first" });
+      emit({ type: "org.error", message: "Not bound to any org — join or create an org first", requestType: "org.share" });
       return;
     }
     // Cannot share an org-sourced agent (connect-only, not the owner).
     if (this.#state.isOrgAgent(req.agentId)) {
-      emit({ type: "org.error", message: "Cannot share an org-sourced agent — only locally owned agents can be shared" });
+      emit({ type: "org.error", message: "Cannot share an org-sourced agent — only locally owned agents can be shared", requestType: "org.share" });
       return;
     }
     const stored = this.#state.getAgent(req.agentId);
     if (!stored) {
-      emit({ type: "org.error", message: `Agent "${req.agentId}" not found` });
+      emit({ type: "org.error", message: `Agent "${req.agentId}" not found`, requestType: "org.share" });
       return;
     }
     // ORG-07: reject token-protected agents. Fleet doesn't persist tokens (ADR-4),
     // so we can only check the in-memory registration for the current session.
+    // OFFLINE BYPASS (G1 limitation): an agent not currently in #agents (offline /
+    // not yet reconnected) has no hasToken info — a token-protected-but-offline
+    // agent can be shared without detection. Best-effort guard only.
     if (this.#agents.get(req.agentId)?.hasToken) {
-      emit({ type: "org.error", message: "Token-protected agents cannot be shared in G1 — members would be unable to connect without the secret" });
+      emit({ type: "org.error", message: "Token-protected agents cannot be shared in G1 — members would be unable to connect without the secret", requestType: "org.share" });
       return;
     }
     const deploy = this.#state.getDeploy(req.agentId);
-    const ROUTABLE = new Set(["fly", "cloudflare", "dokploy", "github"]);
-    if (!deploy || !ROUTABLE.has(deploy.target)) {
+    if (!deploy || !ROUTABLE_TARGETS.has(deploy.target)) {
       emit({
         type: "org.error",
+        requestType: "org.share",
         message: deploy
           ? `Local agents cannot be shared (non-routable target: ${deploy.target})`
           : `Agent "${stored.name}" has no deploy record — only remotely deployed agents can be shared`,
@@ -1007,7 +1018,7 @@ export class GatewayCore {
       await manager.shareAgent(entry);
       emit({ type: "org.status", ...this.#buildOrgStatus() });
     } catch (err) {
-      emit({ type: "org.error", message: orgErrorMessage(err) });
+      emit({ type: "org.error", message: orgErrorMessage(err), requestType: "org.share" });
     }
   }
 
@@ -1015,14 +1026,14 @@ export class GatewayCore {
   async #orgUnshare(req: Extract<ClientRequest, { type: "org.unshare" }>, emit: Emit): Promise<void> {
     const manager = this.#orgManager;
     if (!manager?.isBound()) {
-      emit({ type: "org.error", message: "Not bound to any org — join or create an org first" });
+      emit({ type: "org.error", message: "Not bound to any org — join or create an org first", requestType: "org.unshare" });
       return;
     }
     try {
       await manager.unshareAgent(req.agentId);
       emit({ type: "org.status", ...this.#buildOrgStatus() });
     } catch (err) {
-      emit({ type: "org.error", message: orgErrorMessage(err) });
+      emit({ type: "org.error", message: orgErrorMessage(err), requestType: "org.unshare" });
     }
   }
 
@@ -1030,14 +1041,14 @@ export class GatewayCore {
   async #orgMembers(emit: Emit): Promise<void> {
     const manager = this.#orgManager;
     if (!manager?.isBound()) {
-      emit({ type: "org.error", message: "Not bound to any org — join or create an org first" });
+      emit({ type: "org.error", message: "Not bound to any org — join or create an org first", requestType: "org.members" });
       return;
     }
     try {
       const members = await manager.listMembers();
       emit({ type: "org.members", members });
     } catch (err) {
-      emit({ type: "org.error", message: orgErrorMessage(err) });
+      emit({ type: "org.error", message: orgErrorMessage(err), requestType: "org.members" });
     }
   }
 

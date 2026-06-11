@@ -31,8 +31,9 @@ import { OrgError } from "./registry.js";
  * docker-local and local-process are non-routable and MUST NOT be shared
  * (ORG-06). Using ReadonlySet<string> so the runtime has() accepts any value
  * including entries cast from DB rows.
+ * Exported so core.ts can reuse the same set rather than maintaining a duplicate.
  */
-const ROUTABLE_TARGETS: ReadonlySet<string> = new Set([
+export const ROUTABLE_TARGETS: ReadonlySet<string> = new Set([
   "fly",
   "cloudflare",
   "dokploy",

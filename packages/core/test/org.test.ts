@@ -1642,6 +1642,25 @@ async function testCoreOrgHandlers(): Promise<void> {
     );
     await core.shutdown();
   }
+
+  // ── 13o: ORG-12 — agent.redeploy rejected for org agent (emits deploy.error) ─
+
+  {
+    clearOrgBindingFile();
+    const fake = new FakeRegistry("alice");
+    const core = new GatewayCore({ dbPath: ":memory:", orgRegistry: fake, healthIntervalMs: 60_000 });
+    await coreHandle(core, { type: "org.create", repo: "alice/fleet-org", name: "Redeploy Guard Org" });
+    await fake.shareAgent(makeEntry("redeploy-guard-agent", { target: "fly" }));
+    await coreHandle(core, { type: "org.sync" });
+    const events = await coreHandle(core, { type: "agent.redeploy", agentId: "redeploy-guard-agent" });
+    const err = findEvent(events, "deploy.error");
+    assert(err !== undefined, "13o: agent.redeploy on org agent emits deploy.error");
+    assert(
+      err!.message.toLowerCase().includes("org") || err!.message.toLowerCase().includes("connect-only"),
+      "13o: deploy.error message references org/connect-only",
+    );
+    await core.shutdown();
+  }
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────

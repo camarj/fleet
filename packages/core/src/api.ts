@@ -221,8 +221,10 @@ export type ServerEvent =
   // ── Org registry (G1) ──
   /**
    * Current org binding state. When `bound: false`, all other fields are absent.
-   * `sharedAgentIds` lists the agent ids present in the remote registry as of the
-   * last sync — used to drive the owner's Share/Unshare toggle state in Settings.
+   * `sharedAgentIds` lists agent ids AS RECEIVED from the directory (other members'
+   * shares). The owner's OWN shared agents are skipped by the local-collision guard
+   * in reconcile and will NOT appear here — the frontend must track share-toggle state
+   * for the owner's own agents locally/optimistically (G1 limitation).
    */
   | {
       type: "org.status";
@@ -231,15 +233,22 @@ export type ServerEvent =
       repo?: string;
       myLogin?: string;
       role?: OrgRole;
-      /** Agent ids in the remote registry as of the last sync (from local DB). */
+      /**
+       * Agent ids received from the remote registry as of the last sync (from local DB).
+       * Does NOT include the owner's own shared agents (skipped by the C1 collision guard).
+       */
       sharedAgentIds?: string[];
     }
   /** Live org member list (GitHub collaborators). */
   | { type: "org.members"; members: OrgMember[] }
   /** Emitted after a successful pull+reconcile. */
   | { type: "org.synced"; count: number; at: string }
-  /** Any org operation failure (gh auth failure, network error, guard violation). */
-  | { type: "org.error"; message: string }
+  /**
+   * Any org operation failure (gh auth failure, network error, guard violation).
+   * `requestType` identifies the org.* request that produced this error — useful
+   * for correlating error events on the frontend.
+   */
+  | { type: "org.error"; message: string; requestType?: string }
   // ── Orchestration (workflows) ──
   | { type: "workflows"; workflows: Workflow[] }
   | { type: "workflow.run.started"; runId: string; workflowId: string }
