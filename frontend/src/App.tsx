@@ -11,7 +11,7 @@ import { TerminalPanel } from "./components/TerminalPanel/TerminalPanel";
 import { WorkflowCanvas } from "./components/WorkflowCanvas/WorkflowCanvas";
 import { DeployWizard } from "./components/DeployWizard/DeployWizard";
 import { DeployProgress } from "./components/DeployProgress/DeployProgress";
-import { Settings } from "./components/Settings/Settings";
+import { Settings, type UsageSummaryData } from "./components/Settings/Settings";
 import { ConnectAgent } from "./components/ConnectAgent/ConnectAgent";
 import { AgentConfig } from "./components/AgentConfig/AgentConfig";
 import { Modal } from "./components/Modal/Modal";
@@ -48,6 +48,7 @@ export function App(): React.JSX.Element {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [view, setView] = useState<"terminal" | "canvas">("terminal");
   const [secretsProviders, setSecretsProviders] = useState<string[]>([]);
+  const [usageSummary, setUsageSummary] = useState<UsageSummaryData | null>(null);
   const [deployStatus, setDeployStatus] = useState<string | null>(null);
   const [deployError, setDeployError] = useState<string | null>(null);
   const [deployArtifact, setDeployArtifact] = useState<{ url: string; message: string } | null>(null);
@@ -155,6 +156,8 @@ export function App(): React.JSX.Element {
         setAgents((prev) => prev.filter((a) => a.id !== e.agentId));
       } else if (e.type === "secrets.status") {
         setSecretsProviders(e.providers);
+      } else if (e.type === "usage.summary") {
+        setUsageSummary({ since: e.since, rows: e.rows, totals: e.totals });
       } else if (e.type === "deploy.progress") {
         setDeployStatus(e.detail ? `${e.step} — ${e.detail}` : e.step);
         setDeployError(null);
@@ -333,8 +336,14 @@ export function App(): React.JSX.Element {
         <Settings
           connected={connected}
           secretsProviders={secretsProviders}
+          usage={usageSummary}
+          onRequestUsage={(since) => client.send({ type: "usage.summary", since })}
           onSetSecret={(provider, apiKey) => client.send({ type: "secrets.set", provider, apiKey })}
-          onClose={() => setSettingsOpen(false)}
+          onClose={() => {
+            setSettingsOpen(false);
+            // Drop the snapshot so the next open shows "Loading…" instead of stale data.
+            setUsageSummary(null);
+          }}
         />
       )}
 

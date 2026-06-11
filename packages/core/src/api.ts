@@ -62,6 +62,32 @@ export interface SessionSummary {
   preview: string;
 }
 
+/** One aggregated usage row (per agent+model). */
+export interface UsageAgentSummary {
+  agentId: string;
+  agentName: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  /** Sum over priced rows only; null when no row in the group has a price. */
+  costUsd: number | null;
+  runs: number;
+  /** Rows whose model has no price (excluded from costUsd). */
+  unpricedRuns: number;
+}
+
+/** Grand totals across all UsageAgentSummary rows of a usage.summary response. */
+export interface UsageTotals {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  /** Sum over priced rows only; null when nothing in the window is priced. */
+  costUsd: number | null;
+  runs: number;
+  unpricedRuns: number;
+}
+
 // ── Frontend → Core ──────────────────────────────────────────────────────────
 
 export type ClientRequest =
@@ -97,6 +123,8 @@ export type ClientRequest =
   | { type: "deploy.githubOwners" }
   /** Retrieve the last deploy log for an agent (persisted at the end of the most recent deploy). */
   | { type: "deploy.lastLog"; agentId: string }
+  /** Aggregate token/cost usage per agent+model. `since` is an inclusive ISO timestamp; omit for all time. */
+  | { type: "usage.summary"; since?: string | null }
   // ── Orchestration (workflows) ──
   /** Upsert a workflow (by id). The canvas sends the full graph, positions included. */
   | { type: "workflow.save"; workflow: Workflow }
@@ -149,6 +177,8 @@ export type ServerEvent =
   | { type: "deploy.githubOwners"; owners: string[] }
   /** The last deploy log for an agent. `log` is null if no deploy has been completed yet. */
   | { type: "deploy.lastLog"; agentId: string; log: string | null }
+  /** Aggregated usage per agent+model plus grand totals for the requested window. */
+  | { type: "usage.summary"; since: string | null; rows: UsageAgentSummary[]; totals: UsageTotals }
   // ── Orchestration (workflows) ──
   | { type: "workflows"; workflows: Workflow[] }
   | { type: "workflow.run.started"; runId: string; workflowId: string }

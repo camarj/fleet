@@ -113,6 +113,8 @@ export class GatewayCore {
           return await this.#githubOwners(emit);
         case "deploy.lastLog":
           return this.#getLastDeployLog(req, emit);
+        case "usage.summary":
+          return this.#usageSummary(req, emit);
         case "workflow.save":
           this.#state.saveWorkflow(req.workflow);
           emit({ type: "workflows", workflows: this.#state.listWorkflows() });
@@ -320,6 +322,26 @@ export class GatewayCore {
   #getLastDeployLog(req: Extract<ClientRequest, { type: "deploy.lastLog" }>, emit: Emit): void {
     const log = this.#state.getDeployLog(req.agentId);
     emit({ type: "deploy.lastLog", agentId: req.agentId, log });
+  }
+
+  /** Aggregate usage per agent+model (optionally since an ISO timestamp) plus grand totals. */
+  #usageSummary(req: Extract<ClientRequest, { type: "usage.summary" }>, emit: Emit): void {
+    const since = req.since ?? null;
+    const rows = this.#state.aggregateUsage(since);
+    const priced = rows.filter((r) => r.costUsd !== null);
+    emit({
+      type: "usage.summary",
+      since,
+      rows,
+      totals: {
+        inputTokens: rows.reduce((a, r) => a + r.inputTokens, 0),
+        outputTokens: rows.reduce((a, r) => a + r.outputTokens, 0),
+        totalTokens: rows.reduce((a, r) => a + r.totalTokens, 0),
+        costUsd: priced.length > 0 ? priced.reduce((a, r) => a + (r.costUsd ?? 0), 0) : null,
+        runs: rows.reduce((a, r) => a + r.runs, 0),
+        unpricedRuns: rows.reduce((a, r) => a + r.unpricedRuns, 0),
+      },
+    });
   }
 
   /**
