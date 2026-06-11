@@ -15,8 +15,22 @@ import { GatewayState, type StoredAgent, type SessionSummary } from "./state/ind
 import type { RunOptions, RunSink } from "./neutral.js";
 import { Orchestrator, type AgentRunner } from "./orchestration/index.js";
 import type { AgentSummary, ClientRequest, ServerEvent } from "./api.js";
+import { OrgManager } from "./org/org-manager.js";
+import { GitHubRegistry } from "./org/github-registry.js";
+import { OrgStore } from "./org/org-store.js";
+import { OrgError } from "./org/registry.js";
+import type { OrgRegistry, SharedAgentEntry } from "./org/registry.js";
 
 export type Emit = (event: ServerEvent) => void;
+
+/**
+ * Extract a human-readable error message from an error, preferring OrgError
+ * messages (which are pre-formatted for the user) over generic Error.message.
+ */
+function orgErrorMessage(err: unknown): string {
+  if (err instanceof OrgError) return err.message;
+  return (err as Error)?.message ?? "Unknown org error";
+}
 
 /**
  * Split a `"provider/model-id"` specifier on its FIRST slash so model ids that
@@ -34,6 +48,14 @@ interface RegisteredAgent {
   adapter: AgentAdapter;
   kind: AgentKind;
   sourceRef: string;
+  /**
+   * True when this adapter was connected with a bearer token. Used by the
+   * ORG-07 guard to block sharing token-protected agents.
+   * Note: Fleet does not persist tokens (ADR-4). This flag only covers
+   * agents connected in the current session; it is false for reconnections
+   * via healthTick/#reconnectPersisted.
+   */
+  hasToken: boolean;
 }
 
 export interface GatewayCoreOptions {
@@ -44,6 +66,12 @@ export interface GatewayCoreOptions {
    * Default 15000. Pass a shorter value in tests to avoid waiting 15 s.
    */
   healthIntervalMs?: number;
+  /**
+   * Inject a custom OrgRegistry for tests. When provided, GitHubRegistry is
+   * not used — the injected registry handles all org operations. The injected
+   * registry is used for every OrgManager instantiation within this Core.
+   */
+  orgRegistry?: OrgRegistry;
 }
 
 export class GatewayCore {
@@ -63,15 +91,24 @@ export class GatewayCore {
   /** Active workflow runs → their abort controller (for workflow.abort). */
   readonly #workflowRuns = new Map<string, AbortController>();
   readonly #orchestrator: Orchestrator;
+  // ── Org registry (G1) ─────────────────────────────────────────────────────
+  readonly #orgStore: OrgStore;
+  #orgManager: OrgManager | null = null;
+  /** Injected OrgRegistry for tests (overrides GitHubRegistry). */
+  readonly #orgRegistryOverride: OrgRegistry | undefined;
 
   constructor(options: GatewayCoreOptions = {}) {
     this.#state = new GatewayState(options.dbPath ?? ":memory:");
+    this.#orgStore = new OrgStore();
+    this.#orgRegistryOverride = options.orgRegistry;
     this.#orchestrator = new Orchestrator(this.#agentRunner());
     this.#startHealthMonitor(options.healthIntervalMs ?? 15_000);
     // Attempt to reconnect any agents that were persisted from a previous run.
     // Fire-and-forget — construction is synchronous; failures are swallowed and
     // the health loop will bring the agent online when it becomes reachable.
     void this.#reconnectPersisted();
+    // Non-blocking org sync on boot (ORG-08). Failures must not prevent startup.
+    void this.#orgSyncOnBoot();
   }
 
   /** Dispatch a frontend request. Never throws — errors are emitted. */
@@ -133,6 +170,23 @@ export class GatewayCore {
         case "workflow.abort":
           this.#workflowRuns.get(req.runId)?.abort();
           return;
+        // ── Org registry (G1) ────────────────────────────────────────────────
+        case "org.create":
+          return await this.#orgCreate(req, emit);
+        case "org.join":
+          return await this.#orgJoin(req, emit);
+        case "org.leave":
+          return await this.#orgLeave(emit);
+        case "org.sync":
+          return await this.#orgSync(emit);
+        case "org.share":
+          return await this.#orgShare(req, emit);
+        case "org.unshare":
+          return await this.#orgUnshare(req, emit);
+        case "org.members":
+          return await this.#orgMembers(emit);
+        case "org.status":
+          return this.#orgStatusReq(emit);
         default: {
           const _exhaustive: never = req;
           void _exhaustive;
@@ -194,15 +248,20 @@ export class GatewayCore {
     emit({ type: "agents", agents });
   }
 
+  /**
+   * Connect to a Flue agent, upsert its agent row, and register the live adapter.
+   * Shared internal path used by both manual `agent.connectFlue` and org sync.
+   * Returns the stored agent row so callers can build summaries or emit events.
+   */
+  async #registerConnectedAgent(baseUrl: string, agentName: string, token?: string): Promise<StoredAgent> {
+    const adapter = await FlueAdapter.connect({ baseUrl, agentName, token });
+    const stored = this.#state.upsertAgent(adapter.info(), "flue", baseUrl);
+    this.#agents.set(stored.id, { adapter, kind: "flue", sourceRef: baseUrl, hasToken: !!token });
+    return stored;
+  }
+
   async #connectFlue(req: Extract<ClientRequest, { type: "agent.connectFlue" }>, emit: Emit): Promise<void> {
-    const adapter = await FlueAdapter.connect({
-      baseUrl: req.baseUrl,
-      agentName: req.agentName,
-      instanceId: req.instanceId,
-      token: req.token,
-    });
-    const stored = this.#state.upsertAgent(adapter.info(), "flue", req.baseUrl);
-    this.#agents.set(stored.id, { adapter, kind: "flue", sourceRef: req.baseUrl });
+    const stored = await this.#registerConnectedAgent(req.baseUrl, req.agentName, req.token);
     emit({ type: "agent.registered", agent: this.#summary(stored, true) });
   }
 
@@ -219,6 +278,12 @@ export class GatewayCore {
    * differs from what the agent currently runs only applies after a redeploy.
    */
   #setConfig(req: Extract<ClientRequest, { type: "config.set" }>, emit: Emit): void {
+    // ORG-12 guard: org agents are connect-only — configuration is the owner's responsibility.
+    if (this.#state.isOrgAgent(req.agentId)) {
+      const orgRow = this.#state.getOrgAgent(req.agentId);
+      emit({ type: "error", message: `Agent is managed by the org (shared by ${orgRow?.sharedBy ?? "org"}) — connect-only; configuration changes are not allowed`, requestType: req.type });
+      return;
+    }
     this.#state.setConfig(req.agentId, req.modelSpecifier, req.parameters ?? null);
     const stored = this.#state.getAgent(req.agentId);
     const current = stored ? this.#deployedSpecifier(req.agentId, stored.model) : "";
@@ -233,6 +298,12 @@ export class GatewayCore {
    * applying a model change — Flue fixes the model at convert time).
    */
   async #redeploy(req: Extract<ClientRequest, { type: "agent.redeploy" }>, emit: Emit): Promise<void> {
+    // ORG-12 guard: org agents are connect-only — redeploy is the owner's responsibility.
+    if (this.#state.isOrgAgent(req.agentId)) {
+      const orgRow = this.#state.getOrgAgent(req.agentId);
+      emit({ type: "deploy.error", message: `Agent is managed by the org (shared by ${orgRow?.sharedBy ?? "org"}) — connect-only; redeploy is not allowed` });
+      return;
+    }
     const params = this.#state.getDeploy(req.agentId);
     if (!params) {
       emit({ type: "deploy.error", message: `Agent "${req.agentId}" has no stored deploy to repeat.` });
@@ -289,7 +360,7 @@ export class GatewayCore {
         return;
       }
       const stored = this.#state.upsertAgent(result.adapter.info(), "flue", result.baseUrl);
-      this.#agents.set(stored.id, { adapter: result.adapter, kind: "flue", sourceRef: result.baseUrl });
+      this.#agents.set(stored.id, { adapter: result.adapter, kind: "flue", sourceRef: result.baseUrl, hasToken: false });
       // Persist the inputs so this agent can be redeployed in one click later.
       this.#state.setDeploy(stored.id, {
         sourceDir: params.sourceDir,
@@ -507,6 +578,12 @@ export class GatewayCore {
 
   /** Stop an agent's runtime, keep its registration (it can be redeployed). */
   async #stopAgent(req: Extract<ClientRequest, { type: "agent.stop" }>, emit: Emit): Promise<void> {
+    // ORG-12 guard: org agents are connect-only — stopping is the owner's responsibility.
+    if (this.#state.isOrgAgent(req.agentId)) {
+      const orgRow = this.#state.getOrgAgent(req.agentId);
+      emit({ type: "error", message: `Agent is managed by the org (shared by ${orgRow?.sharedBy ?? "org"}) — connect-only; use org.leave to remove org agents`, requestType: req.type });
+      return;
+    }
     const stored = this.#state.getAgent(req.agentId);
     if (!stored) {
       emit({ type: "error", message: `Agent "${req.agentId}" not found`, requestType: req.type });
@@ -518,6 +595,12 @@ export class GatewayCore {
 
   /** Stop an agent's runtime and permanently delete its registration + deploy params. */
   async #deleteAgent(req: Extract<ClientRequest, { type: "agent.delete" }>, emit: Emit): Promise<void> {
+    // ORG-12 guard: org agents are connect-only — deletion is the owner's responsibility.
+    if (this.#state.isOrgAgent(req.agentId)) {
+      const orgRow = this.#state.getOrgAgent(req.agentId);
+      emit({ type: "error", message: `Agent is managed by the org (shared by ${orgRow?.sharedBy ?? "org"}) — connect-only; use org.leave to remove org agents`, requestType: req.type });
+      return;
+    }
     const stored = this.#state.getAgent(req.agentId);
     if (!stored) {
       emit({ type: "error", message: `Agent "${req.agentId}" not found`, requestType: req.type });
@@ -616,6 +699,8 @@ export class GatewayCore {
   }
 
   #summary(a: StoredAgent, online: boolean): AgentSummary {
+    // Derive org provenance — symmetric with getDeploy/hasDeploy for local agents (ADR-1/ADR-2).
+    const orgRow = this.#state.getOrgAgent(a.id);
     return {
       id: a.id,
       name: a.name,
@@ -625,8 +710,11 @@ export class GatewayCore {
       online,
       model: this.#deployedSpecifier(a.id, a.model),
       url: a.sourceRef,
-      target: this.#state.getDeploy(a.id)?.target ?? null,
+      // Org agents carry their target in org_agents; local agents read from deploys.
+      target: orgRow?.target ?? this.#state.getDeploy(a.id)?.target ?? null,
       redeployable: this.#state.hasDeploy(a.id),
+      origin: orgRow ? "org" : "local",
+      sharedBy: orgRow?.sharedBy ?? null,
     };
   }
 
@@ -682,7 +770,7 @@ export class GatewayCore {
                 await adapter.close().catch(() => {});
                 continue;
               }
-              this.#agents.set(stored.id, { adapter, kind: "flue", sourceRef: stored.sourceRef });
+              this.#agents.set(stored.id, { adapter, kind: "flue", sourceRef: stored.sourceRef, hasToken: false });
               const wasOnline = this.#onlineCache.get(stored.id) ?? false;
               this.#onlineCache.set(stored.id, true);
               if (!wasOnline) {
@@ -699,6 +787,257 @@ export class GatewayCore {
       }
     } finally {
       this.#healthTickInFlight = false;
+    }
+  }
+
+  // ── Org registry (G1) ─────────────────────────────────────────────────────
+
+  /**
+   * Build or return the active OrgManager for the given repo. Creates a new
+   * GitHubRegistry for the repo (or uses the injected override for tests).
+   */
+  #makeOrgManager(repo: string): OrgManager {
+    const registry = this.#orgRegistryOverride ?? new GitHubRegistry(repo);
+    return new OrgManager(registry, this.#orgStore, this.#state);
+  }
+
+  /**
+   * Build the payload for an org.status event from the current local binding and
+   * org_agents DB state. Returns { bound: false } when not bound.
+   *
+   * sharedAgentIds = org agent ids in the local DB as of the last sync. For a
+   * member this reflects all received agents. For an owner, agents they shared
+   * themselves are skipped by the C1 guard during reconcile and will NOT appear
+   * here — the frontend tracks share-toggle state locally (G1 limitation).
+   */
+  #buildOrgStatus(): Omit<Extract<ServerEvent, { type: "org.status" }>, "type"> {
+    const binding = this.#orgStore.load();
+    if (!binding) return { bound: false };
+    return {
+      bound: true,
+      orgName: binding.orgName,
+      repo: binding.repo,
+      myLogin: binding.myLogin,
+      role: binding.role,
+      sharedAgentIds: this.#state.listOrgAgentIds(binding.orgId),
+    };
+  }
+
+  /**
+   * Attempt to connect all org agents for the given orgId that are not yet
+   * registered. Best-effort: unreachable agents stay offline; the health loop
+   * will reconnect them later (ORG-10).
+   */
+  async #connectOrgAgents(orgId: string): Promise<void> {
+    for (const orgRow of this.#state.listOrgAgents(orgId)) {
+      if (this.#agents.has(orgRow.agentId)) continue;
+      const stored = this.#state.getAgent(orgRow.agentId);
+      if (!stored?.sourceRef) continue;
+      try {
+        const adapter = await FlueAdapter.connect({ baseUrl: stored.sourceRef, agentName: stored.name });
+        if (!this.#agents.has(orgRow.agentId)) {
+          // No token for org agents (G1 — shared entries never carry tokens, ADR-4/rule #8).
+          this.#agents.set(orgRow.agentId, { adapter, kind: "flue", sourceRef: stored.sourceRef, hasToken: false });
+        } else {
+          await adapter.close().catch(() => {});
+        }
+      } catch {
+        // Agent unreachable — stays offline; health loop will reconnect (ORG-10).
+      }
+    }
+  }
+
+  /**
+   * Non-blocking org sync on boot (ORG-08). Reads the local binding; if bound,
+   * creates an OrgManager, runs reconcile, and attempts to connect synced agents.
+   * Failures are swallowed with a console.error — startup must NOT be blocked.
+   */
+  async #orgSyncOnBoot(): Promise<void> {
+    const binding = this.#orgStore.load();
+    if (!binding) return;
+    try {
+      this.#orgManager = this.#makeOrgManager(binding.repo);
+      const result = await this.#orgManager.reconcile();
+      await this.#connectOrgAgents(result.orgId);
+    } catch (err) {
+      // Boot sync failure must not prevent Fleet from starting (ORG-11).
+      console.error("[gateway-core] org boot sync failed:", (err as Error).message ?? err);
+    }
+  }
+
+  // ── Org request handlers ───────────────────────────────────────────────────
+
+  /** Emit the current org binding state. */
+  #orgStatusReq(emit: Emit): void {
+    emit({ type: "org.status", ...this.#buildOrgStatus() });
+  }
+
+  /** Create a new org and bind this Core instance as owner (ORG-01). */
+  async #orgCreate(req: Extract<ClientRequest, { type: "org.create" }>, emit: Emit): Promise<void> {
+    try {
+      this.#orgManager = this.#makeOrgManager(req.repo);
+      await this.#orgManager.createOrg(req.repo, req.name);
+      emit({ type: "org.status", ...this.#buildOrgStatus() });
+    } catch (err) {
+      emit({ type: "org.error", message: orgErrorMessage(err) });
+    }
+  }
+
+  /** Join an existing org as a member (ORG-02). */
+  async #orgJoin(req: Extract<ClientRequest, { type: "org.join" }>, emit: Emit): Promise<void> {
+    try {
+      this.#orgManager = this.#makeOrgManager(req.repo);
+      await this.#orgManager.bindOrg(req.repo);
+      emit({ type: "org.status", ...this.#buildOrgStatus() });
+    } catch (err) {
+      emit({ type: "org.error", message: orgErrorMessage(err) });
+    }
+  }
+
+  /**
+   * Leave the org (ORG-03): close all org agent adapters, let OrgManager prune
+   * the DB, clear the local binding, and broadcast the updated agent list.
+   */
+  async #orgLeave(emit: Emit): Promise<void> {
+    const binding = this.#orgStore.load();
+    if (!binding) {
+      emit({ type: "org.status", bound: false });
+      return;
+    }
+    try {
+      // Close adapters for org agents before DB prune so no ghost connections linger.
+      for (const id of this.#state.listOrgAgentIds(binding.orgId)) {
+        const reg = this.#agents.get(id);
+        if (reg) {
+          await reg.adapter.close().catch(() => {});
+          this.#agents.delete(id);
+          this.#onlineCache.delete(id);
+        }
+      }
+      if (this.#orgManager) {
+        await this.#orgManager.leave();
+      } else {
+        // No active manager (e.g. boot binding not yet wired) — clear directly.
+        this.#orgStore.clear();
+      }
+      this.#orgManager = null;
+      emit({ type: "org.status", bound: false });
+      // Broadcast refreshed agent list (org agents removed).
+      emit({ type: "agents", agents: this.#state.listAgents().map((a) => this.#summary(a, this.#agents.has(a.id))) });
+    } catch (err) {
+      emit({ type: "org.error", message: orgErrorMessage(err) });
+    }
+  }
+
+  /** Manual pull+reconcile (ORG-09). Emits org.synced + updated agents + org.status. */
+  async #orgSync(emit: Emit): Promise<void> {
+    const manager = this.#orgManager;
+    if (!manager?.isBound()) {
+      emit({ type: "org.error", message: "Not bound to any org — join or create an org first" });
+      return;
+    }
+    try {
+      const result = await manager.reconcile();
+      await this.#connectOrgAgents(result.orgId);
+      emit({ type: "org.synced", count: result.count, at: result.at });
+      emit({ type: "org.status", ...this.#buildOrgStatus() });
+      emit({ type: "agents", agents: this.#state.listAgents().map((a) => this.#summary(a, this.#agents.has(a.id))) });
+    } catch (err) {
+      emit({ type: "org.error", message: orgErrorMessage(err) });
+    }
+  }
+
+  /**
+   * Share a locally deployed remote agent to the org registry (ORG-04).
+   * Guards at this layer (defense in depth, ADR-5):
+   * - ORG-06: target must be remotely routable (non-local).
+   * - ORG-07: agent must not have been connected with a bearer token.
+   * - Source agent must exist, must NOT be an org agent itself, must have a deploy record.
+   * OrgManager.shareAgent also enforces ORG-06 for a second layer of defense.
+   */
+  async #orgShare(req: Extract<ClientRequest, { type: "org.share" }>, emit: Emit): Promise<void> {
+    const manager = this.#orgManager;
+    if (!manager?.isBound()) {
+      emit({ type: "org.error", message: "Not bound to any org — join or create an org first" });
+      return;
+    }
+    // Cannot share an org-sourced agent (connect-only, not the owner).
+    if (this.#state.isOrgAgent(req.agentId)) {
+      emit({ type: "org.error", message: "Cannot share an org-sourced agent — only locally owned agents can be shared" });
+      return;
+    }
+    const stored = this.#state.getAgent(req.agentId);
+    if (!stored) {
+      emit({ type: "org.error", message: `Agent "${req.agentId}" not found` });
+      return;
+    }
+    // ORG-07: reject token-protected agents. Fleet doesn't persist tokens (ADR-4),
+    // so we can only check the in-memory registration for the current session.
+    if (this.#agents.get(req.agentId)?.hasToken) {
+      emit({ type: "org.error", message: "Token-protected agents cannot be shared in G1 — members would be unable to connect without the secret" });
+      return;
+    }
+    const deploy = this.#state.getDeploy(req.agentId);
+    const ROUTABLE = new Set(["fly", "cloudflare", "dokploy", "github"]);
+    if (!deploy || !ROUTABLE.has(deploy.target)) {
+      emit({
+        type: "org.error",
+        message: deploy
+          ? `Local agents cannot be shared (non-routable target: ${deploy.target})`
+          : `Agent "${stored.name}" has no deploy record — only remotely deployed agents can be shared`,
+      });
+      return;
+    }
+    const binding = manager.getBinding()!;
+    const entry: SharedAgentEntry = {
+      schemaVersion: 1,
+      id: stored.id,
+      name: stored.name,
+      version: stored.version,
+      description: stored.description,
+      model: stored.model,
+      target: deploy.target as "fly" | "cloudflare" | "dokploy" | "github",
+      url: stored.sourceRef,
+      sharedBy: binding.myLogin,
+      sharedAt: new Date().toISOString(),
+      // envVarNames not tracked in G1 — only display metadata and URL are shared.
+      config: { envVarNames: [] },
+    };
+    try {
+      await manager.shareAgent(entry);
+      emit({ type: "org.status", ...this.#buildOrgStatus() });
+    } catch (err) {
+      emit({ type: "org.error", message: orgErrorMessage(err) });
+    }
+  }
+
+  /** Unshare a previously shared agent from the registry (ORG-05). */
+  async #orgUnshare(req: Extract<ClientRequest, { type: "org.unshare" }>, emit: Emit): Promise<void> {
+    const manager = this.#orgManager;
+    if (!manager?.isBound()) {
+      emit({ type: "org.error", message: "Not bound to any org — join or create an org first" });
+      return;
+    }
+    try {
+      await manager.unshareAgent(req.agentId);
+      emit({ type: "org.status", ...this.#buildOrgStatus() });
+    } catch (err) {
+      emit({ type: "org.error", message: orgErrorMessage(err) });
+    }
+  }
+
+  /** List live org members (ORG-11 uses GitHub collaborators as the ACL). */
+  async #orgMembers(emit: Emit): Promise<void> {
+    const manager = this.#orgManager;
+    if (!manager?.isBound()) {
+      emit({ type: "org.error", message: "Not bound to any org — join or create an org first" });
+      return;
+    }
+    try {
+      const members = await manager.listMembers();
+      emit({ type: "org.members", members });
+    } catch (err) {
+      emit({ type: "org.error", message: orgErrorMessage(err) });
     }
   }
 
@@ -722,7 +1061,7 @@ export class GatewayCore {
           await adapter.close().catch(() => {});
           continue;
         }
-        this.#agents.set(stored.id, { adapter, kind: "flue", sourceRef: stored.sourceRef });
+        this.#agents.set(stored.id, { adapter, kind: "flue", sourceRef: stored.sourceRef, hasToken: false });
         this.#onlineCache.set(stored.id, true);
         // No broadcast here — there are typically no connected clients at boot time.
         // The first agents.list response will reflect the correct online state.
