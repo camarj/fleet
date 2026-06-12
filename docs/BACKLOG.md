@@ -139,13 +139,16 @@ SIEMPRE por API), fusionar repos, multi-protocolo A2A/ACP.
 | I6 | **Reporte de paridad por target**: tabla honesta "qué puede este agente en este target" (CF: sin shell/fs/stdio). Incluye: itemizar hooks (evento+comando) y permissions en vez del bulto actual, y fix del bug CLI que imprime `[object Object]` (`cli.ts:45`) | 🟡 | `read.ts:44-49` |
 | I7 | **Frontmatter extra de subagentes** (`tools`, `skills`, `thinkingLevel`) — `defineAgentProfile` los acepta, cablearlos | 🟢 | `read.ts:101-108` |
 | I8 | **Bloque `env` de settings al factory**: el `createAgent(() => ...)` emitido no destructura `env`; cablearlo para que `env.X` exista dentro del agente | 🟢 | `emit.ts:157` |
+| I9 | **Boot frágil ante MCP http inalcanzable**: si CUALQUIER server MCP http configurado no resuelve/conecta, el agente Flue crashea al arrancar (`getaddrinfo ENOTFOUND` → process exit 1 → el contenedor nunca escucha → el deploy falla con "did not start listening in time"). Un solo URL malo = el agente no bootea. Descubierto en vivo 2026-06-12 con el `mcp.example.com` placeholder del fixture. Hardening: conectar MCP http de forma tolerante (warn + seguir) en vez de fatal | 🟡 | runtime `connectMcpServer` throw en startup; evidencia: logs del contenedor `fleet-claude-project` |
 
 **Slices** (PRs ≤400 líneas): **I-PR1** = I1 solo (chico, gigante — el agente
 recupera las manos) → ✅ **PR #37 mergeada 2026-06-12** (plan `plans/001`,
-ejecutado+revisado; pendiente verificación en vivo: agente docker-local corre
-`git --version`). **I-PR2** = I2 (bridge stdio) → ✅ **PR #40 mergeada
-2026-06-12** (plan `plans/004`; supergateway 3.4.3 pinneado; pendiente
-aceptación en vivo: docker-local con server stdio → tools usables en chat).
+ejecutado+revisado; ✅ **VERIFICADO EN VIVO docker-local 2026-06-12**: el
+agente corrió `uname` → "Linux aarch64" con exitCode 0, shell real en el
+contenedor). **I-PR2** = I2 (bridge stdio) → ✅ **PR #40 mergeada
+2026-06-12** (plan `plans/004`; supergateway 3.4.3 pinneado; ✅ **VERIFICADO EN
+VIVO docker-local 2026-06-12**: el agente escribió+leyó un archivo vía
+`mcp__filesystem__*`, supergateway bridgeó el server stdio en :3100).
 **I-PR3** = I3+I4+I5+I8. **I-PR4** = I6+I7 (honestidad y detalles). Skills y
 subagentes ya están en paridad — sin trabajo extra.
 
@@ -177,7 +180,7 @@ subagentes ya están en paridad — sin trabajo extra.
 
 | ID | Ítem | Detalle | Dependencias |
 | --- | --- | --- | --- |
-| J1 | **instanceId estable por agente** | ✅ **PR #38 mergeada 2026-06-12** (plan `plans/002`): columna `agents.flue_instance_id`, los 3 sitios de reconexión reutilizan el id, deploy = época nueva (overwrite). Pendiente aceptación en vivo: chatear → reiniciar Core → el agente recuerda | Ninguna |
+| J1 | **instanceId estable por agente** | ✅ **PR #38 mergeada 2026-06-12** (plan `plans/002`): columna `agents.flue_instance_id`, los 3 sitios de reconexión reutilizan el id, deploy = época nueva (overwrite). ✅ **VERIFICADO EN VIVO 2026-06-12**: codeword → SIGKILL al Core → restart → `#reconnectPersisted` reusó el mismo `flue_instance_id` → el agente recordó el codeword. **MATIZ docker-local**: el apagado *graceful* del Core hace `docker rm -f` del contenedor (`flue-deployer.ts:718-721`), borrando su `flue.db` → en docker-local la memoria sobrevive a un *crash* (contenedor huérfano + reconexión) pero NO a un restart graceful; en targets remotos el contenedor no lo toca el Core, así que ahí siempre sobrevive | Ninguna |
 | J2 | **Pasar `session` en el invoke** | El payload Flue soporta `session?: string` (default `"default"`); Fleet nunca lo manda (`flue.ts:101-106`). Mapear conversaciones Fleet (WU-23) ↔ sesiones nombradas Flue para threading real server-side | J1 |
 | J3 | **Decidir replay vs server-side** | Con J1+J2, el agente recuerda solo. Verificar contra el wire real (regla #4) si hace falta replay de transcripts desde el Core en algún caso (p.ej. agente redeployado pierde su flue.db) — el seam es `core.ts:656` + `RunInput.context` (existe en `neutral.ts:30`, hoy sin uso) | J1, J2 |
 | J4 | **Memoria compartida vía Engram cloud (arquitectura verificada)** | (a) Deployar `engram cloud serve` (Docker + Postgres) en la infra de la org — Fleet ya sabe deployar a Dokploy; (b) el converter empaqueta el binario engram en la imagen y corre `engram mcp` como server stdio del agente (vía el bridge de I2), con el perfil de tools de memoria; (c) `engram cloud config` + `enroll` + `ENGRAM_CLOUD_AUTOSYNC=1` con el token de la org → todos los agentes (remotos y locales) leen/escriben la MISMA memoria por proyecto. Diseñar con SDD (qué se comparte, scoping por proyecto/org, qué pasa en CF donde no hay stdio) | I2; token → G1.5 |
@@ -208,8 +211,12 @@ que destraba la auditoría. J4–J5 requieren decisión de arquitectura (SDD).
 | K10 | **Piloto con un proceso REAL del negocio** (gate de salida — definición del usuario 2026-06-12): NO cuenta "un agente genera texto y se lo pasa a otro". Cuenta: un proceso real de Inteliside, multi-agente, donde los agentes usan tools reales (post I-PR1: shell/APIs/MCP) y el output final es algo que el negocio usaría tal cual. Candidato natural: pipeline de contenido con el agente `contenido` ya deployado (investigar fuentes → redactar → revisar → publicar vía API/MCP). El caso concreto lo elige el usuario al arrancar K10. Lo que falle alimenta K1–K9 e I. Sin este gate, ni K ni I se declaran listos | — | criterio de aceptación |
 
 **Slices sugeridos**: **K-PR1 robustez de ejecución** = K1 + K4 + K6 → ✅
-**PR #39 mergeada 2026-06-12** (plan `plans/003`; pendiente aceptación en vivo:
-workflow contra contenedor apagado falla con timeout). **K-PR2 observabilidad**
+**PR #39 mergeada 2026-06-12** (plan `plans/003`; ✅ **VERIFICADO EN VIVO
+2026-06-12**: con el contenedor del agente congelado vía `docker pause`, el
+nodo falló con `agent node "ag" timed out after 8000ms` justo al cumplirse el
+timeout configurado, sin colgarse. Nota: probar el timeout requiere `docker
+pause` —un contenedor *parado* da connection-refused/fail-fast, no timeout—).
+**K-PR2 observabilidad**
 = K2 + K5 (con D2) + K3. **K-PR3 UX/validación** = K7 + K8 + K9. **K10** corre
 después de K-PR1/2 como verificación en vivo.
 

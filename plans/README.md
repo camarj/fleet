@@ -10,10 +10,10 @@ and update your row when done.
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
-| 001 | Emit `sandbox: local()` — real shell/fs for converted agents on Node targets (BACKLOG I-PR1) | P1 | S | — | DONE — merged as PR #37 (4d8db05); live docker-local verification pending |
-| 002 | Persist a stable Flue instanceId per agent — server-side memory survives reconnects (BACKLOG J1) | P1 | S | — | DONE — merged as PR #38 (5b950de); live restart-memory acceptance pending |
-| 003 | Orchestrator robustness — node timeouts, orphaned-run reconciliation, concurrent-run guard (BACKLOG K-PR1 = K1+K4+K6) | P1 | M | — | DONE — merged as PR #39 (97da810); live timeout acceptance pending |
-| 004 | Bridge stdio MCP servers inside the agent container — Node targets (BACKLOG I-PR2 = I2) | P1 | M | 001 | DONE — merged as PR #40 (4f0eebf); live docker-local bridge acceptance pending |
+| 001 | Emit `sandbox: local()` — real shell/fs for converted agents on Node targets (BACKLOG I-PR1) | P1 | S | — | DONE — merged as PR #37 (4d8db05); ✅ LIVE-VERIFIED docker-local 2026-06-12 (agent ran `uname` → "Linux aarch64", real container shell, exitCode 0) |
+| 002 | Persist a stable Flue instanceId per agent — server-side memory survives reconnects (BACKLOG J1) | P1 | S | — | DONE — merged as PR #38 (5b950de); ✅ LIVE-VERIFIED docker-local 2026-06-12 (told agent a codeword, SIGKILL-crashed Core, restart → reconnectPersisted reused same flue_instance_id → agent recalled codeword). CAVEAT: graceful Core shutdown calls `docker rm -f` on docker-local containers, so memory is lost on a *graceful* restart of that target; survives crash + remote targets. |
+| 003 | Orchestrator robustness — node timeouts, orphaned-run reconciliation, concurrent-run guard (BACKLOG K-PR1 = K1+K4+K6) | P1 | M | — | DONE — merged as PR #39 (97da810); ✅ LIVE-VERIFIED docker-local 2026-06-12 (`docker pause`d agent → workflow node failed with "timed out after 8000ms" at exactly the configured timeout, no hang) |
+| 004 | Bridge stdio MCP servers inside the agent container — Node targets (BACKLOG I-PR2 = I2) | P1 | M | 001 | DONE — merged as PR #40 (4f0eebf); ✅ LIVE-VERIFIED docker-local 2026-06-12 (agent wrote+read a file via `mcp__filesystem__*`; supergateway bridged stdio server on :3100) |
 
 Planned next (not yet written — see `docs/BACKLOG.md` for full detail):
 
