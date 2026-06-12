@@ -1054,7 +1054,11 @@ async function resolveDokployTarget(
   let project: DokployProject;
   const projectName = opts.projectName ?? process.env.DOKPLOY_PROJECT;
   if (projectName) {
-    const found = projects.find((p) => p.name === projectName);
+    // Exact match wins; otherwise fall back to a unique case-insensitive match —
+    // Dokploy project names are display names and demanding exact case is friction.
+    const wanted = projectName.toLowerCase();
+    const ciMatches = projects.filter((p) => p.name.toLowerCase() === wanted);
+    const found = projects.find((p) => p.name === projectName) ?? (ciMatches.length === 1 ? ciMatches[0] : undefined);
     if (!found) {
       throw new DeployError(
         `Project "${projectName}" not found (DOKPLOY_PROJECT). Available: ${projects.map((p) => p.name).join(", ")}.`,
