@@ -977,6 +977,10 @@ body {
 .wf-run-aborted {
   color: var(--muted);
 }
+/* K5: a run can appear as "running" in history when the workflow is opened mid-run. */
+.wf-run-running {
+  color: #d29922;
+}
 .wf-outputs {
   border-top: 1px solid var(--border);
   padding: 8px 10px;
