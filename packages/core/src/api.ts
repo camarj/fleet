@@ -95,6 +95,16 @@ export interface UsageAgentSummary {
   unpricedRuns: number;
 }
 
+/** One persisted workflow run, as listed by the `workflow.runs` request. */
+export interface WorkflowRunSummary {
+  id: string;
+  status: "running" | "completed" | "failed" | "aborted";
+  inputs: Record<string, string>;
+  outputs: Record<string, string> | null;
+  startedAt: string;
+  endedAt: string | null;
+}
+
 /** Grand totals across all UsageAgentSummary rows of a usage.summary response. */
 export interface UsageTotals {
   inputTokens: number;
@@ -153,6 +163,8 @@ export type ClientRequest =
   /** Run a saved workflow with the given run inputs. */
   | { type: "workflow.run"; workflowId: string; inputs: Record<string, string> }
   | { type: "workflow.abort"; runId: string }
+  /** List a workflow's past runs (newest first). K5/D2: history was write-only. */
+  | { type: "workflow.runs"; workflowId: string; limit?: number }
   // ── Org registry (G1) ──
   /** Create a new org and bind this instance as owner. */
   | { type: "org.create"; repo: string; name: string }
@@ -276,4 +288,6 @@ export type ServerEvent =
       runId: string;
       status: "completed" | "failed" | "aborted";
       outputs: Record<string, string>;
-    };
+    }
+  /** K5/D2: responds to workflow.runs requests with the run list, newest first. */
+  | { type: "workflow.runs"; workflowId: string; runs: WorkflowRunSummary[] };

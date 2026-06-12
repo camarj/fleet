@@ -977,6 +977,10 @@ body {
 .wf-run-aborted {
   color: var(--muted);
 }
+/* K5: a run can appear as "running" in history when the workflow is opened mid-run. */
+.wf-run-running {
+  color: #d29922;
+}
 .wf-outputs {
   border-top: 1px solid var(--border);
   padding: 8px 10px;
@@ -1004,6 +1008,56 @@ body {
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* K5/D2: run history panel (wf-runs*) — lists past runs below the live outputs panel. */
+.wf-runs {
+  border-top: 1px solid var(--border);
+  padding: 8px 10px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.wf-runs-head {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.wf-run-row {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.wf-run-row:last-child {
+  border-bottom: none;
+}
+.wf-run-row-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.wf-run-time {
+  color: var(--muted);
+  font-size: 11px;
+}
+.wf-run-duration {
+  color: var(--muted);
+  font-size: 11px;
+  margin-left: auto;
+}
+.wf-run-detail {
+  margin-top: 6px;
+  padding-left: 4px;
+}
+.wf-run-detail-section {
+  margin-bottom: 6px;
+}
+.wf-run-detail-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  display: block;
+  margin-bottom: 2px;
 }
 
 /* Inspector */
