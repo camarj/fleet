@@ -61,7 +61,9 @@ function main(): void {
   assert(agent.includes("defineAgentProfile({"), "subagent emitted as defineAgentProfile");
   assert(agent.includes('name: "issue-classifier"'), "subagent name emitted");
   assert(agent.includes('model: "anthropic/claude-haiku-4-5"'), "subagent model preserved (no provider swap)");
-  assert(agent.includes('connectMcpServer("inventory"'), "http MCP wired via connectMcpServer");
+  // I9: http servers must go through the tolerant helper, not a raw top-level await.
+  assert(agent.includes('tryConnectMcpServer("inventory"'), "http MCP wired via tolerant tryConnectMcpServer (I9)");
+  assert(!agent.includes('= await connectMcpServer('), "no raw top-level connectMcpServer remains (I9: unreachable server must not crash boot)");
   assert(agent.includes("INVENTORY_MCP_URL"), "MCP url overridable via env");
   // bridged stdio server
   assert(agent.includes('tryConnectMcpServer("filesystem"'), "bridged stdio MCP uses tryConnectMcpServer");
