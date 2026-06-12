@@ -436,7 +436,10 @@ export class FlueDeployer {
       onProgress,
       onLog,
     });
-    await waitReady(baseUrl);
+    // Dokploy reports "done" when the BUILD finishes; the container swap and
+    // app boot happen after that and routinely exceed the default 60 s window
+    // (seen live: agent up ~2 min after status done). Give it 3 minutes.
+    await waitReady(baseUrl, 180_000);
     return baseUrl;
   }
 
@@ -1364,7 +1367,8 @@ async function waitReady(baseUrl: string, timeoutMs = 60_000): Promise<void> {
     try {
       // Accept any HTTP response — even 4xx/5xx — as proof the server is listening.
       // (Flue's root path may return 404; we only need to know the process is up.)
-      await fetch(`${baseUrl}/`);
+      // Cap each attempt so a hanging connection can't silently eat the window.
+      await fetch(`${baseUrl}/`, { signal: AbortSignal.timeout(3_000) });
       return;
     } catch {
       await sleep(400);
