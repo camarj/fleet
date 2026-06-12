@@ -1000,7 +1000,10 @@ export async function dokployApi(
   body?: unknown,
   fetchImpl: typeof fetch = fetch,
 ): Promise<unknown> {
-  const base = cfg.url.replace(/\/$/, "");
+  // Accept DOKPLOY_URL with or without a scheme — fetch() needs an absolute
+  // URL, and a bare host like "dev1.example.com" otherwise fails to parse.
+  const withScheme = /^https?:\/\//i.test(cfg.url) ? cfg.url : `https://${cfg.url}`;
+  const base = withScheme.replace(/\/$/, "");
   const headers: Record<string, string> = { "x-api-key": cfg.key, "Content-Type": "application/json" };
   let url = `${base}/api/${procedure}`;
   const init: RequestInit = { method, headers };

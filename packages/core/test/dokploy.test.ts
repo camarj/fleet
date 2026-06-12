@@ -19,7 +19,7 @@
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-const { runDokployOrchestration, stopDokployApplication, DeployError, FlueDeployer } = await import(
+const { runDokployOrchestration, stopDokployApplication, dokployApi, DeployError, FlueDeployer } = await import(
   "../src/deploy/flue-deployer.js"
 );
 const { SecretsStore } = await import("../src/secrets/store.js");
@@ -331,6 +331,20 @@ async function main(): Promise<void> {
       const stopped = await stopDokployApplication({ cfg: FAKE_CFG, agentName: FAKE_AGENT, fetchImpl: f7 });
       assert(stopped === false, "stop: returns false when no application matches");
       assert(!c7.includes("POST:application.stop"), "stop: application.stop is NOT called when the app is missing");
+    }
+
+    // ── 8. dokployApi: scheme-less DOKPLOY_URL is normalized to https ────────
+    console.log("\n[8] dokployApi — scheme-less URL gets https:// prepended");
+    {
+      const seen: string[] = [];
+      const fakeFetch = (async (input: RequestInfo | URL) => {
+        seen.push(String(input));
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }) as typeof fetch;
+      await dokployApi({ url: "dev1.example.com", key: "k" }, "GET", "project.all", undefined, fakeFetch);
+      assert(seen[0] === "https://dev1.example.com/api/project.all", `scheme-less url normalized (got: ${seen[0]})`);
+      await dokployApi({ url: "http://plain.example.com/", key: "k" }, "GET", "project.all", undefined, fakeFetch);
+      assert(seen[1] === "http://plain.example.com/api/project.all", `explicit scheme + trailing slash preserved (got: ${seen[1]})`);
     }
   } finally {
     // Restore env vars.
