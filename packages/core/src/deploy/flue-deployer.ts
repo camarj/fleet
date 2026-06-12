@@ -150,7 +150,11 @@ export class FlueDeployer {
 
     // Convert the Claude Code project to a Flue project (deterministic).
     onProgress("converting");
-    const project = convert(req.sourceDir, { provider: req.provider, model: req.model });
+    const project = convert(req.sourceDir, {
+      provider: req.provider,
+      model: req.model,
+      target: target === "cloudflare" ? "cloudflare" : "node",
+    });
     const agentName = project.report.agentName;
     const unmapped = project.report.unmapped;
     const agentDir = join(deployedDir(), agentName);

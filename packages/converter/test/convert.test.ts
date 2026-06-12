@@ -63,6 +63,8 @@ function main(): void {
   assert(/import \w+ from "\.\.\/skills\/refund-policy\/SKILL\.md" with \{ type: "skill" \}/.test(agent), "skill imported with import attribute");
   assert(agent.includes("subagents: ["), "subagents wired into config");
   assert(agent.includes(".tools]"), "MCP tools spread into config");
+  assert(agent.includes('import { local } from "@flue/runtime/node";'), "node target imports local() sandbox");
+  assert(agent.includes("sandbox: local({ env: { ...process.env } }),"), "node target emits real sandbox");
 
   // skill body copied; frontmatter normalized to a flat string→string map (Flue requirement)
   const skill = fileContent(out, "src/skills/refund-policy/SKILL.md");
@@ -142,6 +144,13 @@ function main(): void {
     threw = e instanceof ConvertError;
   }
   assert(threw, "unknown provider → ConvertError");
+
+  // ── cloudflare target: the node sandbox must NOT be emitted ──
+  const cfOut = convert(FIXTURE, { target: "cloudflare" });
+  const cfAgent = fileContent(cfOut, "src/agents/claude-project.ts");
+  assert(!cfAgent.includes("@flue/runtime/node"), "cloudflare target omits the node-only import");
+  assert(!cfAgent.includes("sandbox:"), "cloudflare target omits the sandbox field");
+  assert(cfAgent.includes("export default createAgent(() => ({"), "cloudflare agent still emits createAgent");
 
   console.log(process.exitCode ? "\nFAILED" : "\nALL GOOD");
 }

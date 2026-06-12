@@ -5,5 +5,9 @@
   },
   "hooks": {
     "PostToolUse": []
+  },
+  "env": {
+    "STORE_API_BASE": "https://api.example.com",
+    "FEATURE_FLAG_X": "true"
   }
 }

@@ -80,6 +80,14 @@ export interface ConvertOptions {
   provider?: string;
   /** Target model id under that provider. */
   model?: string;
+  /**
+   * Deploy target the emitted project is destined for. Node targets (the
+   * default) get `sandbox: local()` — real shell + filesystem inside the
+   * container. "cloudflare" omits it: Workers have no subprocesses or fs,
+   * and the `@flue/runtime/node` import would break `flue build --target
+   * cloudflare`. Verified against @flue/runtime 0.10.1.
+   */
+  target?: "node" | "cloudflare";
 }
 
 /** The emitted, deployable Flue project — a deterministic set of files. */
