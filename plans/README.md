@@ -14,16 +14,23 @@ and update your row when done.
 | 002 | Persist a stable Flue instanceId per agent — server-side memory survives reconnects (BACKLOG J1) | P1 | S | — | DONE — merged as PR #38 (5b950de); ✅ LIVE-VERIFIED docker-local 2026-06-12 (told agent a codeword, SIGKILL-crashed Core, restart → reconnectPersisted reused same flue_instance_id → agent recalled codeword). CAVEAT: graceful Core shutdown calls `docker rm -f` on docker-local containers, so memory is lost on a *graceful* restart of that target; survives crash + remote targets. |
 | 003 | Orchestrator robustness — node timeouts, orphaned-run reconciliation, concurrent-run guard (BACKLOG K-PR1 = K1+K4+K6) | P1 | M | — | DONE — merged as PR #39 (97da810); ✅ LIVE-VERIFIED docker-local 2026-06-12 (`docker pause`d agent → workflow node failed with "timed out after 8000ms" at exactly the configured timeout, no hang) |
 | 004 | Bridge stdio MCP servers inside the agent container — Node targets (BACKLOG I-PR2 = I2) | P1 | M | 001 | DONE — merged as PR #40 (4f0eebf); ✅ LIVE-VERIFIED docker-local 2026-06-12 (agent wrote+read a file via `mcp__filesystem__*`; supergateway bridged stdio server on :3100) |
+| 005 | Attribute workflow-run usage/cost — runner creates sessions + records usage (BACKLOG K2) | P1 | M | — | TODO |
+| 006 | Workflow run history — read API + Runs panel in canvas (BACKLOG K5, absorbs D2) | P1 | M | — | TODO |
+| 007 | Bound workflow output sizes — cap accumulation + rendering (BACKLOG K3) | P1 | S–M | execute after 005 (same function) | TODO |
+| 008 | Tolerant http-MCP connect — unreachable MCP must not prevent boot (BACKLOG I9, found in live acceptance) | P2 | S | — | TODO |
+
+Plans 005–007 together are BACKLOG slice **K-PR2** (observability). After
+K-PR2 lands, **K10** (real-business pilot) is the live exit gate for K and I.
 
 Planned next (not yet written — see `docs/BACKLOG.md` for full detail):
 
-- **J1/J2** — stable Flue `instanceId` per agent + pass `session` in invoke
-  (server-side cross-session memory Flue already persists; Fleet currently
-  discards it on every reconnect at `packages/core/src/adapters/flue.ts:70`).
-- **K-PR1** — orchestrator robustness: per-node/run timeouts, orphaned-run
-  reconciliation on startup, concurrent-run guard.
-- **I-PR2** — stdio MCP servers bridged inside the agent container
-  (depends on 001's target-conditional emission).
+- **J4** — shared memory via Engram cloud. RESERVED FOR SDD (architecture
+  decision, per backlog and user constraint) — do not plan it through this
+  pipeline.
+- **K-PR3** — UX/validation: `{{input.TYPO}}` validation (K7), abort-button
+  race (K8), multi-branch merge order (K9).
+- **I-PR3/I-PR4** — `defineTool` wrappers, `@`-import expansion, slash
+  commands → skills, per-target parity report.
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
@@ -32,6 +39,14 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
 - I-PR2 (stdio bridge, future plan) requires 001 because both edit the same
   emission sites in `packages/converter/src/emit.ts` and the bridge is only
   valid on Node targets — the target-conditional flag lands in 001.
+- 007 must execute AFTER 005 (or rebase carefully): both rewrite
+  `GatewayCore.#agentRunner()` in `packages/core/src/core.ts`. 005's plan
+  notes the expected post-state 007 will find.
+- 006 is independent of 005/007 in code, but its Runs panel renders stored
+  outputs — 007's render cap also applies to that panel (007 Step 2 covers it
+  if 006 landed first).
+- 008 is fully independent (converter only); it can run in parallel with any
+  of 005–007.
 
 ## Findings considered and rejected
 
