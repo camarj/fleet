@@ -6,6 +6,7 @@
  * No network, no LLM. Run: pnpm --filter @inteliside/gateway-converter test
  */
 
+import { rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { convert, ConvertError, type FlueProject } from "../src/index.js";
@@ -63,6 +64,8 @@ function main(): void {
   assert(/import \w+ from "\.\.\/skills\/refund-policy\/SKILL\.md" with \{ type: "skill" \}/.test(agent), "skill imported with import attribute");
   assert(agent.includes("subagents: ["), "subagents wired into config");
   assert(agent.includes(".tools]"), "MCP tools spread into config");
+  assert(agent.includes('import { local } from "@flue/runtime/node";'), "node target imports local() sandbox");
+  assert(agent.includes("sandbox: local({ env: { ...process.env } }),"), "node target emits real sandbox");
 
   // skill body copied; frontmatter normalized to a flat string→string map (Flue requirement)
   const skill = fileContent(out, "src/skills/refund-policy/SKILL.md");
@@ -84,10 +87,28 @@ function main(): void {
   }
   const envExample = fileContent(out, ".env.example");
   assert(envExample.includes("ANTHROPIC_API_KEY="), ".env.example has the provider key var");
-  // settings.local.json env block → names surfaced into .env.example (WU-11)
-  assert(envExample.includes("STORE_API_BASE="), ".env.example surfaces settings.local.json env var STORE_API_BASE");
-  assert(envExample.includes("FEATURE_FLAG_X="), ".env.example surfaces settings.local.json env var FEATURE_FLAG_X");
+  // settings.json env block → names surfaced into .env.example (WU-11)
+  assert(envExample.includes("STORE_API_BASE="), ".env.example surfaces settings.json env var STORE_API_BASE");
+  assert(envExample.includes("FEATURE_FLAG_X="), ".env.example surfaces settings.json env var FEATURE_FLAG_X");
   assert(!envExample.includes("https://api.example.com"), ".env.example carries env NAMES only, never the values (no secret leak)");
+
+  // ── settings.local.json layering (read.ts:73 shallow-merge path) ──
+  // settings.local.json is globally gitignored so it can never be committed as a fixture;
+  // we create it at runtime and always delete it in the finally block.
+  {
+    const localSettingsPath = join(FIXTURE, ".claude", "settings.local.json");
+    try {
+      writeFileSync(localSettingsPath, JSON.stringify({ env: { LOCAL_ONLY_TOKEN: "placeholder" } }), "utf8");
+      const withLocal = convert(FIXTURE);
+      const localEnv = fileContent(withLocal, ".env.example");
+      assert(localEnv.includes("LOCAL_ONLY_TOKEN="), ".env.example surfaces settings.local.json env var LOCAL_ONLY_TOKEN");
+      // Shallow merge: local `env` REPLACES base `env` entirely (read.ts:73 `{ ...base, ...local }`),
+      // so base-settings vars are absent when local overrides the env key — documents known behavior.
+      assert(!localEnv.includes("STORE_API_BASE="), "shallow merge: base env var STORE_API_BASE absent when local overrides the env key");
+    } finally {
+      rmSync(localSettingsPath, { force: true });
+    }
+  }
 
   // package.json carries the Cloudflare peer dep + build/deploy scripts
   const pkg = JSON.parse(fileContent(out, "package.json"));
@@ -142,6 +163,13 @@ function main(): void {
     threw = e instanceof ConvertError;
   }
   assert(threw, "unknown provider → ConvertError");
+
+  // ── cloudflare target: the node sandbox must NOT be emitted ──
+  const cfOut = convert(FIXTURE, { target: "cloudflare" });
+  const cfAgent = fileContent(cfOut, "src/agents/claude-project.ts");
+  assert(!cfAgent.includes("@flue/runtime/node"), "cloudflare target omits the node-only import");
+  assert(!cfAgent.includes("sandbox:"), "cloudflare target omits the sandbox field");
+  assert(cfAgent.includes("export default createAgent(() => ({"), "cloudflare agent still emits createAgent");
 
   console.log(process.exitCode ? "\nFAILED" : "\nALL GOOD");
 }

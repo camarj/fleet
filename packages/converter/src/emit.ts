@@ -26,6 +26,12 @@ export function emitFlueProject(project: ClaudeProject, opts: ConvertOptions = {
   const { specifier, provider } = resolveModel(project.sourceModel, opts);
   const swapped = !!opts.provider && opts.provider !== "anthropic";
   const unmapped: UnmappedItem[] = [...project.unmapped];
+  // Real shell + filesystem for Node targets: without `sandbox: local()` the
+  // agent runs Flue's in-memory just-bash emulator and CLAUDE.md instructions
+  // that invoke git/npm/scripts silently can't execute. Cloudflare Workers
+  // have no subprocesses, so the import is omitted there (it would break the
+  // CF build). Verified against @flue/runtime 0.10.1.
+  const nodeSandbox = opts.target !== "cloudflare";
 
   const files: FlueFile[] = [];
   const httpMcp = project.mcpServers.filter((m): m is Extract<typeof m, { kind: "http" }> => m.kind === "http");
@@ -33,7 +39,7 @@ export function emitFlueProject(project: ClaudeProject, opts: ConvertOptions = {
   // ── the agent module ──
   files.push({
     path: `src/agents/${project.name}.ts`,
-    content: emitAgentModule(project, specifier, swapped, httpMcp, unmapped),
+    content: emitAgentModule(project, specifier, swapped, httpMcp, unmapped, nodeSandbox),
   });
 
   // ── skills (copied verbatim under src/skills/<name>/) ──
@@ -53,7 +59,7 @@ export function emitFlueProject(project: ClaudeProject, opts: ConvertOptions = {
   files.push({ path: ".gitignore", content: "dist/\ndata/\nnode_modules/\n.env\n" });
   files.push({
     path: "README.md",
-    content: emitReadme(project, specifier, provider.apiKeyEnv, httpMcp, unmapped),
+    content: emitReadme(project, specifier, provider.apiKeyEnv, httpMcp, unmapped, nodeSandbox),
   });
 
   files.sort((a, b) => a.path.localeCompare(b.path));
@@ -80,6 +86,7 @@ function emitAgentModule(
   swapped: boolean,
   httpMcp: Array<{ name: string; url: string; headers?: Record<string, string>; transport?: string }>,
   unmapped: UnmappedItem[],
+  nodeSandbox: boolean,
 ): string {
   const used = new Set<string>();
   const imports = new Set<string>(["createAgent"]);
@@ -137,6 +144,12 @@ function emitAgentModule(
 
   // createAgent config
   const cfg: string[] = [`  model: ${q(specifier)},`, `  instructions: ${tpl(project.instructions)},`];
+  // Real shell + filesystem for Node targets: without `sandbox: local()` the
+  // agent runs Flue's in-memory just-bash emulator and CLAUDE.md instructions
+  // that invoke git/npm/scripts silently can't execute. Cloudflare Workers
+  // have no subprocesses, so the import is omitted there (it would break the
+  // CF build). Verified against @flue/runtime 0.10.1.
+  if (nodeSandbox) cfg.push(`  sandbox: local({ env: { ...process.env } }),`);
   if (skillIdents.length) cfg.push(`  skills: [${skillIdents.join(", ")}],`);
   if (profileIdents.length) cfg.push(`  subagents: [${profileIdents.join(", ")}],`);
   if (mcpIdents.length) cfg.push(`  tools: [${mcpIdents.map((i) => `...${i}.tools`).join(", ")}],`);
@@ -150,6 +163,7 @@ function emitAgentModule(
   out.push("");
   const typeList = [...typeImports].sort().map((t) => `type ${t}`);
   out.push(`import { ${[...imports].sort().join(", ")}, ${typeList.join(", ")} } from "@flue/runtime";`);
+  if (nodeSandbox) out.push(`import { local } from "@flue/runtime/node";`);
   if (skillImports.length) out.push(...skillImports);
   out.push("");
   if (profileBlocks.length) out.push(profileBlocks.join("\n\n"), "");
@@ -325,6 +339,7 @@ function emitReadme(
   apiKeyEnv: string,
   httpMcp: Array<{ name: string }>,
   unmapped: UnmappedItem[],
+  nodeSandbox: boolean,
 ): string {
   const lines: string[] = [];
   lines.push(`# ${project.name}`, "");
@@ -344,6 +359,11 @@ function emitReadme(
   );
   lines.push(`## What this agent has`, "");
   lines.push(`- ${project.subagents.length} subagent(s), ${project.skills.length} skill(s), ${httpMcp.length} HTTP MCP server(s).`);
+  lines.push(
+    nodeSandbox
+      ? `- Real shell and filesystem (\`sandbox: local()\`) — the agent can run commands and use files inside its container.`
+      : `- Emulated sandbox only (Cloudflare Workers): no real shell or filesystem; bash-like commands run in an in-memory emulator.`,
+  );
   if (unmapped.length) {
     lines.push("", `## Not mapped`, "");
     for (const u of unmapped) lines.push(`- ${u.reason}`);
