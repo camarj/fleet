@@ -223,8 +223,12 @@ export type ServerEvent =
    * Current org binding state. When `bound: false`, all other fields are absent.
    * `sharedAgentIds` lists agent ids AS RECEIVED from the directory (other members'
    * shares). The owner's OWN shared agents are skipped by the local-collision guard
-   * in reconcile and will NOT appear here — the frontend must track share-toggle state
-   * for the owner's own agents locally/optimistically (G1 limitation).
+   * in reconcile and will NOT appear there.
+   *
+   * `ownSharedAgentIds` surfaces the owner's own shares: agent ids this instance has
+   * shared into the directory, rebuilt on every sync from directory entries that match
+   * local agents (C1 collision ids), and updated immediately on share/unshare.
+   * Drives the owner's Share/Unshare toggle truthfully so Settings reopens correctly.
    */
   | {
       type: "org.status";
@@ -238,6 +242,12 @@ export type ServerEvent =
        * Does NOT include the owner's own shared agents (skipped by the C1 collision guard).
        */
       sharedAgentIds?: string[];
+      /**
+       * Agent ids this instance has shared into the directory (rebuilt on every sync
+       * from directory entries matching local agents; updated on share/unshare).
+       * Drives the owner's Share/Unshare toggle truthfully.
+       */
+      ownSharedAgentIds?: string[];
     }
   /** Live org member list (GitHub collaborators). */
   | { type: "org.members"; members: OrgMember[] }

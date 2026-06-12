@@ -5,11 +5,10 @@
  * Bound: shows org info, member list, Sync / Leave controls, and per-agent
  * share toggles for locally owned agents.
  *
- * Share-toggle state for the owner's own agents is tracked locally /
- * optimistically. It is NOT persisted across Settings modal opens (G1
- * limitation — the backend does not yet return owned shares in sharedAgentIds;
- * sharedAgentIds is received-only from the directory and skips same-id
- * collisions via the C1 reconcile guard).
+ * Share-toggle state for the owner's own agents is seeded from
+ * `orgStatus.ownSharedAgentIds` (the Core's authoritative set rebuilt from C1
+ * collision ids on every sync and updated on share/unshare). Optimistic UI is
+ * still applied during in-flight ops, and rolled back on org.error.
  */
 import { useState, useRef, useEffect } from "react";
 import type { AgentSummary, OrgMember, OrgStatus } from "../../lib/api";
@@ -91,6 +90,23 @@ export function OrgSection({
     }
     pendingShareRef.current = null;
   }, [orgError]);
+
+  // Sync sharedByMe from the Core's authoritative ownSharedAgentIds.
+  // Runs on every orgStatus change so Settings reopens with the correct state.
+  // MUST be declared before the W2 success-path effect that clears pendingShareRef
+  // so we can still read the in-flight op and re-apply it on top of server truth.
+  useEffect(() => {
+    if (!orgStatus?.bound || !orgStatus.ownSharedAgentIds) return;
+    const serverSet = new Set(orgStatus.ownSharedAgentIds);
+    const pending = pendingShareRef.current;
+    if (pending) {
+      // In-flight op: merge optimistic state on top of server truth so the
+      // toggle doesn't flicker while the request is still pending.
+      if (pending.action === "share") serverSet.add(pending.agentId);
+      else serverSet.delete(pending.agentId);
+    }
+    setSharedByMe(serverSet);
+  }, [orgStatus]);
 
   // W2 (success path): clear the pending op whenever the server confirms an
   // org.status or org.synced event (orgStatus prop changes on both).

@@ -58,6 +58,14 @@ export class OrgManager {
   readonly #registry: OrgRegistry;
   readonly #store: OrgStore;
   readonly #state: GatewayState;
+  /**
+   * In-memory set of agent ids that this instance has shared into the directory.
+   * Rebuilt from C1-skipped collision ids on every reconcile() run; updated
+   * immediately by shareAgent/unshareAgent; cleared by leave(). Never persisted
+   * to disk — the registry (remote) is the source of truth; the set is derived
+   * by observing which of the owner's local agents appear in the pulled directory.
+   */
+  #ownSharedAgentIds = new Set<string>();
 
   /**
    * @param registry  OrgRegistry backend (GitHubRegistry in production;
@@ -151,6 +159,7 @@ export class OrgManager {
       this.#state.deleteOrgAgent(id);
     }
     this.#store.clear();
+    this.#ownSharedAgentIds.clear();
   }
 
   // ── Reconcile ─────────────────────────────────────────────────────────────
@@ -180,6 +189,10 @@ export class OrgManager {
     const entries = await this.#registry.pullDirectory();
 
     // Step 2 — upsert all pulled entries.
+    // Rebuild ownSharedAgentIds from scratch: entries whose id collides with a
+    // LOCAL agent are the owner's own shares (C1 guard). Clear first so every
+    // reconcile run reflects the current registry state authoritatively.
+    this.#ownSharedAgentIds.clear();
     const pulledIds = new Set<string>();
     for (const entry of entries) {
       // C1: skip entries whose id collides with a LOCAL agent (no org_agents row).
@@ -188,6 +201,7 @@ export class OrgManager {
         console.warn(
           `[OrgManager] reconcile: shared agent id "${entry.id}" collides with a local agent — skipped.`,
         );
+        this.#ownSharedAgentIds.add(entry.id);
         continue;
       }
       this.#state.upsertOrgAgent(entry, orgId);
@@ -232,11 +246,16 @@ export class OrgManager {
       throw new OrgError("conflict", "ORG-06: cannot share agent with empty url");
     }
     await this.#registry.shareAgent(entry);
+    // Track the owner's own share immediately (before the next reconcile confirms
+    // it as a C1 collision). Only reached when the registry call succeeds.
+    this.#ownSharedAgentIds.add(entry.id);
   }
 
   /** Unshare an agent from the registry. */
   async unshareAgent(agentId: string): Promise<void> {
     await this.#registry.unshareAgent(agentId);
+    // Remove from the in-memory set immediately on success.
+    this.#ownSharedAgentIds.delete(agentId);
   }
 
   /** List live registry members. */
@@ -254,5 +273,18 @@ export class OrgManager {
   /** True when a binding file exists and is parseable. */
   isBound(): boolean {
     return this.#store.isBound();
+  }
+
+  /**
+   * Agent ids this instance has shared into the directory.
+   *
+   * Rebuilt on every reconcile() from directory entries that match local agents
+   * (C1 collision ids — those are the owner's own shares). Also updated
+   * immediately by shareAgent/unshareAgent before the next reconcile. Cleared
+   * by leave(). Use this to surface the owner's "Shared" toggle state truthfully
+   * rather than relying on ephemeral frontend optimistic state.
+   */
+  getOwnSharedAgentIds(): string[] {
+    return [...this.#ownSharedAgentIds];
   }
 }
