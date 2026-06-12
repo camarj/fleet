@@ -232,7 +232,13 @@ async function main(): Promise<void> {
     // Verify backward compat: a session created without runId gets NULL.
     const k2State2 = new GatewayState(K2_DB_PATH);
     const nullRunSessionId = k2State2.createSession("agent-k2", "no run");
+    // Review finding (K2): run-attributed sessions are usage-recording
+    // artifacts with no event log — they must NOT surface in the interactive
+    // session list, or they open as broken empty transcripts in the UI.
+    const listed = k2State2.listSessions("agent-k2");
     k2State2.close();
+    assert(listed.some((s) => s.id === nullRunSessionId), "K2: interactive session (run_id NULL) appears in listSessions");
+    assert(!listed.some((s) => s.id === sessionId), "K2: workflow recording session (run_id set) is hidden from listSessions");
     const verifyDb2 = new DatabaseSync(K2_DB_PATH);
     const nullRow = verifyDb2
       .prepare("SELECT run_id FROM sessions WHERE id = ?")
