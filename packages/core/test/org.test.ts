@@ -1907,6 +1907,70 @@ async function testCoreOrgHandlers(): Promise<void> {
 
     await core.shutdown();
   }
+
+  // ── 13t: org.share → ownSharedAgentIds populated; org.unshare → removed ────
+  // Handler-level round trip. org.share requires a routable deploy record, so
+  // we pre-seed a GatewayState file db with the agent + deploy row before
+  // handing the same path to GatewayCore. connectFlue to an unreachable URL
+  // would register the agent but leave no deploy record, failing the ORG-06
+  // routable-target guard inside #orgShare.
+
+  {
+    clearOrgBindingFile();
+    const fake = new FakeRegistry("alice");
+
+    // Pre-seed agent + deploy record into a temp SQLite file so that org.share
+    // finds a routable deploy target without running a real deployment.
+    const tempDbPath = join(DATA_DIR, "test13t.db");
+    {
+      const seedState = new GatewayState(tempDbPath);
+      seedState.upsertAgent(
+        { id: "share-13t-agent", name: "Share 13t Agent", version: "1.0.0", description: "", model: "" },
+        "flue",
+        "https://share-13t.fly.dev/share-13t-agent",
+      );
+      seedState.setDeploy("share-13t-agent", {
+        sourceDir: "/tmp/share-13t",
+        provider: "anthropic",
+        model: "claude-haiku-4-5",
+        target: "fly",
+        repoOwner: null,
+      });
+      seedState.close();
+    }
+
+    const core = new GatewayCore({ dbPath: tempDbPath, orgRegistry: fake, healthIntervalMs: 60_000 });
+    await coreHandle(core, { type: "org.create", repo: "alice/fleet-org", name: "Share Round Trip Org" });
+
+    // org.share → should emit org.status with ownSharedAgentIds containing the id.
+    const shareEvents = await coreHandle(core, { type: "org.share", agentId: "share-13t-agent" });
+    const statusAfterShare = findEvent(shareEvents, "org.status");
+    assert(statusAfterShare !== undefined, "13t: org.share emits org.status");
+    assert(
+      Array.isArray(statusAfterShare!.ownSharedAgentIds),
+      "13t: org.status.ownSharedAgentIds is an array after org.share",
+    );
+    assert(
+      statusAfterShare!.ownSharedAgentIds!.includes("share-13t-agent"),
+      "13t: org.status.ownSharedAgentIds includes the shared agent id after org.share",
+    );
+
+    // org.unshare → should emit org.status with ownSharedAgentIds no longer containing the id.
+    const unshareEvents = await coreHandle(core, { type: "org.unshare", agentId: "share-13t-agent" });
+    const statusAfterUnshare = findEvent(unshareEvents, "org.status");
+    assert(statusAfterUnshare !== undefined, "13t: org.unshare emits org.status");
+    assert(
+      Array.isArray(statusAfterUnshare!.ownSharedAgentIds),
+      "13t: org.status.ownSharedAgentIds is an array after org.unshare",
+    );
+    assert(
+      !statusAfterUnshare!.ownSharedAgentIds!.includes("share-13t-agent"),
+      "13t: org.status.ownSharedAgentIds does NOT include id after org.unshare",
+    );
+
+    await core.shutdown();
+    rmSync(tempDbPath, { force: true });
+  }
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────

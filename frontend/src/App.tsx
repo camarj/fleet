@@ -227,6 +227,7 @@ export function App(): React.JSX.Element {
           myLogin: e.myLogin,
           role: e.role,
           sharedAgentIds: e.sharedAgentIds,
+          ownSharedAgentIds: e.ownSharedAgentIds,
           // Preserve lastSyncedAt across org.status updates (it arrives via org.synced).
           lastSyncedAt: prev?.lastSyncedAt,
         }));

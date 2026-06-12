@@ -96,6 +96,10 @@ export function OrgSection({
   // MUST be declared before the W2 success-path effect that clears pendingShareRef
   // so we can still read the in-flight op and re-apply it on top of server truth.
   useEffect(() => {
+    // `!orgStatus.ownSharedAgentIds` is true only for undefined (older Core /
+    // not yet received) — it skips the effect and preserves the current set.
+    // An empty array [] is truthy, so the effect runs and resets the set to
+    // empty — intentional: [] means the Core confirmed no shares currently exist.
     if (!orgStatus?.bound || !orgStatus.ownSharedAgentIds) return;
     const serverSet = new Set(orgStatus.ownSharedAgentIds);
     const pending = pendingShareRef.current;

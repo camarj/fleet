@@ -864,6 +864,9 @@ export class GatewayCore {
       this.#orgManager = this.#makeOrgManager(binding.repo);
       const result = await this.#orgManager.reconcile();
       await this.#connectOrgAgents(result.orgId);
+      // Broadcast the populated org.status to any clients that connected while
+      // boot sync was in flight (ORG-08: non-blocking but still observable).
+      this.#broadcast({ type: "org.status", ...this.#buildOrgStatus() });
     } catch (err) {
       // Boot sync failure must not prevent Fleet from starting (ORG-11).
       console.error("[gateway-core] org boot sync failed:", (err as Error).message ?? err);

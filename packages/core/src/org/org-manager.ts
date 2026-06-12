@@ -283,6 +283,10 @@ export class OrgManager {
    * immediately by shareAgent/unshareAgent before the next reconcile. Cleared
    * by leave(). Use this to surface the owner's "Shared" toggle state truthfully
    * rather than relying on ephemeral frontend optimistic state.
+   *
+   * @limitation G1: collision detection keys on agent id only. An id-colliding
+   * entry shared by a DIFFERENT member would be misattributed as the local
+   * owner's own share — sharedBy is not compared. Acceptable for G1 scope.
    */
   getOwnSharedAgentIds(): string[] {
     return [...this.#ownSharedAgentIds];
