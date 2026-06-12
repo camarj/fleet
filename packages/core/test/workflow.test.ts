@@ -12,6 +12,7 @@
 import { mkdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { GatewayState } from "../src/state/index.js";
 
 const DIR = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(DIR, "..", ".workflow-test");
@@ -112,6 +113,79 @@ async function main(): Promise<void> {
     assert(wfs?.workflows.some((w) => w.id === "wf-greeting") === true, "saved workflow persists after restart");
   } finally {
     await core2.shutdown();
+  }
+
+  // ── K4: orphaned run reconciliation ─────────────────────────────────────────
+  console.log("\n[6] K4 — orphaned runs are reconciled on Core startup …");
+  {
+    const K4_DB_PATH = join(DATA_DIR, "k4.db");
+    // Seed: create a run that is left 'running' (simulates a crash mid-run).
+    const seedState = new GatewayState(K4_DB_PATH);
+    // A FK-valid workflow must exist before the run row can be inserted.
+    seedState.saveWorkflow({ id: "wf-k4", name: "K4 Test", nodes: [], edges: [] });
+    seedState.createWorkflowRun("wfr_orphan", "wf-k4", {});
+    seedState.close();
+
+    // Boot a new Core over the same DB — constructor must reconcile immediately.
+    const coreK4 = new GatewayCore({ dbPath: K4_DB_PATH });
+
+    // Query through a second GatewayState instance (same file).
+    const verifyState = new GatewayState(K4_DB_PATH);
+    const runRow = verifyState.getWorkflowRunStatus("wfr_orphan");
+    verifyState.close();
+    await coreK4.shutdown();
+
+    assert(runRow !== null, "K4: orphaned run row still exists after reconcile");
+    assert(runRow?.status === "failed", "K4: orphaned run was moved to status 'failed'");
+    assert(runRow?.endedAt !== null, "K4: orphaned run has ended_at set after reconcile");
+  }
+
+  // ── K6: concurrent-run guard ─────────────────────────────────────────────────
+  console.log("\n[7] K6 — second concurrent run of the same workflow is rejected …");
+  {
+    const K6_DB_PATH = join(DATA_DIR, "k6.db");
+    const coreK6 = new GatewayCore({ dbPath: K6_DB_PATH });
+    // Save the same input→output workflow (no agents).
+    await send(coreK6, { type: "workflow.save", workflow: WF });
+
+    const workflowId = WF.id;
+    const events1: ServerEvent[] = [];
+    const events2: ServerEvent[] = [];
+    // Fire both in the same tick before awaiting — guard must reject the second.
+    const p1 = coreK6.handle({ type: "workflow.run", workflowId, inputs: {} }, (e) => events1.push(e));
+    const p2 = coreK6.handle({ type: "workflow.run", workflowId, inputs: {} }, (e) => events2.push(e));
+    await Promise.all([p1, p2]);
+
+    assert(
+      events1.some((e) => e.type === "workflow.run.started"),
+      "K6: first run emits workflow.run.started",
+    );
+    assert(
+      events1.some((e) => e.type === "workflow.run.done"),
+      "K6: first run emits workflow.run.done",
+    );
+    assert(
+      events2.some((e) => e.type === "error" && e.message.includes("already running")),
+      "K6: second concurrent run emits error with 'already running'",
+    );
+    assert(
+      !events2.some((e) => e.type === "workflow.run.started"),
+      "K6: second concurrent run does NOT emit workflow.run.started",
+    );
+
+    // A third run AFTER the first completes must succeed (guard must be cleared).
+    const events3: ServerEvent[] = [];
+    await coreK6.handle({ type: "workflow.run", workflowId, inputs: {} }, (e) => events3.push(e));
+    assert(
+      events3.some((e) => e.type === "workflow.run.started"),
+      "K6: third run (after first completes) emits workflow.run.started",
+    );
+    assert(
+      events3.some((e) => e.type === "workflow.run.done"),
+      "K6: third run (after first completes) emits workflow.run.done",
+    );
+
+    await coreK6.shutdown();
   }
 
   rmSync(DATA_DIR, { recursive: true, force: true });

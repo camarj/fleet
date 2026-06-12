@@ -90,6 +90,8 @@ export class GatewayCore {
   #healthTickInFlight = false;
   /** Active workflow runs → their abort controller (for workflow.abort). */
   readonly #workflowRuns = new Map<string, AbortController>();
+  /** K6: one active run per workflow — workflowId → runId of the run in flight. */
+  readonly #activeWorkflowRuns = new Map<string, string>();
   readonly #orchestrator: Orchestrator;
   // ── Org registry (G1) ─────────────────────────────────────────────────────
   readonly #orgStore: OrgStore;
@@ -99,9 +101,13 @@ export class GatewayCore {
 
   constructor(options: GatewayCoreOptions = {}) {
     this.#state = new GatewayState(options.dbPath ?? ":memory:");
+    // K4: runs left 'running' by a previous process are unfinishable — fail them now.
+    this.#state.reconcileOrphanedWorkflowRuns();
     this.#orgStore = new OrgStore();
     this.#orgRegistryOverride = options.orgRegistry;
-    this.#orchestrator = new Orchestrator(this.#agentRunner());
+    this.#orchestrator = new Orchestrator(this.#agentRunner(), {
+      nodeTimeoutMs: Number(process.env.GATEWAY_WORKFLOW_NODE_TIMEOUT_MS ?? 600_000),
+    });
     this.#startHealthMonitor(options.healthIntervalMs ?? 15_000);
     // Attempt to reconnect any agents that were persisted from a previous run.
     // Fire-and-forget — construction is synchronous; failures are swallowed and
@@ -207,6 +213,7 @@ export class GatewayCore {
     // Abort any in-flight workflow runs so their agent calls stop.
     for (const controller of this.#workflowRuns.values()) controller.abort();
     this.#workflowRuns.clear();
+    this.#activeWorkflowRuns.clear();
     for (const reg of this.#agents.values()) {
       await reg.adapter.close().catch(() => {});
     }
@@ -520,9 +527,18 @@ export class GatewayCore {
       return;
     }
 
+    // K6: reject a second concurrent run of the same workflow — concurrent runs
+    // interleave against the same agents and double cost with no benefit in v1.
+    const activeRun = this.#activeWorkflowRuns.get(req.workflowId);
+    if (activeRun) {
+      emit({ type: "error", message: `workflow is already running (run ${activeRun}) — abort it or wait`, requestType: req.type });
+      return;
+    }
+
     const runId = `wfr_${randomUUID()}`;
     const controller = new AbortController();
     this.#workflowRuns.set(runId, controller);
+    this.#activeWorkflowRuns.set(req.workflowId, runId);
     this.#state.createWorkflowRun(runId, req.workflowId, req.inputs);
     emit({ type: "workflow.run.started", runId, workflowId: req.workflowId });
 
@@ -538,6 +554,7 @@ export class GatewayCore {
 
     this.#state.finishWorkflowRun(runId, result.status, result.outputs);
     this.#workflowRuns.delete(runId);
+    this.#activeWorkflowRuns.delete(req.workflowId);
     emit({ type: "workflow.run.done", runId, status: result.status, outputs: result.outputs });
   }
 

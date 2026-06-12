@@ -533,6 +533,28 @@ export class GatewayState {
       .run(status, JSON.stringify(outputs), new Date().toISOString(), id);
   }
 
+  /** Return the status and ended_at for a workflow run row, or null if not found. */
+  getWorkflowRunStatus(id: string): { status: string; endedAt: string | null } | null {
+    const row = this.#db
+      .prepare(`SELECT status, ended_at FROM workflow_runs WHERE id = ?`)
+      .get(id) as { status: string; ended_at: string | null } | undefined;
+    return row ? { status: row.status, endedAt: row.ended_at } : null;
+  }
+
+  /** K4: a Core crash mid-run leaves workflow_runs rows stuck at 'running'.
+   * Called once at startup — anything still 'running' belongs to a dead process. */
+  reconcileOrphanedWorkflowRuns(): number {
+    const res = this.#db
+      .prepare(
+        `UPDATE workflow_runs SET status = 'failed',
+           outputs_json = COALESCE(outputs_json, '{}'),
+           ended_at = ?
+         WHERE status = 'running'`,
+      )
+      .run(new Date().toISOString());
+    return Number(res.changes);
+  }
+
   // ── Sessions ───────────────────────────────────────────────────────────────
 
   createSession(agentId: string, preview = ""): string {
