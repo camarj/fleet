@@ -34,6 +34,9 @@ export interface StoredAgent {
   kind: AgentKind;
   /** The Flue agent's base URL. */
   sourceRef: string;
+  /** Stable Flue instanceId — persisted so Flue's server-side SessionData
+   * (keyed by instanceId) survives Core restarts and reconnects (J1). */
+  flueInstanceId: string | null;
   updatedAt: string;
 }
 
@@ -96,9 +99,10 @@ CREATE TABLE IF NOT EXISTS agents (
   description TEXT NOT NULL DEFAULT '',
   model       TEXT NOT NULL DEFAULT '',
   kind        TEXT NOT NULL,
-  source_ref  TEXT NOT NULL,
-  created_at  TEXT NOT NULL,
-  updated_at  TEXT NOT NULL
+  source_ref       TEXT NOT NULL,
+  flue_instance_id TEXT,
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS configs (
@@ -206,6 +210,9 @@ export class GatewayState {
     this.#addColumnIfMissing(`ALTER TABLE deploys ADD COLUMN log TEXT`);
     // feat(deploy): add `repo_owner` column — GitHub account or org that received the pushed repo.
     this.#addColumnIfMissing(`ALTER TABLE deploys ADD COLUMN repo_owner TEXT`);
+    // J1: stable Flue instanceId per agent — Flue keys server-side conversation
+    // memory (SessionData) by instanceId; persisting it makes memory survive reconnects.
+    this.#addColumnIfMissing(`ALTER TABLE agents ADD COLUMN flue_instance_id TEXT`);
     // B3: usage.summary filters by recorded_at — keep it off the full-scan path.
     this.#db.exec(`CREATE INDEX IF NOT EXISTS idx_usage_recorded_at ON usage(recorded_at)`);
   }
@@ -376,6 +383,14 @@ export class GatewayState {
    */
   deleteAgent(id: string): void {
     this.#db.prepare(`DELETE FROM agents WHERE id = ?`).run(id);
+  }
+
+  /** Persist the Flue instanceId an adapter resolved for this agent (J1). */
+  setAgentFlueInstanceId(agentId: string, instanceId: string): void {
+    const now = new Date().toISOString();
+    this.#db
+      .prepare(`UPDATE agents SET flue_instance_id = ?, updated_at = ? WHERE id = ?`)
+      .run(instanceId, now, agentId);
   }
 
   // ── Org agents (org_agents provenance satellite) ───────────────────────────
@@ -687,6 +702,7 @@ interface AgentDbRow {
   model: string;
   kind: string;
   source_ref: string;
+  flue_instance_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -735,6 +751,7 @@ function rowToAgent(row: AgentDbRow): StoredAgent {
     model: row.model,
     kind: row.kind as AgentKind,
     sourceRef: row.source_ref,
+    flueInstanceId: row.flue_instance_id ?? null,
     updatedAt: row.updated_at,
   };
 }
