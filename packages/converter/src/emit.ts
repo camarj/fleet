@@ -196,29 +196,37 @@ function emitAgentModule(
     const opts: string[] = [`  url: process.env.${env} ?? ${q(mcp.url)},`];
     if (mcp.transport === "sse") opts.push(`  transport: "sse",`);
     if (mcp.headers && Object.keys(mcp.headers).length > 0) opts.push(`  headers: ${json(mcp.headers)},`);
-    mcpBlocks.push(`const ${id} = await connectMcpServer(${q(mcp.name)}, {\n${opts.join("\n")}\n});`);
+    // I9: route http servers through the tolerant helper so a DNS failure or
+    // downed server does not prevent the agent from booting.
+    mcpBlocks.push(`const ${id} = await tryConnectMcpServer(${q(mcp.name)}, {\n${opts.join("\n")}\n});`);
   }
   // Bridged stdio servers run as sidecars started by start.mjs. They are reached
   // over localhost — no env-override URL because the port is internal and fixed at
   // emit time. connectMcpServer defaults to streamable-http, which matches
   // supergateway's --outputTransport streamableHttp. No `transport` field needed.
+  // Emit the tolerant connect helper whenever any MCP server is configured
+  // (http or bridged). One unreachable server must not crash the whole agent
+  // at boot (Fleet backlog I9).
   const tryHelperLines: string[] = [];
-  if (bridgedMcp.length > 0) {
+  if (httpMcp.length > 0 || bridgedMcp.length > 0) {
     tryHelperLines.push(
       `/**`,
-      ` * Bridged stdio MCP servers run as a sidecar started by start.mjs. If the`,
-      ` * bridge is not up (e.g. a bare \`node dist/server.mjs\` run that bypasses`,
-      ` * start.mjs), boot WITHOUT those tools instead of crashing.`,
+      ` * Connect an MCP server tolerantly: if it is unreachable at boot (bridged`,
+      ` * sidecar not started, remote http server down or DNS-unresolvable), boot`,
+      ` * WITHOUT that server's tools instead of crashing the agent. One missing`,
+      ` * integration must not take the whole agent down (Fleet backlog I9).`,
       ` */`,
       `async function tryConnectMcpServer(name: string, options: Parameters<typeof connectMcpServer>[1]) {`,
       `  try {`,
       `    return await connectMcpServer(name, options);`,
       `  } catch (err) {`,
-      `    console.warn(\`[fleet] bridged MCP "\${name}" unavailable: \${err instanceof Error ? err.message : String(err)}\`);`,
+      `    console.warn(\`[fleet] MCP "\${name}" unavailable: \${err instanceof Error ? err.message : String(err)}\`);`,
       `    return { tools: [] as never[] };`,
       `  }`,
       `}`,
     );
+  }
+  if (bridgedMcp.length > 0) {
     for (const mcp of bridgedMcp) {
       const id = uniqueIdent(mcp.name + "Mcp", used);
       mcpIdents.push(id);
