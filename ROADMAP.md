@@ -40,11 +40,14 @@ per-agent config + own state.
 > machine that runs them — only remote targets (`fly`, `cloudflare`, `dokploy`,
 > `github`-hosted) are shareable.
 
-- [ ] **Org registry service (multi-user)**: a central component that holds the
+- [x] **Org registry service (multi-user)**: a central component that holds the
       organization, its members, and the shared agent directory. Owner invites
       users; members' Fleet instances sync the shared agents (URL + target +
       config — never secrets). Needs auth (the WU-20 token model is single-user;
       this requires real identity) and roles (owner / member to start).
+      _Shipped as G1 (PRs #24–#34), live-verified 2026-06-12: GitHub identity via
+      gh, private repo as registry, collaborators = membership, OrgRegistry seam
+      keeps a future hosted service a one-class swap._
 - [ ] **Shared agent state & memory**: agents in an org share conversation
       state/memory plus org-level governance and context (system-prompt-level
       org rules, shared knowledge). Requires a shared backing store the deployed
