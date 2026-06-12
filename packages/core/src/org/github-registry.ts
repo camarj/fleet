@@ -155,6 +155,24 @@ function validatePathSegment(value: string, label: string): void {
 /** Safe filename allowlist for agents/ directory entries (traversal guard). */
 const SAFE_AGENT_NAME_RE = /^[a-zA-Z0-9_-]+\.json$/;
 
+/** GitHub repo slug: owner/name, both segments letters/digits/._- only. */
+const REPO_SLUG_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+/**
+ * Validate an owner/name repo slug BEFORE any gh call. A malformed slug (stray
+ * punctuation, spaces, missing owner) otherwise produces misleading downstream
+ * failures — e.g. GitHub normalizes the name on `repo create`, reports "already
+ * exists", and the follow-up Contents write 404s on the literal path.
+ */
+export function validateRepoSlug(repo: string): void {
+  if (!REPO_SLUG_RE.test(repo)) {
+    throw new OrgError(
+      "notFound",
+      `Invalid registry repo "${repo}" — expected owner/name (letters, digits, ".", "_", "-").`,
+    );
+  }
+}
+
 // ── GitHubRegistry ────────────────────────────────────────────────────────────
 
 /**
@@ -168,6 +186,7 @@ export class GitHubRegistry implements OrgRegistry {
   readonly #exec: GhExecFn;
 
   constructor(repo: string, exec: GhExecFn = defaultExec) {
+    validateRepoSlug(repo);
     this.#repo = repo;
     this.#exec = exec;
   }

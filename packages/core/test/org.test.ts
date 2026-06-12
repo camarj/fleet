@@ -508,6 +508,30 @@ function makeExec(
 async function testGitHubRegistryExecSeam(): Promise<void> {
   console.log("\n[11] GitHubRegistry: exec-seam unit tests …");
 
+  // ── 11v: constructor rejects malformed repo slugs before any gh call ─────
+  // (Live finding: a pasted trailing ")" made gh "create" report already-exists
+  // after GitHub normalized the name, then the Contents write 404'd.)
+
+  for (const bad of ["Intelliaa/fleet-org)", "no-slash", "owner/na me", "owner/", "/name"]) {
+    let threw = false;
+    try {
+      new GitHubRegistry(bad, makeExec([]));
+    } catch (err) {
+      threw = err instanceof OrgError && err.message.includes("Invalid registry repo");
+    }
+    assert(threw, `11v: constructor rejects malformed slug "${bad}"`);
+  }
+  {
+    let ok = true;
+    try {
+      new GitHubRegistry("Intelliaa/fleet-org", makeExec([]));
+      new GitHubRegistry("user.name/repo_1.x-y", makeExec([]));
+    } catch {
+      ok = false;
+    }
+    assert(ok, "11v: valid owner/name slugs are accepted");
+  }
+
   // ── 11a: classifyGhError — error code mapping ───────────────────────────
 
   const err404 = classifyGhError({ status: 1, stdout: '{"message":"Not Found","status":"404"}', stderr: "gh: Not Found (HTTP 404)" });
