@@ -5,12 +5,13 @@
  *
  * The generated agent module always exports `route` + `websocket` middleware —
  * without them a built Flue agent is not routable (WS0 finding). MCP servers are
- * wired only when HTTP (Flue's connectMcpServer is HTTP-only); stdio servers are
- * reported as unmapped.
+ * wired when HTTP (Flue's connectMcpServer is HTTP-only). For node targets, stdio
+ * servers with safe arguments are bridged in-container via supergateway (verified
+ * against supergateway 3.4.3); the rest are reported as unmapped.
  */
 
 import { resolveModel } from "./providers.js";
-import type { ClaudeProject, ConvertOptions, FlueFile, FlueProject, UnmappedItem } from "./types.js";
+import type { ClaudeProject, ConvertOptions, FlueFile, FlueProject, McpServerSpec, UnmappedItem } from "./types.js";
 
 const FLUE_VERSION = "0.10.1";
 // Cloudflare Agents SDK — a PEER dependency of `flue build --target cloudflare`
@@ -21,6 +22,15 @@ const AGENTS_VERSION = "0.15.0";
 // Cloudflare requires this minimum for SQLite-backed Durable Objects, nodejs_compat
 // v2, and AsyncLocalStorage. A fixed constant (not "today") keeps output deterministic.
 const CF_COMPAT_DATE = "2026-04-01";
+// stdio→HTTP bridge: "Run MCP stdio servers over SSE, Streamable HTTP or vice versa".
+// CLI: npx supergateway --stdio "<cmd>" --outputTransport streamableHttp --port <n>
+// Verified against npm registry, supergateway 3.4.3, 2026-06-12.
+const SUPERGATEWAY_VERSION = "3.4.3";
+// First bridge port (inclusive). Each stdio MCP server gets the next integer in sorted name order.
+const BRIDGE_BASE_PORT = 3100;
+
+/** A stdio MCP server that has been assigned an in-container bridge port. */
+type BridgedStdioServer = Extract<McpServerSpec, { kind: "stdio" }> & { port: number };
 
 export function emitFlueProject(project: ClaudeProject, opts: ConvertOptions = {}): FlueProject {
   const { specifier, provider } = resolveModel(project.sourceModel, opts);
@@ -34,12 +44,49 @@ export function emitFlueProject(project: ClaudeProject, opts: ConvertOptions = {
   const nodeSandbox = opts.target !== "cloudflare";
 
   const files: FlueFile[] = [];
-  const httpMcp = project.mcpServers.filter((m): m is Extract<typeof m, { kind: "http" }> => m.kind === "http");
+  const httpMcp = project.mcpServers.filter((m): m is Extract<McpServerSpec, { kind: "http" }> => m.kind === "http");
+
+  // Stdio MCP servers, sorted by name so port assignment is deterministic.
+  const stdioMcp = project.mcpServers
+    .filter((m): m is Extract<McpServerSpec, { kind: "stdio" }> => m.kind === "stdio")
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  // A server is bridgeable when args contain no whitespace or quote chars (supergateway
+  // receives the whole stdio command as one argv string — arg-level quoting bypasses the
+  // shell, so an arg with embedded spaces or quotes would silently misparse). The command
+  // itself may contain spaces (supergateway shells the --stdio value) but must not contain
+  // quotes, which would break the surrounding shell quoting.
+  type StdioServer = Extract<McpServerSpec, { kind: "stdio" }>;
+  const isBridgeable = (m: StdioServer): boolean =>
+    !/["']/.test(m.command) && (m.args ?? []).every((a: string) => !/[\s"']/.test(a));
+
+  const bridged: BridgedStdioServer[] = [];
+  for (const m of stdioMcp) {
+    if (nodeSandbox) {
+      if (isBridgeable(m)) {
+        bridged.push({ ...m, port: BRIDGE_BASE_PORT + bridged.length });
+      } else {
+        unmapped.push({
+          kind: "mcp-stdio",
+          name: m.name,
+          reason: `Flue's connectMcpServer is HTTP-only; supergateway cannot bridge this stdio server (command: ${m.command}) because its args contain quoting-unsafe characters. Expose it over HTTP/SSE manually to use it.`,
+        });
+      }
+    } else {
+      // Cloudflare Workers cannot spawn subprocesses, so the in-container bridge is
+      // unavailable on this target. Report honestly so the operator can act.
+      unmapped.push({
+        kind: "mcp-stdio",
+        name: m.name,
+        reason: `Flue's connectMcpServer is HTTP-only, so this stdio server (command: ${m.command}) was NOT wired. Cloudflare Workers cannot run subprocesses, so the in-container bridge is unavailable on this target. Expose it over HTTP/SSE to use it.`,
+      });
+    }
+  }
 
   // ── the agent module ──
   files.push({
     path: `src/agents/${project.name}.ts`,
-    content: emitAgentModule(project, specifier, swapped, httpMcp, unmapped, nodeSandbox),
+    content: emitAgentModule(project, specifier, swapped, httpMcp, bridged, unmapped, nodeSandbox),
   });
 
   // ── skills (copied verbatim under src/skills/<name>/) ──
@@ -51,16 +98,21 @@ export function emitFlueProject(project: ClaudeProject, opts: ConvertOptions = {
 
   // ── project scaffold ──
   files.push({ path: "flue.config.ts", content: FLUE_CONFIG });
-  files.push({ path: "package.json", content: emitPackageJson() });
-  files.push({ path: "Dockerfile", content: DOCKERFILE });
+  files.push({ path: "package.json", content: emitPackageJson(bridged.length > 0) });
+  files.push({ path: "Dockerfile", content: emitDockerfile(bridged.length > 0) });
   files.push({ path: "wrangler.jsonc", content: emitWrangler(project.name) });
   files.push({ path: ".github/workflows/deploy.yml", content: DEPLOY_WORKFLOW });
-  files.push({ path: ".env.example", content: emitEnvExample(provider.apiKeyEnv, httpMcp, project.env) });
+  files.push({ path: ".env.example", content: emitEnvExample(provider.apiKeyEnv, httpMcp, stdioMcp, project.env) });
   files.push({ path: ".gitignore", content: "dist/\ndata/\nnode_modules/\n.env\n" });
   files.push({
     path: "README.md",
-    content: emitReadme(project, specifier, provider.apiKeyEnv, httpMcp, unmapped, nodeSandbox),
+    content: emitReadme(project, specifier, provider.apiKeyEnv, httpMcp, bridged, unmapped, nodeSandbox),
   });
+
+  // ── start.mjs (only when there are bridged stdio servers) ──
+  if (bridged.length > 0) {
+    files.push({ path: "start.mjs", content: emitStartMjs(bridged) });
+  }
 
   files.sort((a, b) => a.path.localeCompare(b.path));
 
@@ -73,6 +125,7 @@ export function emitFlueProject(project: ClaudeProject, opts: ConvertOptions = {
       subagents: project.subagents.map((s) => s.name),
       skills: project.skills.map((s) => s.name),
       mcpHttp: httpMcp.map((m) => m.name),
+      mcpStdioBridged: bridged.map((m) => m.name),
       unmapped,
     },
   };
@@ -85,6 +138,7 @@ function emitAgentModule(
   specifier: string,
   swapped: boolean,
   httpMcp: Array<{ name: string; url: string; headers?: Record<string, string>; transport?: string }>,
+  bridgedMcp: BridgedStdioServer[],
   unmapped: UnmappedItem[],
   nodeSandbox: boolean,
 ): string {
@@ -128,11 +182,14 @@ function emitAgentModule(
     skillImports.push(`import ${id} from "../skills/${skill.name}/SKILL.md" with { type: "skill" };`);
   }
 
-  // MCP (http only) — top-level await
+  // MCP — top-level await for both HTTP and bridged-stdio servers.
+  // connectMcpServer is imported whenever there are HTTP or bridged servers.
   const mcpIdents: string[] = [];
   const mcpBlocks: string[] = [];
-  for (const mcp of httpMcp) {
+  if (httpMcp.length > 0 || bridgedMcp.length > 0) {
     imports.add("connectMcpServer");
+  }
+  for (const mcp of httpMcp) {
     const id = uniqueIdent(mcp.name + "Mcp", used);
     mcpIdents.push(id);
     const env = `${upperSnake(mcp.name)}_MCP_URL`;
@@ -140,6 +197,33 @@ function emitAgentModule(
     if (mcp.transport === "sse") opts.push(`  transport: "sse",`);
     if (mcp.headers && Object.keys(mcp.headers).length > 0) opts.push(`  headers: ${json(mcp.headers)},`);
     mcpBlocks.push(`const ${id} = await connectMcpServer(${q(mcp.name)}, {\n${opts.join("\n")}\n});`);
+  }
+  // Bridged stdio servers run as sidecars started by start.mjs. They are reached
+  // over localhost — no env-override URL because the port is internal and fixed at
+  // emit time. connectMcpServer defaults to streamable-http, which matches
+  // supergateway's --outputTransport streamableHttp. No `transport` field needed.
+  const tryHelperLines: string[] = [];
+  if (bridgedMcp.length > 0) {
+    tryHelperLines.push(
+      `/**`,
+      ` * Bridged stdio MCP servers run as a sidecar started by start.mjs. If the`,
+      ` * bridge is not up (e.g. a bare \`node dist/server.mjs\` run that bypasses`,
+      ` * start.mjs), boot WITHOUT those tools instead of crashing.`,
+      ` */`,
+      `async function tryConnectMcpServer(name: string, options: Parameters<typeof connectMcpServer>[1]) {`,
+      `  try {`,
+      `    return await connectMcpServer(name, options);`,
+      `  } catch (err) {`,
+      `    console.warn(\`[fleet] bridged MCP "\${name}" unavailable: \${err instanceof Error ? err.message : String(err)}\`);`,
+      `    return { tools: [] as never[] };`,
+      `  }`,
+      `}`,
+    );
+    for (const mcp of bridgedMcp) {
+      const id = uniqueIdent(mcp.name + "Mcp", used);
+      mcpIdents.push(id);
+      mcpBlocks.push(`const ${id} = await tryConnectMcpServer(${q(mcp.name)}, {\n  url: "http://127.0.0.1:${mcp.port}/mcp",\n});`);
+    }
   }
 
   // createAgent config
@@ -167,6 +251,7 @@ function emitAgentModule(
   if (skillImports.length) out.push(...skillImports);
   out.push("");
   if (profileBlocks.length) out.push(profileBlocks.join("\n\n"), "");
+  if (tryHelperLines.length) out.push(tryHelperLines.join("\n"), "");
   if (mcpBlocks.length) out.push(mcpBlocks.join("\n\n"), "");
   out.push(`export default createAgent(() => ({`);
   out.push(...cfg);
@@ -183,6 +268,77 @@ function emitAgentModule(
   return out.join("\n");
 }
 
+// ── start.mjs codegen ────────────────────────────────────────────────────────
+
+/**
+ * Emit the container entrypoint that starts one supergateway bridge per bridged
+ * stdio MCP server, waits for each port to accept connections, then starts the
+ * Flue server. Only emitted when `bridged.length > 0`.
+ *
+ * Bridge facts verified against supergateway 3.4.3 (--stdio + --outputTransport
+ * streamableHttp, default path /mcp).
+ */
+function emitStartMjs(bridged: BridgedStdioServer[]): string {
+  const bridgesLiteral = bridged
+    .map((m) => {
+      const cmd = [m.command, ...(m.args ?? [])].join(" ");
+      return `  { name: ${q(m.name)}, port: ${m.port}, command: ${q(cmd)} },`;
+    })
+    .join("\n");
+
+  return (
+    `/**\n` +
+    ` * Container entrypoint — starts one supergateway bridge per stdio MCP server,\n` +
+    ` * waits for each port to accept connections, then starts the Flue server.\n` +
+    ` * Generated by @inteliside/gateway-converter; bridge facts verified against\n` +
+    ` * supergateway ${SUPERGATEWAY_VERSION} (--stdio + --outputTransport streamableHttp, path /mcp).\n` +
+    ` */\n` +
+    `import { spawn } from "node:child_process";\n` +
+    `import { connect } from "node:net";\n` +
+    `\n` +
+    `const BRIDGES = [\n` +
+    bridgesLiteral +
+    `\n];\n` +
+    `\n` +
+    `const children = [];\n` +
+    `for (const b of BRIDGES) {\n` +
+    `  // The command is passed as ONE argv entry — no shell interpolation on our side.\n` +
+    `  const child = spawn(\n` +
+    `    "npx",\n` +
+    `    ["supergateway", "--stdio", b.command, "--outputTransport", "streamableHttp", "--port", String(b.port)],\n` +
+    `    { stdio: "inherit" }, // env inherited: container env (incl. the server's vars) reaches the wrapped process\n` +
+    `  );\n` +
+    `  children.push(child);\n` +
+    `}\n` +
+    `\n` +
+    `function waitForPort(port, timeoutMs = 15000) {\n` +
+    `  return new Promise((resolve) => {\n` +
+    `    const started = Date.now();\n` +
+    `    const tryOnce = () => {\n` +
+    `      const sock = connect({ port, host: "127.0.0.1" }, () => { sock.destroy(); resolve(true); });\n` +
+    `      sock.on("error", () => {\n` +
+    `        sock.destroy();\n` +
+    `        if (Date.now() - started > timeoutMs) resolve(false);\n` +
+    `        else setTimeout(tryOnce, 250);\n` +
+    `      });\n` +
+    `    };\n` +
+    `    tryOnce();\n` +
+    `  });\n` +
+    `}\n` +
+    `\n` +
+    `for (const b of BRIDGES) {\n` +
+    `  const up = await waitForPort(b.port);\n` +
+    `  if (!up) console.warn(\`[fleet] bridge "\${b.name}" did not come up on :\${b.port} — the agent will boot without it\`);\n` +
+    `}\n` +
+    `\n` +
+    `const server = spawn("node", ["dist/server.mjs"], { stdio: "inherit" });\n` +
+    `for (const sig of ["SIGTERM", "SIGINT"]) {\n` +
+    `  process.on(sig, () => { server.kill(sig); for (const c of children) c.kill(sig); });\n` +
+    `}\n` +
+    `server.on("exit", (code) => { for (const c of children) c.kill("SIGTERM"); process.exit(code ?? 0); });\n`
+  );
+}
+
 // ── scaffold files ────────────────────────────────────────────────────────────
 
 const FLUE_CONFIG = `import { defineConfig } from '@flue/cli/config';
@@ -193,11 +349,20 @@ export default defineConfig({
 `;
 
 // A CONSTANT package.json name (not the agent name) so the manifest is
-// byte-identical across every converted agent. That lets Docker's layer cache
-// SHARE the heavy `npm install` layer across all agents — it is built once and
-// reused, instead of re-running per agent. The agent's identity comes from the
+// byte-identical across agents within the same bridging class. Agents that use
+// in-container stdio bridges ("bridged" class) share one `npm install` Docker
+// layer; agents without them share another. The agent's identity comes from the
 // src/agents/<name>.ts filename, not this field.
-function emitPackageJson(): string {
+function emitPackageJson(hasBridged: boolean): string {
+  const dependencies: Record<string, string> = {
+    "@flue/runtime": FLUE_VERSION,
+    agents: AGENTS_VERSION,
+  };
+  // supergateway is only needed when the container entrypoint (start.mjs) bridges
+  // one or more stdio MCP servers. Verified against supergateway 3.4.3.
+  if (hasBridged) {
+    dependencies["supergateway"] = SUPERGATEWAY_VERSION;
+  }
   return (
     JSON.stringify(
       {
@@ -209,14 +374,14 @@ function emitPackageJson(): string {
         scripts: {
           dev: "flue dev --target node",
           build: "flue build --target node",
-          start: "node dist/server.mjs",
+          // When bridged servers are present, start.mjs launches the supergateway
+          // sidecars and then execs the Flue server. Without bridges, the Flue
+          // server starts directly.
+          start: hasBridged ? "node start.mjs" : "node dist/server.mjs",
           "build:cloudflare": "flue build --target cloudflare",
           "deploy:cloudflare": "wrangler deploy",
         },
-        dependencies: {
-          "@flue/runtime": FLUE_VERSION,
-          agents: AGENTS_VERSION,
-        },
+        dependencies,
         devDependencies: {
           "@flue/cli": FLUE_VERSION,
         },
@@ -227,18 +392,28 @@ function emitPackageJson(): string {
   );
 }
 
-const DOCKERFILE = `# Deployable Flue agent (Node target). Built by @inteliside/gateway-converter.
-FROM node:22-slim
-WORKDIR /app
-COPY package.json ./
-RUN npm install
-COPY . .
-RUN npx flue build --target node
-ENV HOST=0.0.0.0
-ENV PORT=8080
-EXPOSE 8080
-CMD ["node", "dist/server.mjs"]
-`;
+/**
+ * Emit the Dockerfile. The only variable part is the CMD: when stdio bridges are
+ * present, the entrypoint is start.mjs (which starts bridges then the server);
+ * otherwise the Flue server starts directly.
+ */
+function emitDockerfile(hasBridged: boolean): string {
+  const cmd = hasBridged ? `CMD ["node", "start.mjs"]` : `CMD ["node", "dist/server.mjs"]`;
+  return (
+    `# Deployable Flue agent (Node target). Built by @inteliside/gateway-converter.\n` +
+    `FROM node:22-slim\n` +
+    `WORKDIR /app\n` +
+    `COPY package.json ./\n` +
+    `RUN npm install\n` +
+    `COPY . .\n` +
+    `RUN npx flue build --target node\n` +
+    `ENV HOST=0.0.0.0\n` +
+    `ENV PORT=8080\n` +
+    `EXPOSE 8080\n` +
+    cmd +
+    `\n`
+  );
+}
 
 /**
  * Cloudflare Workers config for `flue build --target cloudflare`.
@@ -315,20 +490,31 @@ jobs:
 function emitEnvExample(
   apiKeyEnv: string,
   httpMcp: Array<{ name: string; url: string }>,
+  stdioMcp: Array<{ name: string; env?: Record<string, string> }>,
   env: Record<string, string> = {},
 ): string {
   const lines = [`# Model provider key (the agent reads this at runtime).`, `${apiKeyEnv}=`];
   for (const mcp of httpMcp) {
     lines.push("", `# Optional override for the "${mcp.name}" MCP server URL.`, `${upperSnake(mcp.name)}_MCP_URL=`);
   }
+  // Env vars declared on stdio MCP servers in .mcp.json. Values are DROPPED —
+  // only the names surface here (rule #8: secrets only in env vars, never in the repo).
+  // The container env reaches the bridged process via `{ stdio: "inherit" }` in start.mjs.
+  for (const mcp of stdioMcp) {
+    const names = Object.keys(mcp.env ?? {}).sort();
+    if (names.length > 0) {
+      lines.push("", `# Env vars for the "${mcp.name}" stdio MCP server (passed through to the bridged process).`);
+      for (const name of names) lines.push(`${name}=`);
+    }
+  }
   // Env vars declared in the source project's settings(.local).json `env` block.
   // NAMES only (never the values — secrets stay out of the repo, per Fleet rules).
-  const names = Object.keys(env)
+  const settingsEnvNames = Object.keys(env)
     .filter((k) => k !== apiKeyEnv)
     .sort();
-  if (names.length > 0) {
+  if (settingsEnvNames.length > 0) {
     lines.push("", `# From the source project's .claude/settings.json "env" block — fill in real values.`);
-    for (const name of names) lines.push(`${name}=`);
+    for (const name of settingsEnvNames) lines.push(`${name}=`);
   }
   return lines.join("\n") + "\n";
 }
@@ -338,6 +524,7 @@ function emitReadme(
   specifier: string,
   apiKeyEnv: string,
   httpMcp: Array<{ name: string }>,
+  bridgedMcp: Array<{ name: string; port: number }>,
   unmapped: UnmappedItem[],
   nodeSandbox: boolean,
 ): string {
@@ -347,7 +534,7 @@ function emitReadme(
   lines.push(`## Model`, "");
   lines.push(`- Specifier: \`${specifier}\``);
   lines.push(`- Set \`${apiKeyEnv}\` in the environment (see \`.env.example\`).`, "");
-  lines.push(`## Run`, "", "```bash", "npm install", `export ${apiKeyEnv}=...`, "npm run dev      # local dev server", "npm run build && npm start   # production (node dist/server.mjs)", "```", "");
+  lines.push(`## Run`, "", "```bash", "npm install", `export ${apiKeyEnv}=...`, "npm run dev      # local dev server", "npm run build && npm start   # production (node start.mjs)", "```", "");
   lines.push(`## Deploy`, "");
   lines.push("- **Docker**: `docker build -t " + project.name + " . && docker run -p 8080:8080 -e " + apiKeyEnv + "=... " + project.name + "`");
   lines.push("- **GitHub / cloud**: push this repo — `.github/workflows/deploy.yml` builds the image and publishes it to `ghcr.io/<owner>/<repo>`. Run that image on any container host and connect Fleet to its URL.");
@@ -364,6 +551,13 @@ function emitReadme(
       ? `- Real shell and filesystem (\`sandbox: local()\`) — the agent can run commands and use files inside its container.`
       : `- Emulated sandbox only (Cloudflare Workers): no real shell or filesystem; bash-like commands run in an in-memory emulator.`,
   );
+  if (bridgedMcp.length > 0) {
+    lines.push("", `## Bridged stdio MCP servers`, "");
+    lines.push(`These stdio servers run inside the container as supergateway sidecars (started by \`start.mjs\`). They are available to the agent at boot time; if a bridge fails to start, the agent boots without those tools rather than crashing.`, "");
+    for (const m of bridgedMcp) {
+      lines.push(`- **${m.name}** — internal port ${m.port} (\`http://127.0.0.1:${m.port}/mcp\`)`);
+    }
+  }
   if (unmapped.length) {
     lines.push("", `## Not mapped`, "");
     for (const u of unmapped) lines.push(`- ${u.reason}`);

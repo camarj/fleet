@@ -31,15 +31,6 @@ export function readClaudeProject(dir: string): ClaudeProject {
   const skills = readSkills(join(dir, ".claude", "skills"));
   const mcpServers = readMcpServers(dir, settings);
 
-  for (const s of mcpServers) {
-    if (s.kind === "stdio") {
-      unmapped.push({
-        kind: "mcp-stdio",
-        name: s.name,
-        reason: `Flue's connectMcpServer is HTTP-only, so this stdio server (command: ${s.command}) was NOT wired. Expose it over HTTP/SSE to use it.`,
-      });
-    }
-  }
   if (settings && typeof settings === "object") {
     if ("hooks" in settings) {
       unmapped.push({ kind: "hooks", name: "hooks", reason: "Claude Code hooks have no Flue equivalent and were not mapped." });
