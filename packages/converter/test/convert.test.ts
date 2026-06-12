@@ -40,9 +40,11 @@ function main(): void {
   assert(r.subagents.includes("issue-classifier"), "subagent issue-classifier read");
   assert(r.skills.includes("refund-policy"), "skill refund-policy read");
   assert(r.mcpHttp.includes("inventory"), "http MCP inventory wired");
+  // filesystem is now bridged in-container on node targets — NOT unmapped.
+  assert(r.mcpStdioBridged.includes("filesystem"), "stdio MCP filesystem bridged in-container (node target)");
   assert(
-    r.unmapped.some((u) => u.kind === "mcp-stdio" && u.name === "filesystem"),
-    "stdio MCP filesystem reported as unmapped (structured)",
+    !r.unmapped.some((u) => u.kind === "mcp-stdio"),
+    "no mcp-stdio unmapped items on node target (all bridgeable servers are bridged)",
   );
   assert(r.unmapped.some((u) => u.kind === "hooks"), "hooks reported as unmapped (structured)");
   assert(r.unmapped.some((u) => u.kind === "permissions"), "permissions reported as unmapped (structured)");
@@ -61,6 +63,9 @@ function main(): void {
   assert(agent.includes('model: "anthropic/claude-haiku-4-5"'), "subagent model preserved (no provider swap)");
   assert(agent.includes('connectMcpServer("inventory"'), "http MCP wired via connectMcpServer");
   assert(agent.includes("INVENTORY_MCP_URL"), "MCP url overridable via env");
+  // bridged stdio server
+  assert(agent.includes('tryConnectMcpServer("filesystem"'), "bridged stdio MCP uses tryConnectMcpServer");
+  assert(agent.includes("http://127.0.0.1:3100/mcp"), "bridged stdio MCP reaches the bridge at the expected localhost URL");
   assert(/import \w+ from "\.\.\/skills\/refund-policy\/SKILL\.md" with \{ type: "skill" \}/.test(agent), "skill imported with import attribute");
   assert(agent.includes("subagents: ["), "subagents wired into config");
   assert(agent.includes(".tools]"), "MCP tools spread into config");
@@ -85,8 +90,26 @@ function main(): void {
   for (const f of ["flue.config.ts", "package.json", "Dockerfile", ".env.example", "README.md", "wrangler.jsonc", ".github/workflows/deploy.yml"]) {
     assert(out.files.some((x) => x.path === f), `scaffold file ${f} emitted`);
   }
+  // start.mjs — emitted when bridges are present
+  assert(out.files.some((x) => x.path === "start.mjs"), "start.mjs emitted when stdio bridges are present");
+  const startMjs = fileContent(out, "start.mjs");
+  assert(startMjs.includes("--outputTransport"), "start.mjs passes --outputTransport to supergateway");
+  assert(startMjs.includes("streamableHttp"), "start.mjs uses streamableHttp transport");
+  assert(startMjs.includes("npx -y @modelcontextprotocol/server-filesystem /data"), "start.mjs contains the joined stdio command");
+
+  // package.json — supergateway dep and start script updated for bridged agents
+  const pkg = JSON.parse(fileContent(out, "package.json"));
+  assert(pkg.dependencies["supergateway"] === "3.4.3", "package.json includes supergateway 3.4.3 when bridges present");
+  assert(pkg.scripts["start"] === "node start.mjs", "package.json start script uses start.mjs when bridges present");
+
+  // Dockerfile — CMD updated for bridged agents
+  const dockerfile = fileContent(out, "Dockerfile");
+  assert(dockerfile.includes('CMD ["node", "start.mjs"]'), "Dockerfile CMD uses start.mjs when bridges present");
+
   const envExample = fileContent(out, ".env.example");
   assert(envExample.includes("ANTHROPIC_API_KEY="), ".env.example has the provider key var");
+  // stdio server env vars (from fixture .mcp.json env block — names only, no values)
+  assert(envExample.includes("FS_TOKEN="), ".env.example surfaces stdio MCP server env var FS_TOKEN");
   // settings.json env block → names surfaced into .env.example (WU-11)
   assert(envExample.includes("STORE_API_BASE="), ".env.example surfaces settings.json env var STORE_API_BASE");
   assert(envExample.includes("FEATURE_FLAG_X="), ".env.example surfaces settings.json env var FEATURE_FLAG_X");
@@ -111,7 +134,6 @@ function main(): void {
   }
 
   // package.json carries the Cloudflare peer dep + build/deploy scripts
-  const pkg = JSON.parse(fileContent(out, "package.json"));
   assert(typeof pkg.dependencies.agents === "string", "package.json includes the 'agents' CF peer dependency");
   assert(pkg.scripts["build:cloudflare"] === "flue build --target cloudflare", "package.json has build:cloudflare script");
   assert(pkg.scripts["deploy:cloudflare"] === "wrangler deploy", "package.json has deploy:cloudflare script");
@@ -170,6 +192,31 @@ function main(): void {
   assert(!cfAgent.includes("@flue/runtime/node"), "cloudflare target omits the node-only import");
   assert(!cfAgent.includes("sandbox:"), "cloudflare target omits the sandbox field");
   assert(cfAgent.includes("export default createAgent(() => ({"), "cloudflare agent still emits createAgent");
+  // cloudflare: stdio bridge is unavailable (no subprocesses) → filesystem is unmapped, not bridged
+  assert(
+    cfOut.report.mcpStdioBridged.length === 0,
+    "cloudflare target: mcpStdioBridged is empty (no in-container bridges on CF)",
+  );
+  assert(
+    cfOut.report.unmapped.some((u) => u.kind === "mcp-stdio" && u.name === "filesystem"),
+    "cloudflare target: filesystem stdio MCP reported as unmapped",
+  );
+  assert(
+    cfOut.report.unmapped.some((u) => u.kind === "mcp-stdio" && u.reason.includes("Cloudflare")),
+    "cloudflare target: unmapped reason mentions Cloudflare",
+  );
+  assert(
+    !cfOut.files.some((x) => x.path === "start.mjs"),
+    "cloudflare target: no start.mjs emitted",
+  );
+  const cfPkg = JSON.parse(fileContent(cfOut, "package.json"));
+  assert(
+    !("supergateway" in (cfPkg.dependencies ?? {})),
+    "cloudflare target: no supergateway in package.json dependencies",
+  );
+  assert(cfPkg.scripts["start"] === "node dist/server.mjs", "cloudflare target: start script is node dist/server.mjs (no bridge)");
+  const cfDockerfile = fileContent(cfOut, "Dockerfile");
+  assert(cfDockerfile.includes('CMD ["node", "dist/server.mjs"]'), "cloudflare target: Dockerfile CMD is node dist/server.mjs");
 
   console.log(process.exitCode ? "\nFAILED" : "\nALL GOOD");
 }

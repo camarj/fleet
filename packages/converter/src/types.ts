@@ -112,6 +112,8 @@ export interface ConvertReport {
   skills: string[];
   /** HTTP MCP servers that were wired. */
   mcpHttp: string[];
+  /** Stdio MCP servers wired in-container via the supergateway bridge (node targets). */
+  mcpStdioBridged: string[];
   /** Things that did not map (stdio MCP, hooks, permissions, …). */
   unmapped: UnmappedItem[];
 }
