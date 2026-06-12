@@ -1535,6 +1535,35 @@ async function testCoreOrgHandlers(): Promise<void> {
     await core.shutdown();
   }
 
+  // ── 13p: org.share — rejects token-protected agent (ORG-07) ───────────────
+  // agent.connectFlue registers even unreachable agents (FlueAdapter.connect
+  // swallows the admin probe), so a fake URL + token yields hasToken=true
+  // without a live Flue server. The token guard runs before the target guard.
+
+  {
+    clearOrgBindingFile();
+    const fake = new FakeRegistry("alice");
+    const core = new GatewayCore({ dbPath: ":memory:", orgRegistry: fake, healthIntervalMs: 60_000 });
+    await coreHandle(core, { type: "org.create", repo: "alice/fleet-org", name: "Token Org" });
+    const connectEvents = await coreHandle(core, {
+      type: "agent.connectFlue",
+      baseUrl: "http://127.0.0.1:1",
+      agentName: "token-agent",
+      token: "s3cret",
+    });
+    const registered = findEvent(connectEvents, "agent.registered");
+    assert(registered !== undefined, "13p: token agent registers (unreachable URL is fine)");
+    const events = await coreHandle(core, { type: "org.share", agentId: "token-agent" });
+    const err = findEvent(events, "org.error");
+    assert(err !== undefined, "13p: org.share on token-protected agent emits org.error");
+    assert(
+      err!.message.toLowerCase().includes("token-protected"),
+      "13p: org.error message explains the token-protected restriction",
+    );
+    assert(err!.requestType === "org.share", "13p: org.error carries requestType org.share");
+    await core.shutdown();
+  }
+
   // ── 13i: org.members — emits org.members when bound ──────────────────────
 
   {
