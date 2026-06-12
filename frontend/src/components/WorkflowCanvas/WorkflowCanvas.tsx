@@ -8,7 +8,7 @@
  * renders workflow.* events.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -24,7 +24,7 @@ import "@xyflow/react/dist/style.css";
 import { nodeTypes, type WFNodeData } from "./nodes";
 import { Modal } from "../Modal/Modal";
 import type { GatewayClient } from "../../lib/gatewayClient";
-import type { AgentSummary, NodeKind, ServerEvent, Workflow } from "../../lib/api";
+import type { AgentSummary, NodeKind, ServerEvent, Workflow, WorkflowRunSummary } from "../../lib/api";
 
 interface Props {
   client: GatewayClient;
@@ -68,6 +68,8 @@ function fromRF(id: string, name: string, nodes: Node[], edges: Edge[]): Workflo
 export function WorkflowCanvas({ client, agents, connected }: Props): React.JSX.Element {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
+  // K5/D2: stable ref to currentId so the event handler can read it without re-registering on every switch.
+  const currentIdRef = useRef<string | null>(null);
   const [name, setName] = useState("");
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -80,9 +82,15 @@ export function WorkflowCanvas({ client, agents, connected }: Props): React.JSX.
   const [outputs, setOutputs] = useState<Record<string, string> | null>(null);
   const [runModalOpen, setRunModalOpen] = useState(false);
   const [runInputs, setRunInputs] = useState<Record<string, string>>({});
+  // K5/D2: run history panel — null means not yet loaded for the open workflow.
+  const [runs, setRuns] = useState<WorkflowRunSummary[] | null>(null);
+  const [selectedRun, setSelectedRun] = useState<string | null>(null);
   /** Workflow snapshot taken when the delete confirmation opened, or null when closed.
    * Captured at open time so a programmatic workflow switch can't retarget the delete. */
   const [confirmDelete, setConfirmDelete] = useState<{ id: string; name: string } | null>(null);
+
+  // Keep the ref in sync so the event handler always sees the current workflow id.
+  useEffect(() => { currentIdRef.current = currentId; }, [currentId]);
 
   // Ask for the workflow list whenever we (re)connect.
   useEffect(() => {
@@ -107,6 +115,11 @@ export function WorkflowCanvas({ client, agents, connected }: Props): React.JSX.
         setRunId(null);
         setRunStatus(e.status);
         setOutputs(e.outputs);
+        // K5/D2: refresh history immediately after a run finishes so the Runs panel is current.
+        if (currentIdRef.current) client.send({ type: "workflow.runs", workflowId: currentIdRef.current });
+      } else if (e.type === "workflow.runs") {
+        // K5/D2: only update the panel when the event matches the currently open workflow.
+        if (e.workflowId === currentIdRef.current) setRuns(e.runs);
       }
     });
   }, [client, setNodes]);
@@ -123,12 +136,25 @@ export function WorkflowCanvas({ client, agents, connected }: Props): React.JSX.
     }
   }, [workflows, currentId, agents, setNodes, setEdges]);
 
+  // K5/D2: load run history whenever the open workflow changes (or on first open).
+  useEffect(() => {
+    if (currentId && connected) {
+      setRuns(null);
+      setSelectedRun(null);
+      client.send({ type: "workflow.runs", workflowId: currentId });
+    }
+  }, [currentId, connected, client]);
+
   function resetRun(): void {
     setRunning(false);
     setRunId(null);
     setRunStatus(null);
     setOutputs(null);
     setNodes((ns) => ns.map((n) => ({ ...n, data: { ...n.data, status: undefined, error: undefined } })));
+  }
+
+  function toggleRunSelection(runId: string): void {
+    setSelectedRun((prev) => (prev === runId ? null : runId));
   }
 
   function selectWorkflow(id: string): void {
@@ -353,6 +379,53 @@ export function WorkflowCanvas({ client, agents, connected }: Props): React.JSX.
                     <pre>{value}</pre>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {/* K5/D2: run history panel — shows past runs for the open workflow. */}
+            {runs && runs.length > 0 && (
+              <div className="wf-runs">
+                <div className="wf-runs-head">Runs</div>
+                {runs.map((run) => {
+                  const duration =
+                    run.endedAt
+                      ? `${Math.round((new Date(run.endedAt).getTime() - new Date(run.startedAt).getTime()) / 1000)}s`
+                      : null;
+                  const isSelected = selectedRun === run.id;
+                  return (
+                    <div key={run.id} className="wf-run-row" onClick={() => toggleRunSelection(run.id)}>
+                      <div className="wf-run-row-header">
+                        <span className={`wf-run-${run.status}`}>{run.status}</span>
+                        <span className="wf-run-time">{new Date(run.startedAt).toLocaleTimeString()}</span>
+                        {duration && <span className="wf-run-duration">{duration}</span>}
+                      </div>
+                      {isSelected && (
+                        <div className="wf-run-detail">
+                          <div className="wf-run-detail-section">
+                            <span className="wf-run-detail-label">Inputs</span>
+                            {Object.entries(run.inputs).map(([k, v]) => (
+                              <div key={k} className="wf-output-row">
+                                <code>{k}</code>
+                                <pre>{v}</pre>
+                              </div>
+                            ))}
+                          </div>
+                          {run.outputs && Object.keys(run.outputs).length > 0 && (
+                            <div className="wf-run-detail-section">
+                              <span className="wf-run-detail-label">Outputs</span>
+                              {Object.entries(run.outputs).map(([k, v]) => (
+                                <div key={k} className="wf-output-row">
+                                  <code>{k}</code>
+                                  <pre>{v}</pre>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </>

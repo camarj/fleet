@@ -176,6 +176,9 @@ export class GatewayCore {
         case "workflow.abort":
           this.#workflowRuns.get(req.runId)?.abort();
           return;
+        case "workflow.runs":
+          emit({ type: "workflow.runs", workflowId: req.workflowId, runs: this.#state.listWorkflowRuns(req.workflowId, req.limit ?? 20) });
+          return;
         // ── Org registry (G1) ────────────────────────────────────────────────
         case "org.create":
           return await this.#orgCreate(req, emit);

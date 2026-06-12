@@ -541,6 +541,31 @@ export class GatewayState {
     return row ? { status: row.status, endedAt: row.ended_at } : null;
   }
 
+  /** K5/D2: run history is write-only without this — list a workflow's past runs, newest first. */
+  listWorkflowRuns(workflowId: string, limit = 20): Array<{
+    id: string;
+    status: "running" | "completed" | "failed" | "aborted";
+    inputs: Record<string, string>;
+    outputs: Record<string, string> | null;
+    startedAt: string;
+    endedAt: string | null;
+  }> {
+    const rows = this.#db
+      .prepare(
+        `SELECT id, status, inputs_json, outputs_json, started_at, ended_at
+         FROM workflow_runs WHERE workflow_id = ? ORDER BY started_at DESC, rowid DESC LIMIT ?`,
+      )
+      .all(workflowId, limit) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: r.id as string,
+      status: r.status as "running" | "completed" | "failed" | "aborted",
+      inputs: JSON.parse(r.inputs_json as string) as Record<string, string>,
+      outputs: r.outputs_json ? (JSON.parse(r.outputs_json as string) as Record<string, string>) : null,
+      startedAt: r.started_at as string,
+      endedAt: (r.ended_at as string | null) ?? null,
+    }));
+  }
+
   /** K4: a Core crash mid-run leaves workflow_runs rows stuck at 'running'.
    * Called once at startup — anything still 'running' belongs to a dead process. */
   reconcileOrphanedWorkflowRuns(): number {

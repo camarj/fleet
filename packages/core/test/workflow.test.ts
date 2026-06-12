@@ -140,6 +140,37 @@ async function main(): Promise<void> {
     assert(runRow?.endedAt !== null, "K4: orphaned run has ended_at set after reconcile");
   }
 
+  // ── K5: workflow.runs read API ───────────────────────────────────────────────
+  console.log("\n[K5] workflow.runs — run history read API …");
+  {
+    const K5_DB_PATH = join(DATA_DIR, "k5.db");
+    const coreK5 = new GatewayCore({ dbPath: K5_DB_PATH });
+    await send(coreK5, { type: "workflow.save", workflow: WF });
+
+    // Run the workflow twice so we can verify ordering (newest first).
+    await send(coreK5, { type: "workflow.run", workflowId: WF.id, inputs: { topic: "first" } });
+    await send(coreK5, { type: "workflow.run", workflowId: WF.id, inputs: { topic: "second" } });
+
+    const runsEvents = await send(coreK5, { type: "workflow.runs", workflowId: WF.id });
+    const runsEvent = runsEvents.find(
+      (e): e is Extract<ServerEvent, { type: "workflow.runs" }> => e.type === "workflow.runs",
+    );
+
+    assert(!!runsEvent, "K5: workflow.runs event is emitted");
+    assert(runsEvent?.workflowId === WF.id, "K5: workflow.runs event carries the correct workflowId");
+    assert((runsEvent?.runs.length ?? 0) >= 2, "K5: runs.length >= 2 after two runs");
+    assert(runsEvent?.runs[0]?.status === "completed", "K5: most recent run has status 'completed'");
+    assert(JSON.stringify(runsEvent?.runs[0]?.inputs) === JSON.stringify({ topic: "second" }), "K5: most recent run has the second inputs (newest first)");
+    assert(runsEvent?.runs[0]?.outputs !== null, "K5: most recent run has non-null outputs");
+    assert(runsEvent?.runs[0]?.outputs?.["out"] === "second", "K5: most recent run output node returned the run input");
+    // Verify newest-first ordering: runs[0].startedAt >= runs[1].startedAt
+    const firstStarted = runsEvent?.runs[0]?.startedAt ?? "";
+    const secondStarted = runsEvent?.runs[1]?.startedAt ?? "";
+    assert(firstStarted >= secondStarted, "K5: runs are ordered newest first (startedAt descending)");
+
+    await coreK5.shutdown();
+  }
+
   // ── K6: concurrent-run guard ─────────────────────────────────────────────────
   console.log("\n[7] K6 — second concurrent run of the same workflow is rejected …");
   {

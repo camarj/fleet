@@ -202,6 +202,16 @@ export interface UsageTotals {
   unpricedRuns: number;
 }
 
+/** One persisted workflow run, as listed by the `workflow.runs` request. */
+export interface WorkflowRunSummary {
+  id: string;
+  status: "running" | "completed" | "failed" | "aborted";
+  inputs: Record<string, string>;
+  outputs: Record<string, string> | null;
+  startedAt: string;
+  endedAt: string | null;
+}
+
 /**
  * Snapshot of the most recent FIRST deploy that failed before an agent was
  * registered. Such a deploy has no agent row to key its log by, so the Core
@@ -266,6 +276,8 @@ export type ClientRequest =
   | { type: "workflow.delete"; workflowId: string }
   | { type: "workflow.run"; workflowId: string; inputs: Record<string, string> }
   | { type: "workflow.abort"; runId: string }
+  /** List a workflow's past runs (newest first). K5/D2: history was write-only. */
+  | { type: "workflow.runs"; workflowId: string; limit?: number }
   // ── Org registry (G1) ──
   /** Create a new org and bind this instance as owner. */
   | { type: "org.create"; repo: string; name: string }
@@ -387,4 +399,6 @@ export type ServerEvent =
       runId: string;
       status: "completed" | "failed" | "aborted";
       outputs: Record<string, string>;
-    };
+    }
+  /** K5/D2: responds to workflow.runs requests with the run list, newest first. */
+  | { type: "workflow.runs"; workflowId: string; runs: WorkflowRunSummary[] };
