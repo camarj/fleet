@@ -87,6 +87,13 @@ export class FlueAdapter implements AgentAdapter {
     return this.#info;
   }
 
+  /** The agent-instance id this adapter resolved at connect time. Fleet persists
+   * it per agent so Flue's server-side SessionData (keyed by instanceId) survives
+   * reconnects instead of being abandoned to a fresh random id (backlog J1). */
+  get instanceId(): string {
+    return this.#spec.instanceId;
+  }
+
   run(input: RunInput, _options: RunOptions, sink: RunSink): RunHandle {
     // RunOptions is empty in v1 (no per-run options). The model is fixed at
     // convert time; changing it is a redeploy (config.set → agent.redeploy),
