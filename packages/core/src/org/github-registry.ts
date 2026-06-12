@@ -76,7 +76,7 @@ export function classifyGhError(
   ) {
     return new OrgError(
       "unauthorized",
-      `${prefix}GitHub authentication or authorization failed. Run: gh auth login`,
+      `${prefix}GitHub authentication required. Run: gh auth login`,
     );
   }
 
@@ -103,7 +103,7 @@ export function classifyGhError(
   ) {
     return new OrgError(
       "networkError",
-      `${prefix}Registry repo unreachable. Check your network and gh authentication.`,
+      `${prefix}Registry repo unreachable; using last-known directory. Check your network and gh authentication.`,
     );
   }
 
