@@ -291,6 +291,53 @@ async function main(): Promise<void> {
     assert(res.error?.includes("exploded") === true, "fail-fast: error message is from the failing node");
   }
 
+  // ── K2: run metadata forwarded to the runner ────────────────────────────────
+  // Verifies that the engine relays opaque run metadata (runId + nodeId) through
+  // to the injected AgentRunner so the Core can attribute usage (K2). The engine
+  // must not inspect the values — it only passes them through.
+  console.log("\n[11] K2 — meta.runId and meta.nodeId forwarded to the runner …");
+  {
+    const captured: { runId?: string; nodeId?: string }[] = [];
+    const metaRunner: AgentRunner = {
+      run: (_agentId, _prompt, _signal, meta) => {
+        captured.push({ runId: meta?.runId, nodeId: meta?.nodeId });
+        return Promise.resolve("ok");
+      },
+    };
+    const wf: Workflow = {
+      id: "w",
+      name: "meta-test",
+      nodes: [
+        node("in", "input", { name: "q" }),
+        node("a", "agent", { agentId: "agent1", promptTemplate: "{{input.q}}" }),
+        node("out", "output"),
+      ],
+      edges: [
+        { from: "in", to: "a" },
+        { from: "a", to: "out" },
+      ],
+    };
+    await new Orchestrator(metaRunner).run(wf, { q: "hi" }, {}, undefined, { runId: "wfr_test" });
+    assert(captured.length === 1, "K2: runner was called once for the agent node");
+    assert(captured[0]?.runId === "wfr_test", "K2: meta.runId forwarded to the runner");
+    assert(captured[0]?.nodeId === "a", "K2: meta.nodeId is the agent node's id");
+
+    // Without meta the runner receives undefined — backward-compat for callers
+    // that don't supply run metadata (e.g. tests, future non-workflow uses).
+    const capturedNoMeta: { runId?: string; nodeId?: string }[] = [];
+    const noMetaRunner: AgentRunner = {
+      run: (_agentId, _prompt, _signal, meta) => {
+        capturedNoMeta.push({ runId: meta?.runId, nodeId: meta?.nodeId });
+        return Promise.resolve("ok");
+      },
+    };
+    await new Orchestrator(noMetaRunner).run(wf, { q: "hi" });
+    assert(
+      capturedNoMeta[0]?.runId === undefined,
+      "K2: meta.runId is undefined when Orchestrator.run is called without meta",
+    );
+  }
+
   console.log(process.exitCode ? "\nFAILED" : "\nALL GOOD");
   process.exit(process.exitCode ? 1 : 0);
 }

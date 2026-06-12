@@ -557,14 +557,14 @@ export class GatewayState {
 
   // ── Sessions ───────────────────────────────────────────────────────────────
 
-  createSession(agentId: string, preview = ""): string {
+  createSession(agentId: string, preview = "", runId: string | null = null): string {
     const id = `sess_${randomUUID()}`;
     this.#db
       .prepare(
         `INSERT INTO sessions (id, agent_id, run_id, status, started_at, preview)
-         VALUES (?, ?, NULL, 'running', ?, ?)`,
+         VALUES (?, ?, ?, 'running', ?, ?)`,
       )
-      .run(id, agentId, new Date().toISOString(), preview.slice(0, 80));
+      .run(id, agentId, runId, new Date().toISOString(), preview.slice(0, 80));
     return id;
   }
 
