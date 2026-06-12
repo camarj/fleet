@@ -1376,6 +1376,108 @@ async function testOrgManagerAndDb(): Promise<void> {
     assert(state.getAgent("empty-pull-2") === null, "empty-pull: agent-2 pruned after empty directory");
     assert(state.listOrgAgentIds(orgId).length === 0, "empty-pull: no org_agents rows remain after empty directory reconcile");
   }
+
+  // ── 12o: getOwnSharedAgentIds — collision in reconcile populates the set ────
+  // Two registry entries: one whose id collides with a LOCAL agent (owner's own
+  // share), one that doesn't. Only the collision id appears in
+  // getOwnSharedAgentIds(); the non-colliding entry reconciles normally.
+
+  {
+    const { manager, fake, state, store } = makeManager("alice");
+    fake.seedOrg({ schemaVersion: 1, orgId, name: "Mgr Org", owner: "alice", createdAt: new Date().toISOString() });
+    store.save({ schemaVersion: 1, repo: "alice/fleet-org", orgId, orgName: "Mgr Org", myLogin: "alice", role: "owner", lastSyncedAt: null });
+
+    // Seed a local (non-org) agent — simulates the owner's own deployed agent.
+    state.upsertAgent(
+      { id: "own-share-local", name: "My Shared Agent", version: "1.0.0", description: "owner's", model: "claude" },
+      "flue",
+      "https://owner.fly.dev/own-share-local",
+    );
+
+    // Registry has two entries: the collision (owner's own share) + one from a member.
+    await fake.shareAgent(makeEntry("own-share-local", { sharedBy: "alice", target: "fly" }));
+    await fake.shareAgent(makeEntry("other-member-agent", { sharedBy: "bob", target: "cloudflare" }));
+
+    await manager.reconcile();
+
+    // Only the collision id is in getOwnSharedAgentIds().
+    const ownIds = manager.getOwnSharedAgentIds();
+    assert(ownIds.includes("own-share-local"), "12o: getOwnSharedAgentIds contains the collision id");
+    assert(!ownIds.includes("other-member-agent"), "12o: getOwnSharedAgentIds does NOT contain non-colliding entry");
+    assert(ownIds.length === 1, "12o: getOwnSharedAgentIds has exactly 1 entry");
+
+    // Non-colliding entry is in the DB as an org agent.
+    assert(state.getOrgAgent("other-member-agent") !== null, "12o: non-colliding entry reconciled normally");
+    // Collision entry is NOT in org_agents (local row preserved).
+    assert(state.getOrgAgent("own-share-local") === null, "12o: no org_agents row for collision id");
+  }
+
+  // ── 12p: shareAgent → adds to ownSharedAgentIds; unshareAgent → removes it ──
+
+  {
+    const { manager, fake, store } = makeManager("alice");
+    fake.seedOrg({ schemaVersion: 1, orgId, name: "Mgr Org", owner: "alice", createdAt: new Date().toISOString() });
+    store.save({ schemaVersion: 1, repo: "alice/fleet-org", orgId, orgName: "Mgr Org", myLogin: "alice", role: "owner", lastSyncedAt: null });
+
+    // Initially empty.
+    assert(manager.getOwnSharedAgentIds().length === 0, "12p: ownSharedAgentIds empty before share");
+
+    const entry = makeEntry("share-track-agent", { target: "fly" });
+    await manager.shareAgent(entry);
+    assert(manager.getOwnSharedAgentIds().includes("share-track-agent"), "12p: ownSharedAgentIds contains id after shareAgent");
+
+    await manager.unshareAgent("share-track-agent");
+    assert(!manager.getOwnSharedAgentIds().includes("share-track-agent"), "12p: ownSharedAgentIds no longer contains id after unshareAgent");
+    assert(manager.getOwnSharedAgentIds().length === 0, "12p: ownSharedAgentIds is empty after unshareAgent");
+  }
+
+  // ── 12q: leave → clears ownSharedAgentIds ────────────────────────────────
+
+  {
+    const { manager, fake, state, store } = makeManager("alice");
+    fake.seedOrg({ schemaVersion: 1, orgId, name: "Mgr Org", owner: "alice", createdAt: new Date().toISOString() });
+    store.save({ schemaVersion: 1, repo: "alice/fleet-org", orgId, orgName: "Mgr Org", myLogin: "alice", role: "owner", lastSyncedAt: null });
+
+    // Seed a local agent so reconcile detects a collision.
+    state.upsertAgent(
+      { id: "leave-own-share", name: "Leave Agent", version: "1.0.0", description: "", model: "" },
+      "flue",
+      "https://leave.fly.dev",
+    );
+    await fake.shareAgent(makeEntry("leave-own-share", { target: "fly" }));
+    await manager.reconcile();
+    assert(manager.getOwnSharedAgentIds().includes("leave-own-share"), "12q: ownSharedAgentIds populated before leave");
+
+    await manager.leave();
+
+    assert(manager.getOwnSharedAgentIds().length === 0, "12q: ownSharedAgentIds cleared after leave");
+    assert(manager.isBound() === false, "12q: manager unbound after leave");
+  }
+
+  // ── 12r: reconcile rebuild — ownSharedAgentIds cleared each run ──────────
+  // After unshare from registry, next reconcile removes the id from the set.
+
+  {
+    const { manager, fake, state, store } = makeManager("alice");
+    fake.seedOrg({ schemaVersion: 1, orgId, name: "Mgr Org", owner: "alice", createdAt: new Date().toISOString() });
+    store.save({ schemaVersion: 1, repo: "alice/fleet-org", orgId, orgName: "Mgr Org", myLogin: "alice", role: "owner", lastSyncedAt: null });
+
+    state.upsertAgent(
+      { id: "rebuild-own-share", name: "Rebuild Agent", version: "1.0.0", description: "", model: "" },
+      "flue",
+      "https://rebuild.fly.dev",
+    );
+    await fake.shareAgent(makeEntry("rebuild-own-share", { target: "fly" }));
+    await manager.reconcile();
+    assert(manager.getOwnSharedAgentIds().includes("rebuild-own-share"), "12r: ownSharedAgentIds populated after first reconcile");
+
+    // Remove from registry (owner unshared it externally).
+    await fake.unshareAgent("rebuild-own-share");
+    await manager.reconcile();
+
+    assert(!manager.getOwnSharedAgentIds().includes("rebuild-own-share"), "12r: ownSharedAgentIds cleared after entry removed from registry");
+    assert(manager.getOwnSharedAgentIds().length === 0, "12r: ownSharedAgentIds empty after registry clear");
+  }
 }
 
 // ── Level 13: Core API handlers — org.* wire via GatewayCore (T15, PR2) ─────
@@ -1713,6 +1815,161 @@ async function testCoreOrgHandlers(): Promise<void> {
       "13o: deploy.error message references org/connect-only",
     );
     await core.shutdown();
+  }
+
+  // ── 13r: ownSharedAgentIds after org.sync with collision ─────────────────
+  // Connect a local agent, seed the SAME id into the FakeRegistry directory,
+  // then sync. reconcile() detects the collision → ownSharedAgentIds is
+  // populated → org.status.ownSharedAgentIds includes the id.
+
+  {
+    clearOrgBindingFile();
+    const fake = new FakeRegistry("alice");
+    const core = new GatewayCore({ dbPath: ":memory:", orgRegistry: fake, healthIntervalMs: 60_000 });
+    await coreHandle(core, { type: "org.create", repo: "alice/fleet-org", name: "Own Shares Org" });
+
+    // Connect a local agent (even an unreachable URL works — FlueAdapter.connect
+    // swallows the admin probe and still registers the agent row).
+    const connectEvents = await coreHandle(core, {
+      type: "agent.connectFlue",
+      baseUrl: "http://127.0.0.1:1",
+      agentName: "own-share-agent",
+    });
+    const registered = findEvent(connectEvents, "agent.registered");
+    assert(registered !== undefined, "13r setup: local agent registered");
+    const localAgentId = registered!.agent.id;
+
+    // Seed the registry with this id (simulates the owner having shared it
+    // in a previous session — it now lives in agents/<id>.json on GitHub).
+    await fake.shareAgent(makeEntry(localAgentId, { sharedBy: "alice", target: "fly" }));
+
+    // Sync: reconcile detects the C1 collision → ownSharedAgentIds populated.
+    const syncEvents = await coreHandle(core, { type: "org.sync" });
+    const statusAfterSync = findEvent(syncEvents, "org.status");
+    assert(statusAfterSync !== undefined, "13r: org.sync emits org.status");
+    assert(
+      Array.isArray(statusAfterSync!.ownSharedAgentIds),
+      "13r: org.status.ownSharedAgentIds is an array after sync",
+    );
+    assert(
+      statusAfterSync!.ownSharedAgentIds!.includes(localAgentId),
+      "13r: org.status.ownSharedAgentIds includes the owner's own share id after collision",
+    );
+
+    // Verify the local agent is NOT treated as an org agent (C1 guard preserved).
+    const listEvents = await coreHandle(core, { type: "agents.list" });
+    const agentsEvt = findEvent(listEvents, "agents");
+    const localAgent = agentsEvt!.agents.find((a) => a.id === localAgentId);
+    assert(localAgent?.origin === "local", "13r: collision id remains a local agent (origin=local)");
+
+    await core.shutdown();
+  }
+
+  // ── 13s: org.unshare → ownSharedAgentIds updated in emitted org.status ────
+  // After populating ownSharedAgentIds via collision (13r scenario), org.unshare
+  // removes the id and the resulting org.status reflects the change.
+
+  {
+    clearOrgBindingFile();
+    const fake = new FakeRegistry("alice");
+    const core = new GatewayCore({ dbPath: ":memory:", orgRegistry: fake, healthIntervalMs: 60_000 });
+    await coreHandle(core, { type: "org.create", repo: "alice/fleet-org", name: "Unshare Own Org" });
+
+    // Connect a local agent and seed its id in the registry.
+    const connectEvents = await coreHandle(core, {
+      type: "agent.connectFlue",
+      baseUrl: "http://127.0.0.1:1",
+      agentName: "unshare-own-agent",
+    });
+    const localAgentId = findEvent(connectEvents, "agent.registered")!.agent.id;
+    await fake.shareAgent(makeEntry(localAgentId, { sharedBy: "alice", target: "fly" }));
+
+    // Populate ownSharedAgentIds via sync.
+    const syncEvents = await coreHandle(core, { type: "org.sync" });
+    const statusBeforeUnshare = findEvent(syncEvents, "org.status");
+    assert(
+      statusBeforeUnshare!.ownSharedAgentIds!.includes(localAgentId),
+      "13s setup: ownSharedAgentIds populated before unshare",
+    );
+
+    // Unshare via Core handler.
+    const unshareEvents = await coreHandle(core, { type: "org.unshare", agentId: localAgentId });
+    const statusAfterUnshare = findEvent(unshareEvents, "org.status");
+    assert(statusAfterUnshare !== undefined, "13s: org.unshare emits org.status");
+    assert(
+      Array.isArray(statusAfterUnshare!.ownSharedAgentIds),
+      "13s: org.status.ownSharedAgentIds is an array after unshare",
+    );
+    assert(
+      !statusAfterUnshare!.ownSharedAgentIds!.includes(localAgentId),
+      "13s: org.status.ownSharedAgentIds does NOT include id after org.unshare",
+    );
+
+    await core.shutdown();
+  }
+
+  // ── 13t: org.share → ownSharedAgentIds populated; org.unshare → removed ────
+  // Handler-level round trip. org.share requires a routable deploy record, so
+  // we pre-seed a GatewayState file db with the agent + deploy row before
+  // handing the same path to GatewayCore. connectFlue to an unreachable URL
+  // would register the agent but leave no deploy record, failing the ORG-06
+  // routable-target guard inside #orgShare.
+
+  {
+    clearOrgBindingFile();
+    const fake = new FakeRegistry("alice");
+
+    // Pre-seed agent + deploy record into a temp SQLite file so that org.share
+    // finds a routable deploy target without running a real deployment.
+    const tempDbPath = join(DATA_DIR, "test13t.db");
+    {
+      const seedState = new GatewayState(tempDbPath);
+      seedState.upsertAgent(
+        { id: "share-13t-agent", name: "Share 13t Agent", version: "1.0.0", description: "", model: "" },
+        "flue",
+        "https://share-13t.fly.dev/share-13t-agent",
+      );
+      seedState.setDeploy("share-13t-agent", {
+        sourceDir: "/tmp/share-13t",
+        provider: "anthropic",
+        model: "claude-haiku-4-5",
+        target: "fly",
+        repoOwner: null,
+      });
+      seedState.close();
+    }
+
+    const core = new GatewayCore({ dbPath: tempDbPath, orgRegistry: fake, healthIntervalMs: 60_000 });
+    await coreHandle(core, { type: "org.create", repo: "alice/fleet-org", name: "Share Round Trip Org" });
+
+    // org.share → should emit org.status with ownSharedAgentIds containing the id.
+    const shareEvents = await coreHandle(core, { type: "org.share", agentId: "share-13t-agent" });
+    const statusAfterShare = findEvent(shareEvents, "org.status");
+    assert(statusAfterShare !== undefined, "13t: org.share emits org.status");
+    assert(
+      Array.isArray(statusAfterShare!.ownSharedAgentIds),
+      "13t: org.status.ownSharedAgentIds is an array after org.share",
+    );
+    assert(
+      statusAfterShare!.ownSharedAgentIds!.includes("share-13t-agent"),
+      "13t: org.status.ownSharedAgentIds includes the shared agent id after org.share",
+    );
+
+    // org.unshare → should emit org.status with ownSharedAgentIds no longer containing the id.
+    const unshareEvents = await coreHandle(core, { type: "org.unshare", agentId: "share-13t-agent" });
+    const statusAfterUnshare = findEvent(unshareEvents, "org.status");
+    assert(statusAfterUnshare !== undefined, "13t: org.unshare emits org.status");
+    assert(
+      Array.isArray(statusAfterUnshare!.ownSharedAgentIds),
+      "13t: org.status.ownSharedAgentIds is an array after org.unshare",
+    );
+    assert(
+      !statusAfterUnshare!.ownSharedAgentIds!.includes("share-13t-agent"),
+      "13t: org.status.ownSharedAgentIds does NOT include id after org.unshare",
+    );
+
+    await core.shutdown();
+    rmSync(tempDbPath, { force: true });
   }
 }
 

@@ -802,13 +802,17 @@ export class GatewayCore {
   }
 
   /**
-   * Build the payload for an org.status event from the current local binding and
-   * org_agents DB state. Returns { bound: false } when not bound.
+   * Build the payload for an org.status event from the current local binding,
+   * org_agents DB state, and the OrgManager's in-memory own-shares set.
+   * Returns { bound: false } when not bound.
    *
-   * sharedAgentIds = org agent ids in the local DB as of the last sync. For a
-   * member this reflects all received agents. For an owner, agents they shared
-   * themselves are skipped by the C1 guard during reconcile and will NOT appear
-   * here — the frontend tracks share-toggle state locally (G1 limitation).
+   * sharedAgentIds = org agent ids in the local DB as of the last sync (other
+   * members' shares). For an owner, agents they shared themselves are skipped by
+   * the C1 guard during reconcile and do NOT appear here.
+   *
+   * ownSharedAgentIds = agent ids this instance has shared into the directory.
+   * Rebuilt from C1-collision ids on every reconcile; updated immediately on
+   * shareAgent/unshareAgent. Drives the owner's Share/Unshare toggle truthfully.
    */
   #buildOrgStatus(): Omit<Extract<ServerEvent, { type: "org.status" }>, "type"> {
     const binding = this.#orgStore.load();
@@ -820,6 +824,7 @@ export class GatewayCore {
       myLogin: binding.myLogin,
       role: binding.role,
       sharedAgentIds: this.#state.listOrgAgentIds(binding.orgId),
+      ownSharedAgentIds: this.#orgManager?.getOwnSharedAgentIds() ?? [],
     };
   }
 
@@ -859,6 +864,9 @@ export class GatewayCore {
       this.#orgManager = this.#makeOrgManager(binding.repo);
       const result = await this.#orgManager.reconcile();
       await this.#connectOrgAgents(result.orgId);
+      // Broadcast the populated org.status to any clients that connected while
+      // boot sync was in flight (ORG-08: non-blocking but still observable).
+      this.#broadcast({ type: "org.status", ...this.#buildOrgStatus() });
     } catch (err) {
       // Boot sync failure must not prevent Fleet from starting (ORG-11).
       console.error("[gateway-core] org boot sync failed:", (err as Error).message ?? err);
