@@ -346,6 +346,48 @@ async function main(): Promise<void> {
       await dokployApi({ url: "http://plain.example.com/", key: "k" }, "GET", "project.all", undefined, fakeFetch);
       assert(seen[1] === "http://plain.example.com/api/project.all", `explicit scheme + trailing slash preserved (got: ${seen[1]})`);
     }
+
+    // ── 9. DOKPLOY_PROJECT matching is case-insensitive ──────────────────────
+    console.log("\n[9] Project resolution — DOKPLOY_PROJECT matches case-insensitively");
+    {
+      const stopResponses: Record<string, unknown> = {
+        "project.all": [
+          {
+            projectId: "proj-1",
+            name: "fleet-project",
+            environments: [
+              {
+                environmentId: "env-1",
+                isDefault: true,
+                name: "Production",
+                applications: [
+                  { applicationId: "app-existing-1", appName: "app-existing-1", name: FAKE_AGENT, applicationStatus: "done" },
+                ],
+              },
+            ],
+          },
+        ],
+        "application.stop": EMPTY_BODY,
+      };
+      const { fetch: f9 } = makeFakeFetch(stopResponses);
+      const stopped = await stopDokployApplication({
+        cfg: FAKE_CFG,
+        agentName: FAKE_AGENT,
+        projectName: "Fleet-Project",
+        fetchImpl: f9,
+      });
+      assert(stopped === true, "project name with different case resolves");
+
+      // Unknown name still fails with the available-projects message.
+      const { fetch: f9b } = makeFakeFetch(stopResponses);
+      let threw = false;
+      try {
+        await stopDokployApplication({ cfg: FAKE_CFG, agentName: FAKE_AGENT, projectName: "nope", fetchImpl: f9b });
+      } catch (err) {
+        threw = err instanceof DeployError && err.message.includes("Available:");
+      }
+      assert(threw, "unknown project name still throws with the available list");
+    }
   } finally {
     // Restore env vars.
     for (const k of envCleanup) {
