@@ -46,9 +46,13 @@ export type WorkflowRunStatus = "completed" | "failed" | "aborted";
  * Runs one prompt against one agent and resolves with the assistant's final text.
  * Injected from core.ts so the engine never touches adapters. Rejects on agent
  * error or abort.
+ *
+ * `meta` is opaque run metadata relayed from the orchestrator so the Core can
+ * attribute usage back to a workflow run (K2). The engine stays adapter- and
+ * storage-agnostic — it only passes the values through; it never reads them.
  */
 export interface AgentRunner {
-  run(agentId: string, prompt: string, signal: AbortSignal): Promise<string>;
+  run(agentId: string, prompt: string, signal: AbortSignal, meta?: { runId?: string; nodeId?: string }): Promise<string>;
 }
 
 export interface OrchestratorHooks {
@@ -186,6 +190,7 @@ export class Orchestrator {
     inputs: Record<string, string>,
     hooks: OrchestratorHooks = {},
     signal?: AbortSignal,
+    meta?: { runId?: string },
   ): Promise<WorkflowRunResult> {
     const errors = validateWorkflow(wf);
     if (errors.length > 0) return { status: "failed", outputs: {}, error: errors.join("; ") };
@@ -228,7 +233,7 @@ export class Orchestrator {
             controller.signal.addEventListener("abort", onRunAbort, { once: true });
             const timer = setTimeout(() => nodeCtl.abort(), this.#nodeTimeoutMs);
             try {
-              out = await this.#runner.run(node.agentId!, prompt, nodeCtl.signal);
+              out = await this.#runner.run(node.agentId!, prompt, nodeCtl.signal, { runId: meta?.runId, nodeId: id });
             } catch (err) {
               // Distinguish "this node timed out" from "the run was aborted/failed elsewhere".
               if (nodeCtl.signal.aborted && !controller.signal.aborted) {

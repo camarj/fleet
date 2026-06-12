@@ -12,6 +12,7 @@
 import { mkdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 import { GatewayState } from "../src/state/index.js";
 
 const DIR = dirname(fileURLToPath(import.meta.url));
@@ -186,6 +187,64 @@ async function main(): Promise<void> {
     );
 
     await coreK6.shutdown();
+  }
+
+  // ── K2: createSession/recordUsage persist run_id ────────────────────────────
+  // DB-level verification that the optional runId reaches both the sessions and
+  // usage rows. This guards the fix for the usage-attribution bug (K2) where
+  // workflow node runs were invisible to the Usage tab because no session row
+  // existed and the usage payload from onDone was silently dropped.
+  console.log("\n[8] K2 — sessions and usage rows carry run_id when supplied …");
+  {
+    const K2_DB_PATH = join(DATA_DIR, "k2.db");
+    const k2State = new GatewayState(K2_DB_PATH);
+
+    // A FK-valid agent row is required by the sessions.agent_id foreign key.
+    k2State.upsertAgent({ id: "agent-k2", name: "agent-k2", version: "1.0.0", description: "", model: "" }, "flue", "http://localhost:1");
+
+    const RUN_ID = "wfr_k2_test";
+    const sessionId = k2State.createSession("agent-k2", "test prompt for k2", RUN_ID);
+    k2State.recordUsage(
+      sessionId,
+      RUN_ID,
+      { inputTokens: 10, outputTokens: 20, totalTokens: 30, model: "test-model" },
+      null,
+    );
+    k2State.endSession(sessionId, "completed");
+    k2State.close();
+
+    // Query the raw DB to verify run_id persistence — GatewayState does not
+    // expose run_id through its public read API (it joins via session for usage
+    // aggregation, not per-row retrieval), so we read directly.
+    const verifyDb = new DatabaseSync(K2_DB_PATH);
+    const sessionRow = verifyDb
+      .prepare("SELECT run_id, status FROM sessions WHERE id = ?")
+      .get(sessionId) as { run_id: string | null; status: string } | undefined;
+    const usageRow = verifyDb
+      .prepare("SELECT run_id FROM usage WHERE session_id = ?")
+      .get(sessionId) as { run_id: string | null } | undefined;
+    verifyDb.close();
+
+    assert(sessionRow?.run_id === RUN_ID, "K2: sessions.run_id persisted when createSession receives a runId");
+    assert(sessionRow?.status === "completed", "K2: session ended with status completed");
+    assert(usageRow?.run_id === RUN_ID, "K2: usage.run_id persisted when recordUsage receives a runId");
+
+    // Verify backward compat: a session created without runId gets NULL.
+    const k2State2 = new GatewayState(K2_DB_PATH);
+    const nullRunSessionId = k2State2.createSession("agent-k2", "no run");
+    // Review finding (K2): run-attributed sessions are usage-recording
+    // artifacts with no event log — they must NOT surface in the interactive
+    // session list, or they open as broken empty transcripts in the UI.
+    const listed = k2State2.listSessions("agent-k2");
+    k2State2.close();
+    assert(listed.some((s) => s.id === nullRunSessionId), "K2: interactive session (run_id NULL) appears in listSessions");
+    assert(!listed.some((s) => s.id === sessionId), "K2: workflow recording session (run_id set) is hidden from listSessions");
+    const verifyDb2 = new DatabaseSync(K2_DB_PATH);
+    const nullRow = verifyDb2
+      .prepare("SELECT run_id FROM sessions WHERE id = ?")
+      .get(nullRunSessionId) as { run_id: string | null } | undefined;
+    verifyDb2.close();
+    assert(nullRow?.run_id === null, "K2: sessions.run_id is NULL when createSession is called without runId (backward compat)");
   }
 
   rmSync(DATA_DIR, { recursive: true, force: true });

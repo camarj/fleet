@@ -483,12 +483,21 @@ export class GatewayCore {
    * Accumulates the assistant's streamed text (Flue emits message.delta) and
    * resolves with the final text. Never touches the engine's internals — this is
    * the injection seam that keeps the engine adapter-agnostic.
+   *
+   * K2: each node run now creates a session row and records usage on completion
+   * so the Usage tab (B3/PR #21) sees tokens spent by workflows. Before this fix,
+   * no session was created and the usage payload from onDone was silently dropped.
+   * These sessions are recording artifacts only — no session.* events are emitted
+   * so the frontend's interactive session UI never sees them.
    */
   #agentRunner(): AgentRunner {
     return {
-      run: (agentId, prompt, signal) => {
+      run: (agentId, prompt, signal, meta) => {
         const reg = this.#agents.get(agentId);
         if (!reg) return Promise.reject(new Error(`agent "${agentId}" is not connected`));
+        // Create the session row before starting the adapter run so the session
+        // id is available in every sink callback without a closure ordering risk.
+        const sessionId = this.#state.createSession(agentId, prompt, meta?.runId ?? null);
         return new Promise<string>((resolve, reject) => {
           let text = "";
           const sink: RunSink = {
@@ -496,8 +505,17 @@ export class GatewayCore {
               if (e.type === "message.delta" && e.role === "assistant") text += e.content;
               else if (e.type === "message.completed" && e.role === "assistant") text = e.content;
             },
-            onDone: (status) => (status === "aborted" ? reject(new Error("aborted")) : resolve(text)),
-            onError: (_code, message) => reject(new Error(message)),
+            onDone: (status, usage) => {
+              const costUsd = usage ? computeCostUsd(usage) : null;
+              if (usage) this.#state.recordUsage(sessionId, meta?.runId ?? null, usage, costUsd);
+              this.#state.endSession(sessionId, status === "aborted" ? "aborted" : "completed");
+              if (status === "aborted") reject(new Error("aborted"));
+              else resolve(text);
+            },
+            onError: (_code, message) => {
+              this.#state.endSession(sessionId, "error");
+              reject(new Error(message));
+            },
           };
           const handle = reg.adapter.run({ messages: [{ role: "user", content: prompt }] }, {}, sink);
           if (signal.aborted) void handle.abort();
@@ -550,6 +568,7 @@ export class GatewayCore {
           emit({ type: "workflow.node.status", runId, nodeId, status, output: info?.output, error: info?.error }),
       },
       controller.signal,
+      { runId },
     );
 
     this.#state.finishWorkflowRun(runId, result.status, result.outputs);

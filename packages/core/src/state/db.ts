@@ -557,14 +557,14 @@ export class GatewayState {
 
   // ── Sessions ───────────────────────────────────────────────────────────────
 
-  createSession(agentId: string, preview = ""): string {
+  createSession(agentId: string, preview = "", runId: string | null = null): string {
     const id = `sess_${randomUUID()}`;
     this.#db
       .prepare(
         `INSERT INTO sessions (id, agent_id, run_id, status, started_at, preview)
-         VALUES (?, ?, NULL, 'running', ?, ?)`,
+         VALUES (?, ?, ?, 'running', ?, ?)`,
       )
-      .run(id, agentId, new Date().toISOString(), preview.slice(0, 80));
+      .run(id, agentId, runId, new Date().toISOString(), preview.slice(0, 80));
     return id;
   }
 
@@ -581,12 +581,18 @@ export class GatewayState {
       .run(sessionId, seq, eventJson);
   }
 
-  /** Return session summaries for an agent, most recent first. */
+  /**
+   * Return session summaries for an agent, most recent first. Workflow node
+   * runs create run-attributed sessions purely as usage-recording artifacts
+   * (K2) — they have no event log, so showing them in the interactive session
+   * list would open as broken empty transcripts. Only interactive sessions
+   * (run_id IS NULL) are listed; run history is the workflow runs API's job.
+   */
   listSessions(agentId: string): SessionSummary[] {
     const rows = this.#db
       .prepare(
         `SELECT id, status, started_at, ended_at, preview
-         FROM sessions WHERE agent_id = ? ORDER BY started_at DESC`,
+         FROM sessions WHERE agent_id = ? AND run_id IS NULL ORDER BY started_at DESC`,
       )
       .all(agentId) as unknown as SessionDbRow[];
     return rows.map((r) => ({
