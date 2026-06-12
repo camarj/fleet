@@ -203,6 +203,9 @@ export function Settings({
             type="password"
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && connected && apiKey.trim()) save();
+            }}
             placeholder="API key"
           />
           <button className="btn-primary" onClick={save} disabled={!connected || !apiKey.trim()}>
@@ -238,6 +241,9 @@ export function Settings({
                   type={field.type}
                   value={infraValues[field.id] ?? ""}
                   onChange={(e) => setInfraValues((prev) => ({ ...prev, [field.id]: e.target.value }))}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && connected) saveInfra(field.id);
+                  }}
                   placeholder={field.id}
                 />
                 <button className="btn-primary" onClick={() => saveInfra(field.id)} disabled={!connected}>
