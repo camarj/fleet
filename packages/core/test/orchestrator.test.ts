@@ -205,6 +205,92 @@ async function main(): Promise<void> {
     assert(res.status === "aborted", "aborted run reports status aborted");
   }
 
+  // ── node timeout ─────────────────────────────────────────────────────────────
+  // A runner that never resolves until aborted — simulates a hung agent.
+  const hangingRunner: AgentRunner = {
+    run: (_agentId, _prompt, signal) =>
+      new Promise<string>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      }),
+  };
+
+  // Reusable workflow: input → agent → output
+  const timeoutWf: Workflow = {
+    id: "w",
+    name: "timeout",
+    nodes: [
+      node("in", "input", { name: "q" }),
+      node("hang", "agent", { agentId: "hang", promptTemplate: "{{input.q}}" }),
+      node("out", "output"),
+    ],
+    edges: [
+      { from: "in", to: "hang" },
+      { from: "hang", to: "out" },
+    ],
+  };
+
+  console.log("\n[7] node timeout — run resolves failed with timed-out message …");
+  {
+    const res = await new Orchestrator(hangingRunner, { nodeTimeoutMs: 50 }).run(timeoutWf, { q: "x" });
+    assert(res.status === "failed", "timed-out run reports status failed");
+    assert(res.error?.includes("timed out after 50ms") === true, "error message mentions timed out after 50ms");
+  }
+
+  console.log("\n[8] node timeout — onNodeStatus hook fires failed with timed-out error …");
+  {
+    const statuses: { id: string; s: NodeRunStatus; info?: { output?: string; error?: string } }[] = [];
+    await new Orchestrator(hangingRunner, { nodeTimeoutMs: 50 }).run(
+      timeoutWf,
+      { q: "x" },
+      { onNodeStatus: (id, s, info) => statuses.push({ id, s, info }) },
+    );
+    const hangStatus = statuses.find((x) => x.id === "hang" && x.s === "failed");
+    assert(!!hangStatus, "hang node emitted a failed status via onNodeStatus");
+    assert(hangStatus?.info?.error?.includes("timed out") === true, "onNodeStatus failure info contains timed out");
+  }
+
+  console.log("\n[9] external abort wins over node timeout …");
+  {
+    const ac = new AbortController();
+    const p = new Orchestrator(hangingRunner, { nodeTimeoutMs: 60_000 }).run(timeoutWf, { q: "x" }, {}, ac.signal);
+    setTimeout(() => ac.abort(), 20);
+    const res = await p;
+    assert(res.status === "aborted", "external abort yields status aborted (not a timeout failure)");
+  }
+
+  console.log("\n[10] fail-fast still aborts slow sibling branch …");
+  {
+    // Two branches: one fast-failing, one slow. The slow one should be cancelled.
+    const mixedRunner: AgentRunner = {
+      run: (agentId, _prompt, signal) => {
+        if (agentId === "boom") return Promise.reject(new Error("agent exploded"));
+        // slow sibling — hangs until aborted
+        return new Promise<string>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        });
+      },
+    };
+    const failFastWf: Workflow = {
+      id: "w",
+      name: "failfast",
+      nodes: [
+        node("in", "input", { name: "q" }),
+        node("bad", "agent", { agentId: "boom", promptTemplate: "{{input.q}}" }),
+        node("slow", "agent", { agentId: "slow", promptTemplate: "{{input.q}}" }),
+        node("out", "output"),
+      ],
+      edges: [
+        { from: "in", to: "bad" },
+        { from: "in", to: "slow" },
+        { from: "bad", to: "out" },
+        { from: "slow", to: "out" },
+      ],
+    };
+    const res = await new Orchestrator(mixedRunner, { nodeTimeoutMs: 60_000 }).run(failFastWf, { q: "x" });
+    assert(res.status === "failed", "fail-fast: run fails when a branch errors");
+    assert(res.error?.includes("exploded") === true, "fail-fast: error message is from the failing node");
+  }
+
   console.log(process.exitCode ? "\nFAILED" : "\nALL GOOD");
   process.exit(process.exitCode ? 1 : 0);
 }

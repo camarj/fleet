@@ -158,11 +158,21 @@ class AbortError extends Error {
   }
 }
 
+export interface OrchestratorOptions {
+  /** Max wall-clock per agent node. A node exceeding it fails (and fail-fast
+   * aborts the run). Input/output nodes are instantaneous and not subject to it. */
+  nodeTimeoutMs?: number;
+}
+
+const DEFAULT_NODE_TIMEOUT_MS = 600_000; // 10 minutes — generous for real agent work, finite for hangs.
+
 export class Orchestrator {
   readonly #runner: AgentRunner;
+  readonly #nodeTimeoutMs: number;
 
-  constructor(runner: AgentRunner) {
+  constructor(runner: AgentRunner, options: OrchestratorOptions = {}) {
     this.#runner = runner;
+    this.#nodeTimeoutMs = options.nodeTimeoutMs ?? DEFAULT_NODE_TIMEOUT_MS;
   }
 
   /**
@@ -209,7 +219,26 @@ export class Orchestrator {
             out = inputs[node.name ?? id] ?? "";
           } else if (node.kind === "agent") {
             const prompt = interpolate(node.promptTemplate ?? "", inputs, outputs);
-            out = await this.#runner.run(node.agentId!, prompt, controller.signal);
+            // K1: bound each agent node with a wall-clock deadline. The node gets its own
+            // controller chained to the run controller, so fail-fast/external abort still
+            // cancel it, while a timeout cancels ONLY this node's run (fail-fast then
+            // propagates through the normal failure path).
+            const nodeCtl = new AbortController();
+            const onRunAbort = (): void => nodeCtl.abort();
+            controller.signal.addEventListener("abort", onRunAbort, { once: true });
+            const timer = setTimeout(() => nodeCtl.abort(), this.#nodeTimeoutMs);
+            try {
+              out = await this.#runner.run(node.agentId!, prompt, nodeCtl.signal);
+            } catch (err) {
+              // Distinguish "this node timed out" from "the run was aborted/failed elsewhere".
+              if (nodeCtl.signal.aborted && !controller.signal.aborted) {
+                throw new Error(`agent node "${id}" timed out after ${this.#nodeTimeoutMs}ms`);
+              }
+              throw err;
+            } finally {
+              clearTimeout(timer);
+              controller.signal.removeEventListener("abort", onRunAbort);
+            }
           } else {
             // output: concatenate upstream outputs (sorted by node id for determinism).
             out = deps
