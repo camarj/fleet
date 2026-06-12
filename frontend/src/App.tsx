@@ -5,7 +5,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { GatewayClient } from "./lib/gatewayClient";
-import type { AgentSummary, FailedDeploy, PreflightCheck, ServerEvent } from "./lib/api";
+import type { AgentSummary, FailedDeploy, OrgMember, OrgStatus, PreflightCheck, ServerEvent } from "./lib/api";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { TerminalPanel } from "./components/TerminalPanel/TerminalPanel";
 import { WorkflowCanvas } from "./components/WorkflowCanvas/WorkflowCanvas";
@@ -87,6 +87,12 @@ export function App(): React.JSX.Element {
   const [deployLogError, setDeployLogError] = useState<string | null>(null);
   /** True while we're waiting for deploy.lastLog or error in response to a log request. */
   const deployLogPendingRef = useRef(false);
+  // ── Org registry (G1) ──────────────────────────────────────────────────────
+  /** Current org binding state. null = not yet received from Core. */
+  const [orgStatus, setOrgStatus] = useState<OrgStatus | null>(null);
+  /** null = org.members response not yet received (distinguishes unloaded from empty). */
+  const [orgMembers, setOrgMembers] = useState<OrgMember[] | null>(null);
+  const [orgError, setOrgError] = useState<{ message: string; requestType?: string } | null>(null);
 
   function resetDeploy(): void {
     setDeployStatus(null);
@@ -213,6 +219,26 @@ export function App(): React.JSX.Element {
         configSavingRef.current = false;
         setConfigSaving(false);
         setConfigError(e.message);
+      } else if (e.type === "org.status") {
+        setOrgStatus((prev) => ({
+          bound: e.bound,
+          orgName: e.orgName,
+          repo: e.repo,
+          myLogin: e.myLogin,
+          role: e.role,
+          sharedAgentIds: e.sharedAgentIds,
+          // Preserve lastSyncedAt across org.status updates (it arrives via org.synced).
+          lastSyncedAt: prev?.lastSyncedAt,
+        }));
+        // Do NOT clear orgError here — a stale error must stay visible until the
+        // user sends a new org.* request. Background syncs must not eat it.
+        if (!e.bound) setOrgMembers(null); // reset to unloaded on unbind
+      } else if (e.type === "org.members") {
+        setOrgMembers(e.members);
+      } else if (e.type === "org.synced") {
+        setOrgStatus((prev) => (prev ? { ...prev, lastSyncedAt: e.at } : prev));
+      } else if (e.type === "org.error") {
+        setOrgError({ message: e.message, requestType: e.requestType });
       }
     });
     // Refresh lists on every (re)connect; reflect live connection state.
@@ -221,6 +247,7 @@ export function App(): React.JSX.Element {
       if (c) {
         client.send({ type: "agents.list" });
         client.send({ type: "secrets.list" });
+        client.send({ type: "org.status" });
       }
     });
     client.connect();
@@ -229,6 +256,42 @@ export function App(): React.JSX.Element {
       offStatus();
     };
   }, [client]);
+
+  // ── Org registry handlers ─────────────────────────────────────────────────
+  function handleCreateOrg(repo: string, name: string): void {
+    setOrgError(null);
+    client.send({ type: "org.create", repo, name });
+  }
+
+  function handleJoinOrg(repo: string): void {
+    setOrgError(null);
+    client.send({ type: "org.join", repo });
+  }
+
+  function handleLeaveOrg(): void {
+    setOrgError(null);
+    client.send({ type: "org.leave" });
+  }
+
+  function handleSyncOrg(): void {
+    setOrgError(null);
+    client.send({ type: "org.sync" });
+  }
+
+  function handleShareAgent(agentId: string): void {
+    setOrgError(null);
+    client.send({ type: "org.share", agentId });
+  }
+
+  function handleUnshareAgent(agentId: string): void {
+    setOrgError(null);
+    client.send({ type: "org.unshare", agentId });
+  }
+
+  function handleRequestMembers(): void {
+    setOrgError(null);
+    client.send({ type: "org.members" });
+  }
 
   // Keep the selection valid: if the selected agent disappears (deleted,
   // removed on reconnect), fall back to the first remaining agent. Pure +
@@ -368,6 +431,17 @@ export function App(): React.JSX.Element {
             // Drop the snapshot so the next open shows "Loading…" instead of stale data.
             setUsageSummary(null);
           }}
+          orgStatus={orgStatus}
+          orgMembers={orgMembers}
+          orgError={orgError}
+          agents={agents}
+          onCreateOrg={handleCreateOrg}
+          onJoinOrg={handleJoinOrg}
+          onLeaveOrg={handleLeaveOrg}
+          onSyncOrg={handleSyncOrg}
+          onRequestMembers={handleRequestMembers}
+          onShareAgent={handleShareAgent}
+          onUnshareAgent={handleUnshareAgent}
         />
       )}
 

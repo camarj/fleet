@@ -68,6 +68,29 @@ export interface OrgMember {
   role: OrgRole;
 }
 
+/**
+ * Current org binding state held in App.tsx.
+ *
+ * Frontend-only convenience type — derived from the `org.status` event shape
+ * and extended with `lastSyncedAt` (populated separately from `org.synced`
+ * events). This does NOT require a matching type in packages/core/src/api.ts.
+ */
+export interface OrgStatus {
+  bound: boolean;
+  orgName?: string;
+  repo?: string;
+  myLogin?: string;
+  role?: OrgRole;
+  /**
+   * Agent ids received from the remote registry as of the last sync.
+   * Does NOT include the owner's own shared agents (C1 collision guard —
+   * see ADR-6). Frontend tracks own-agent share state locally/optimistically.
+   */
+  sharedAgentIds?: string[];
+  /** Populated by org.synced events at the App level. */
+  lastSyncedAt?: string;
+}
+
 export interface AgentSummary {
   id: string;
   name: string;

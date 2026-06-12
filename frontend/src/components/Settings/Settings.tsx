@@ -7,7 +7,8 @@
 import { useEffect, useState } from "react";
 import { Modal } from "../Modal/Modal";
 import { PROVIDER_IDS } from "../../lib/providers";
-import type { UsageAgentSummary, UsageTotals } from "../../lib/api";
+import type { AgentSummary, OrgMember, OrgStatus, UsageAgentSummary, UsageTotals } from "../../lib/api";
+import { OrgSection } from "./OrgSection";
 
 const PROVIDERS = PROVIDER_IDS;
 
@@ -65,9 +66,40 @@ interface Props {
   onRequestUsage: (since: string | null) => void;
   onSetSecret: (provider: string, apiKey: string) => void;
   onClose: () => void;
+  // ── Org registry (G1) ──
+  orgStatus: OrgStatus | null;
+  /** null = org.members response not yet received; [] = loaded but empty. */
+  orgMembers: OrgMember[] | null;
+  orgError: { message: string; requestType?: string } | null;
+  agents: AgentSummary[];
+  onCreateOrg: (repo: string, name: string) => void;
+  onJoinOrg: (repo: string) => void;
+  onLeaveOrg: () => void;
+  onSyncOrg: () => void;
+  onRequestMembers: () => void;
+  onShareAgent: (agentId: string) => void;
+  onUnshareAgent: (agentId: string) => void;
 }
 
-export function Settings({ connected, secretsProviders, usage, onRequestUsage, onSetSecret, onClose }: Props): React.JSX.Element {
+export function Settings({
+  connected,
+  secretsProviders,
+  usage,
+  onRequestUsage,
+  onSetSecret,
+  onClose,
+  orgStatus,
+  orgMembers,
+  orgError,
+  agents,
+  onCreateOrg,
+  onJoinOrg,
+  onLeaveOrg,
+  onSyncOrg,
+  onRequestMembers,
+  onShareAgent,
+  onUnshareAgent,
+}: Props): React.JSX.Element {
   const [keyProvider, setKeyProvider] = useState<string>("anthropic");
   const [apiKey, setApiKey] = useState("");
   const [infraValues, setInfraValues] = useState<Record<string, string>>({});
@@ -97,7 +129,7 @@ export function Settings({ connected, secretsProviders, usage, onRequestUsage, o
   }
 
   return (
-    <Modal title="Settings — API keys" onClose={onClose} footer={<button className="btn-primary" onClick={onClose}>Done</button>}>
+    <Modal title="Settings" onClose={onClose} footer={<button className="btn-primary" onClick={onClose}>Done</button>}>
       <p className="settings-note">
         Keys are stored server-side in the Core and used when deploying agents. They are never saved in the app.
       </p>
@@ -216,6 +248,23 @@ export function Settings({ connected, secretsProviders, usage, onRequestUsage, o
           ))}
         </div>
       ))}
+
+      {/* ── Organization ──────────────────────────────────────── */}
+      <h3 className="settings-section-title">Organization</h3>
+      <OrgSection
+        connected={connected}
+        orgStatus={orgStatus}
+        orgMembers={orgMembers}
+        orgError={orgError}
+        agents={agents}
+        onCreateOrg={onCreateOrg}
+        onJoinOrg={onJoinOrg}
+        onLeaveOrg={onLeaveOrg}
+        onSyncOrg={onSyncOrg}
+        onRequestMembers={onRequestMembers}
+        onShareAgent={onShareAgent}
+        onUnshareAgent={onUnshareAgent}
+      />
     </Modal>
   );
 }

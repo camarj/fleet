@@ -48,11 +48,139 @@ export function Sidebar({
 
   const confirmDeleteAgent = agents.find((a) => a.id === confirmDeleteId) ?? null;
 
+  const myAgents = agents.filter((a) => a.origin !== "org");
+  const orgAgents = agents.filter((a) => a.origin === "org");
+  const hasOrgGroup = orgAgents.length > 0;
+
   function handleConfirmDelete(): void {
     if (confirmDeleteId) {
       onDelete(confirmDeleteId);
       setConfirmDeleteId(null);
     }
+  }
+
+  function renderAgent(a: (typeof agents)[number]): React.JSX.Element {
+    const isOrg = a.origin === "org";
+    return (
+      <li
+        key={a.id}
+        className={`agent ${a.id === selectedId ? "selected" : ""}`}
+        onClick={() => onSelect(a.id)}
+        role="button"
+        tabIndex={0}
+        aria-pressed={a.id === selectedId}
+        aria-label={`Select agent ${a.name}`}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onSelect(a.id);
+          }
+        }}
+      >
+        <div className="agent-name">
+          <span className="agent-name-text">
+            {a.name}
+            {a.version && <span className="agent-version">v{a.version}</span>}
+          </span>
+          <span className={`badge ${a.online ? "online" : ""}`}>{a.online ? "online" : "offline"}</span>
+        </div>
+        {isOrg && a.sharedBy && (
+          <div className="agent-shared-by">shared by {a.sharedBy}</div>
+        )}
+        {a.description && (
+          <div className="agent-desc" title={a.description}>
+            {a.description}
+          </div>
+        )}
+        <div className="agent-meta">
+          {a.target && <span className={`agent-target ${a.target}`}>{a.target}</span>}
+          {a.url && (
+            <span className="agent-url" title={a.url}>
+              {a.url.replace(/^https?:\/\//, "")}
+            </span>
+          )}
+          {a.model && <span className="agent-model">{a.model}</span>}
+        </div>
+        {/* Org agents are connect-only — Stop / Delete / Redeploy / Config are
+            blocked at the Core level (ORG-12) and not offered in the UI. */}
+        {!isOrg && (
+          <div className="agent-actions">
+            <button
+              className="btn-ghost agent-config"
+              disabled={!connected}
+              title="Configure this agent's model"
+              aria-label={`Configure model for ${a.name}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenConfig(a.id);
+              }}
+            >
+              ⚙ Model
+            </button>
+            {a.redeployable && (
+              <button
+                className="btn-ghost agent-redeploy"
+                disabled={!connected}
+                title="Rebuild and deploy this agent again (picks up new API keys/settings)"
+                aria-label={`Redeploy ${a.name}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRedeploy(a.id);
+                }}
+              >
+                ↻ Redeploy
+              </button>
+            )}
+            {a.redeployable && (
+              <button
+                className="btn-ghost agent-deploy-log"
+                disabled={!connected}
+                title="View the log from the last deploy"
+                aria-label={`View deploy log for ${a.name}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onViewDeployLog(a.id);
+                }}
+              >
+                ☰ Deploy log
+              </button>
+            )}
+            {a.online && (
+              <button
+                className="btn-ghost agent-stop"
+                disabled={!connected}
+                title={
+                  a.target === "dokploy"
+                    ? "Stop this agent and its remote Dokploy application (keeps registration for redeploy)"
+                    : a.target && REMOTE_KEEPS_RUNNING.has(a.target)
+                      ? `Disconnect this agent — the ${a.target} deployment keeps running and must be stopped manually`
+                      : "Stop this agent's runtime (keeps registration for redeploy)"
+                }
+                aria-label={`Stop ${a.name}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onStop(a.id);
+                }}
+              >
+                ■ Stop
+              </button>
+            )}
+            <button
+              className="btn-ghost agent-delete"
+              disabled={!connected}
+              title="Permanently remove this agent from Fleet"
+              aria-label={`Delete ${a.name}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                setConfirmDeleteId(a.id);
+              }}
+            >
+              ✕ Delete
+            </button>
+          </div>
+        )}
+      </li>
+    );
   }
 
   return (
@@ -68,119 +196,20 @@ export function Sidebar({
       </div>
 
       <ul className="agent-list">
-        {agents.map((a) => (
-          <li
-            key={a.id}
-            className={`agent ${a.id === selectedId ? "selected" : ""}`}
-            onClick={() => onSelect(a.id)}
-            role="button"
-            tabIndex={0}
-            aria-pressed={a.id === selectedId}
-            aria-label={`Select agent ${a.name}`}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                onSelect(a.id);
-              }
-            }}
-          >
-            <div className="agent-name">
-              <span className="agent-name-text">
-                {a.name}
-                {a.version && <span className="agent-version">v{a.version}</span>}
-              </span>
-              <span className={`badge ${a.online ? "online" : ""}`}>{a.online ? "online" : "offline"}</span>
-            </div>
-            {a.description && (
-              <div className="agent-desc" title={a.description}>
-                {a.description}
-              </div>
-            )}
-            <div className="agent-meta">
-              {a.target && <span className={`agent-target ${a.target}`}>{a.target}</span>}
-              {a.url && (
-                <span className="agent-url" title={a.url}>
-                  {a.url.replace(/^https?:\/\//, "")}
-                </span>
-              )}
-              {a.model && <span className="agent-model">{a.model}</span>}
-            </div>
-            <div className="agent-actions">
-              <button
-                className="btn-ghost agent-config"
-                disabled={!connected}
-                title="Configure this agent's model"
-                aria-label={`Configure model for ${a.name}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onOpenConfig(a.id);
-                }}
-              >
-                ⚙ Model
-              </button>
-              {a.redeployable && (
-                <button
-                  className="btn-ghost agent-redeploy"
-                  disabled={!connected}
-                  title="Rebuild and deploy this agent again (picks up new API keys/settings)"
-                  aria-label={`Redeploy ${a.name}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onRedeploy(a.id);
-                  }}
-                >
-                  ↻ Redeploy
-                </button>
-              )}
-              {a.redeployable && (
-                <button
-                  className="btn-ghost agent-deploy-log"
-                  disabled={!connected}
-                  title="View the log from the last deploy"
-                  aria-label={`View deploy log for ${a.name}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onViewDeployLog(a.id);
-                  }}
-                >
-                  ☰ Deploy log
-                </button>
-              )}
-              {a.online && (
-                <button
-                  className="btn-ghost agent-stop"
-                  disabled={!connected}
-                  title={
-                    a.target === "dokploy"
-                      ? "Stop this agent and its remote Dokploy application (keeps registration for redeploy)"
-                      : a.target && REMOTE_KEEPS_RUNNING.has(a.target)
-                        ? `Disconnect this agent — the ${a.target} deployment keeps running and must be stopped manually`
-                        : "Stop this agent's runtime (keeps registration for redeploy)"
-                  }
-                  aria-label={`Stop ${a.name}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onStop(a.id);
-                  }}
-                >
-                  ■ Stop
-                </button>
-              )}
-              <button
-                className="btn-ghost agent-delete"
-                disabled={!connected}
-                title="Permanently remove this agent from Fleet"
-                aria-label={`Delete ${a.name}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setConfirmDeleteId(a.id);
-                }}
-              >
-                ✕ Delete
-              </button>
-            </div>
+        {hasOrgGroup && (
+          <li className="agent-group-header" role="presentation">
+            My agents
           </li>
-        ))}
+        )}
+        {myAgents.map((a) => renderAgent(a))}
+        {hasOrgGroup && (
+          <>
+            <li className="agent-group-header" role="presentation">
+              Org agents
+            </li>
+            {orgAgents.map((a) => renderAgent(a))}
+          </>
+        )}
         {agents.length === 0 && (
           <li className="onboarding" role="presentation">
             <p className="onboarding-title">Welcome to Fleet</p>
