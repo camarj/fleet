@@ -66,6 +66,11 @@ export const INFRA_CREDENTIAL_IDS: readonly string[] = [
   "ENGRAM_CLOUD_TOKEN",
   "ENGRAM_JWT_SECRET",
   "POSTGRES_PASSWORD",
+  // J4 — Engram cloud client wiring for deployed agents: the server's public URL
+  // and the shared project key. Setting SERVER + TOKEN turns shared memory on for
+  // newly deployed Node agents; PROJECT is the shared key (absent → agent slug).
+  "ENGRAM_CLOUD_SERVER",
+  "ENGRAM_CLOUD_PROJECT",
 ] as const;
 
 /**
