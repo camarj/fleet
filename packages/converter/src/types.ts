@@ -88,6 +88,23 @@ export interface ConvertOptions {
    * cloudflare`. Verified against @flue/runtime 0.10.1.
    */
   target?: "node" | "cloudflare";
+  /**
+   * Shared memory via Engram cloud (J4). When `enabled` AND the target is a Node
+   * target, the converter brings the pinned `engram` binary into the image,
+   * bridges `engram mcp --tools=agent` as an in-container sidecar, and emits a
+   * tolerant cloud-setup phase in `start.mjs`. Disabled by default → output is
+   * byte-identical to today. On Cloudflare it is reported as `unmapped` (Workers
+   * cannot spawn subprocesses — no `engram mcp`). Secrets travel by NAME only.
+   */
+  sharedMemory?: {
+    /** Turn on the Engram shared-memory wiring. Default: disabled. */
+    enabled?: boolean;
+    /**
+     * Deterministic Engram project key the agent enrolls into (scoping, MEM-11).
+     * Defaults to the agent slug. The deployer MAY pass an org-scoped key (DA-06).
+     */
+    projectKey?: string;
+  };
 }
 
 /** The emitted, deployable Flue project — a deterministic set of files. */

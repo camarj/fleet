@@ -29,6 +29,26 @@ const SUPERGATEWAY_VERSION = "3.4.3";
 // First bridge port (inclusive). Each stdio MCP server gets the next integer in sorted name order.
 const BRIDGE_BASE_PORT = 3100;
 
+// ── Engram shared memory (J4) ─────────────────────────────────────────────────
+// The official multi-arch image carries the `engram` Go binary at this path
+// (verified live 2026-06-13, TASK-01: `command -v engram` → /usr/local/bin/engram).
+// The tag is PINNED to the SAME tag the org server runs (DA-02 == DA-04) so client
+// and server are bit-identical — the binary reports `engram dev` (not a semver), so
+// the anti-skew guarantee (R1) is the exact tag, not a runtime version check. Bump
+// this tag and the server's together.
+const ENGRAM_IMAGE = "ghcr.io/gentleman-programming/engram:1.16.3";
+const ENGRAM_BIN_PATH = "/usr/local/bin/engram";
+// The stdio MCP server bridged into the agent: `engram mcp --tools=agent` (the
+// agent memory profile, ~15 tools). Modeled as a normal stdio server so it rides
+// the generic bridge machinery (sorting, port assignment, start.mjs BRIDGES) with
+// no engram special-casing in emitStartMjs. command/args are quoting-safe.
+const ENGRAM_MCP_SERVER: Extract<McpServerSpec, { kind: "stdio" }> = {
+  name: "engram",
+  kind: "stdio",
+  command: "engram",
+  args: ["mcp", "--tools=agent"],
+};
+
 /** A stdio MCP server that has been assigned an in-container bridge port. */
 type BridgedStdioServer = Extract<McpServerSpec, { kind: "stdio" }> & { port: number };
 
@@ -43,13 +63,33 @@ export function emitFlueProject(project: ClaudeProject, opts: ConvertOptions = {
   // CF build). Verified against @flue/runtime 0.10.1.
   const nodeSandbox = opts.target !== "cloudflare";
 
+  // Shared memory (J4) is gated by the opt-in flag AND a Node target. On Cloudflare
+  // it is reported as unmapped (Workers have no subprocesses → no `engram mcp`).
+  const sharedMemoryRequested = opts.sharedMemory?.enabled === true;
+  const sharedMemoryEnabled = sharedMemoryRequested && nodeSandbox;
+  // Deterministic Engram project key the agent enrolls into; defaults to the slug.
+  const engramProjectKey = opts.sharedMemory?.projectKey?.trim() || project.name;
+
   const files: FlueFile[] = [];
   const httpMcp = project.mcpServers.filter((m): m is Extract<McpServerSpec, { kind: "http" }> => m.kind === "http");
 
-  // Stdio MCP servers, sorted by name so port assignment is deterministic.
-  const stdioMcp = project.mcpServers
-    .filter((m): m is Extract<McpServerSpec, { kind: "stdio" }> => m.kind === "stdio")
-    .sort((a, b) => a.name.localeCompare(b.name));
+  // Stdio MCP servers, sorted by name so port assignment is deterministic. When
+  // shared memory is on (Node only), `engram mcp` joins the list as one more stdio
+  // server and rides the same bridge machinery (sorted → deterministic ports).
+  const stdioServers = project.mcpServers.filter((m): m is Extract<McpServerSpec, { kind: "stdio" }> => m.kind === "stdio");
+  if (sharedMemoryEnabled) stdioServers.push(ENGRAM_MCP_SERVER);
+  const stdioMcp = stdioServers.sort((a, b) => a.name.localeCompare(b.name));
+
+  // Cloudflare + shared memory requested: honest `unmapped` (MEM-09). No binary,
+  // no bridge, no autosync vars are emitted; the rest of the conversion is unchanged.
+  if (sharedMemoryRequested && !nodeSandbox) {
+    unmapped.push({
+      kind: "shared-memory",
+      name: "engram",
+      reason:
+        "Shared memory (Engram) needs to run `engram mcp` as a subprocess. Cloudflare Workers cannot spawn subprocesses, so shared memory is unavailable on this target — the agent uses no shared memory. The rest of the conversion is unaffected.",
+    });
+  }
 
   // A server is bridgeable when args contain no whitespace or quote chars (supergateway
   // receives the whole stdio command as one argv string — arg-level quoting bypasses the
@@ -99,10 +139,10 @@ export function emitFlueProject(project: ClaudeProject, opts: ConvertOptions = {
   // ── project scaffold ──
   files.push({ path: "flue.config.ts", content: FLUE_CONFIG });
   files.push({ path: "package.json", content: emitPackageJson(bridged.length > 0) });
-  files.push({ path: "Dockerfile", content: emitDockerfile(bridged.length > 0) });
+  files.push({ path: "Dockerfile", content: emitDockerfile(bridged.length > 0, sharedMemoryEnabled) });
   files.push({ path: "wrangler.jsonc", content: emitWrangler(project.name) });
   files.push({ path: ".github/workflows/deploy.yml", content: DEPLOY_WORKFLOW });
-  files.push({ path: ".env.example", content: emitEnvExample(provider.apiKeyEnv, httpMcp, stdioMcp, project.env) });
+  files.push({ path: ".env.example", content: emitEnvExample(provider.apiKeyEnv, httpMcp, stdioMcp, project.env, sharedMemoryEnabled) });
   files.push({ path: ".gitignore", content: "dist/\ndata/\nnode_modules/\n.env\n" });
   files.push({
     path: "README.md",
@@ -110,8 +150,10 @@ export function emitFlueProject(project: ClaudeProject, opts: ConvertOptions = {
   });
 
   // ── start.mjs (only when there are bridged stdio servers) ──
+  // When shared memory is on, the engram bridge guarantees bridged.length > 0, so a
+  // start.mjs is always emitted and carries the tolerant Engram cloud setup phase.
   if (bridged.length > 0) {
-    files.push({ path: "start.mjs", content: emitStartMjs(bridged) });
+    files.push({ path: "start.mjs", content: emitStartMjs(bridged, sharedMemoryEnabled ? engramProjectKey : undefined) });
   }
 
   files.sort((a, b) => a.path.localeCompare(b.path));
@@ -285,14 +327,51 @@ function emitAgentModule(
  *
  * Bridge facts verified against supergateway 3.4.3 (--stdio + --outputTransport
  * streamableHttp, default path /mcp).
+ *
+ * `engramProjectKey` (J4): when set, a tolerant Engram cloud setup phase runs
+ * BEFORE the bridges and the server (config + enroll), gated on the presence of
+ * `ENGRAM_CLOUD_SERVER` + `ENGRAM_CLOUD_TOKEN`. The bridge machinery stays generic
+ * (engram is just another entry in BRIDGES); only this setup phase is engram-aware.
  */
-function emitStartMjs(bridged: BridgedStdioServer[]): string {
+function emitStartMjs(bridged: BridgedStdioServer[], engramProjectKey?: string): string {
   const bridgesLiteral = bridged
     .map((m) => {
       const cmd = [m.command, ...(m.args ?? [])].join(" ");
       return `  { name: ${q(m.name)}, port: ${m.port}, command: ${q(cmd)} },`;
     })
     .join("\n");
+
+  // Tolerant, idempotent Engram cloud setup (J4 / DA-05). Runs config + enroll
+  // before anything else; any failure only warns so the agent still boots with
+  // LOCAL memory (MEM-04/MEM-06). Skipped entirely when the cloud vars are absent.
+  const engramSetup =
+    engramProjectKey === undefined
+      ? ""
+      : `// ── Engram cloud setup (shared memory) — tolerant + idempotent ──\n` +
+        `async function setupEngramCloud() {\n` +
+        `  const server = process.env.ENGRAM_CLOUD_SERVER;\n` +
+        `  const token = process.env.ENGRAM_CLOUD_TOKEN;\n` +
+        `  // No server/token ⇒ shared memory not configured; run with LOCAL memory only.\n` +
+        `  if (!server || !token) return;\n` +
+        `  const run = (args) =>\n` +
+        `    new Promise((resolve, reject) => {\n` +
+        `      const c = spawn("engram", args, { stdio: "inherit" });\n` +
+        `      c.on("error", reject);\n` +
+        `      c.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(\`engram \${args.join(" ")} exited \${code}\`))));\n` +
+        `    });\n` +
+        `  try {\n` +
+        `    // Idempotent: re-running config/enroll for an already-enrolled agent is a no-op.\n` +
+        `    await run(["cloud", "config", "--server", server]);\n` +
+        `    await run(["cloud", "enroll", ${q(engramProjectKey)}]);\n` +
+        `    // Autosync activates from env (ENGRAM_CLOUD_AUTOSYNC=1 + SERVER + TOKEN); nothing to run here.\n` +
+        `    console.log(\`[fleet] engram cloud setup complete (project: ${engramProjectKey})\`);\n` +
+        `  } catch (err) {\n` +
+        `    // MEM-04/MEM-06: never abort the boot — degrade to local memory.\n` +
+        `    console.warn(\`[fleet] engram cloud setup failed; continuing with local memory: \${err instanceof Error ? err.message : String(err)}\`);\n` +
+        `  }\n` +
+        `}\n` +
+        `await setupEngramCloud();\n` +
+        `\n`;
 
   return (
     `/**\n` +
@@ -304,6 +383,7 @@ function emitStartMjs(bridged: BridgedStdioServer[]): string {
     `import { spawn } from "node:child_process";\n` +
     `import { connect } from "node:net";\n` +
     `\n` +
+    engramSetup +
     `const BRIDGES = [\n` +
     bridgesLiteral +
     `\n];\n` +
@@ -401,16 +481,25 @@ function emitPackageJson(hasBridged: boolean): string {
 }
 
 /**
- * Emit the Dockerfile. The only variable part is the CMD: when stdio bridges are
- * present, the entrypoint is start.mjs (which starts bridges then the server);
- * otherwise the Flue server starts directly.
+ * Emit the Dockerfile. The variable parts are: the CMD (when stdio bridges are
+ * present, the entrypoint is start.mjs — which starts bridges then the server —
+ * otherwise the Flue server starts directly), and a multi-stage `COPY --from` of
+ * the pinned `engram` binary when shared memory is on (J4). When shared memory is
+ * off (or the target is Cloudflare) the Dockerfile is byte-identical to before.
  */
-function emitDockerfile(hasBridged: boolean): string {
+function emitDockerfile(hasBridged: boolean, sharedMemory: boolean): string {
   const cmd = hasBridged ? `CMD ["node", "start.mjs"]` : `CMD ["node", "dist/server.mjs"]`;
+  // Multi-stage: pull the pinned engram binary out of the official image (RNF-02:
+  // only the binary is copied, not the whole image, so the final layer stays slim).
+  const engramCopy = sharedMemory
+    ? `# Shared memory (Engram): copy the pinned engram binary from the official image.\n` +
+      `COPY --from=${ENGRAM_IMAGE} ${ENGRAM_BIN_PATH} ${ENGRAM_BIN_PATH}\n`
+    : "";
   return (
     `# Deployable Flue agent (Node target). Built by @inteliside/gateway-converter.\n` +
     `FROM node:22-slim\n` +
     `WORKDIR /app\n` +
+    engramCopy +
     `COPY package.json ./\n` +
     `RUN npm install\n` +
     `COPY . .\n` +
@@ -500,8 +589,22 @@ function emitEnvExample(
   httpMcp: Array<{ name: string; url: string }>,
   stdioMcp: Array<{ name: string; env?: Record<string, string> }>,
   env: Record<string, string> = {},
+  sharedMemory = false,
 ): string {
   const lines = [`# Model provider key (the agent reads this at runtime).`, `${apiKeyEnv}=`];
+  // Shared memory (Engram cloud, J4). NAMES only — the deployer injects real values
+  // from the secret store (rule #8 / MEM-08); nothing is committed. Without
+  // SERVER+TOKEN the agent runs with local memory only. Set ENGRAM_CLOUD_AUTOSYNC=1
+  // (deployer-injected) to enable autosync replication.
+  if (sharedMemory) {
+    lines.push(
+      "",
+      `# Shared memory (Engram cloud) — names only; values are injected by the deployer.`,
+      `ENGRAM_CLOUD_SERVER=`,
+      `ENGRAM_CLOUD_TOKEN=`,
+      `ENGRAM_CLOUD_AUTOSYNC=`,
+    );
+  }
   for (const mcp of httpMcp) {
     lines.push("", `# Optional override for the "${mcp.name}" MCP server URL.`, `${upperSnake(mcp.name)}_MCP_URL=`);
   }
