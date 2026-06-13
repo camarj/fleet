@@ -38,7 +38,8 @@ const EMPTY_BODY = Symbol("empty-body");
 
 const STRONG_SECRETS = {
   cloudToken: "org-token-abc",
-  jwtSecret: "a-strong-jwt-secret-value-1234",
+  // ≥32 bytes — the engram binary rejects shorter secrets (verified live).
+  jwtSecret: "a-strong-jwt-secret-value-0123456789",
   postgresPassword: "pg-pass-xyz",
 };
 
@@ -199,6 +200,26 @@ async function main(): Promise<void> {
   }
   assert(threw, "weak JWT secret throws DeployError");
   assert(guarded.calls.length === 0, "no Dokploy call is made when the JWT secret is weak");
+
+  // Borderline: a 16–31 byte secret (would pass an old ≥16 guard) is rejected —
+  // the binary hard-requires ≥32 bytes (verified live 2026-06-13).
+  const shortJwt = makeFakeFetch({ ...PROJECT_ONLY });
+  let threwShort = false;
+  try {
+    await deployEngramServer({
+      cfg: FAKE_CFG,
+      orgSlug: "acme",
+      allowedProjects: [],
+      secrets: { ...STRONG_SECRETS, jwtSecret: "x".repeat(31) },
+      onProgress: NO_PROGRESS,
+      onLog: NO_LOG,
+      fetchImpl: shortJwt.fetch,
+      pollIntervalMs: 0,
+    });
+  } catch (err) {
+    threwShort = err instanceof DeployError;
+  }
+  assert(threwShort, "31-byte JWT secret throws (binary requires ≥32 bytes)");
 
   // ── 5. orgSlugFromName helper ────────────────────────────────────────────────
   console.log("\n[5] orgSlugFromName — slugifies org display names");

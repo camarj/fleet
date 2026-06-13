@@ -171,9 +171,12 @@ function validateSecrets(secrets: EngramServerSecrets): void {
     );
   }
   const jwt = secrets.jwtSecret ?? "";
-  if (WEAK_JWT_SECRETS.has(jwt.toLowerCase()) || jwt.length < 16) {
+  // The engram binary HARD-REQUIRES ≥32 bytes ("jwt secret must be at least 32
+  // bytes") — verified live 2026-06-13. A shorter secret crashes the server on
+  // boot, so reject it up-front with a clear message instead.
+  if (WEAK_JWT_SECRETS.has(jwt.toLowerCase()) || Buffer.byteLength(jwt, "utf8") < 32) {
     throw new DeployError(
-      "Engram server deploy needs a strong, non-default ENGRAM_JWT_SECRET (≥16 chars; the binary rejects the dev default). Set it in Settings → Infrastructure (or export it), then retry.",
+      "Engram server deploy needs a strong, non-default ENGRAM_JWT_SECRET (≥32 bytes; the binary rejects shorter or default secrets). Set it in Settings → Infrastructure (or export it), then retry.",
     );
   }
 }
