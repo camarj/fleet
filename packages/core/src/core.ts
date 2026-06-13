@@ -9,6 +9,7 @@ import { spawnSync } from "node:child_process";
 import { FlueAdapter } from "./adapters/flue.js";
 import type { AgentAdapter, AgentKind, RunHandle } from "./adapters/agent-adapter.js";
 import { FlueDeployer, pingAgent, type DeployTarget } from "./deploy/flue-deployer.js";
+import { orgSlugFromName } from "./deploy/engram-server-deployer.js";
 import { SecretsStore } from "./secrets/store.js";
 import { computeCostUsd } from "./pricing/pricing.js";
 import { GatewayState, type StoredAgent, type SessionSummary } from "./state/index.js";
@@ -213,6 +214,9 @@ export class GatewayCore {
           return await this.#orgMembers(emit);
         case "org.status":
           return this.#orgStatusReq(emit);
+        // ── Org shared memory (J4) ────────────────────────────────────────────
+        case "orgMemory.deployServer":
+          return await this.#deployEngramServer(req, emit);
         default: {
           const _exhaustive: never = req;
           void _exhaustive;
@@ -953,6 +957,36 @@ export class GatewayCore {
   /** Emit the current org binding state. */
   #orgStatusReq(emit: Emit): void {
     emit({ type: "org.status", ...this.#buildOrgStatus() });
+  }
+
+  /**
+   * Deploy (or idempotently redeploy) the per-org Engram cloud shared-memory
+   * server to Dokploy (J4 — MEM-01/MEM-02). The org slug defaults to the bound
+   * org's name when omitted; secrets are resolved server-side by the deployer
+   * from the secure store / operator env (rule #8). Progress and logs stream as
+   * `orgMemory.*` events; failures are emitted as `orgMemory.error` (never thrown).
+   */
+  async #deployEngramServer(req: Extract<ClientRequest, { type: "orgMemory.deployServer" }>, emit: Emit): Promise<void> {
+    try {
+      const binding = this.#orgStore.load();
+      const orgSlug = req.orgSlug?.trim() || (binding ? orgSlugFromName(binding.orgName) : "");
+      if (!orgSlug) {
+        emit({
+          type: "orgMemory.error",
+          message: "No org slug: bind an org first (Settings → Org) or pass orgSlug explicitly.",
+        });
+        return;
+      }
+      const result = await this.#deployer.deployEngramServer({
+        orgSlug,
+        allowedProjects: req.allowedProjects ?? [],
+        onProgress: (step, detail) => emit({ type: "orgMemory.progress", step, detail }),
+        onLog: (lines) => emit({ type: "orgMemory.log", lines }),
+      });
+      emit({ type: "orgMemory.deployed", composeId: result.composeId, composeName: result.composeName, reused: result.reused });
+    } catch (err) {
+      emit({ type: "orgMemory.error", message: (err as Error).message });
+    }
   }
 
   /** Create a new org and bind this Core instance as owner (ORG-01). */

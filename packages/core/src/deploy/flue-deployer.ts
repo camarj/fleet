@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { convert, resolveModel, writeFlueProject, type UnmappedItem } from "@inteliside/gateway-converter";
 import { FlueAdapter } from "../adapters/flue.js";
+import { deployEngramServer, type EngramServerDeployResult } from "./engram-server-deployer.js";
 import { deployedDir } from "../paths.js";
 import type { PreflightCheck } from "../api.js";
 import type { SecretsStore } from "../secrets/store.js";
@@ -42,6 +43,10 @@ export const INFRA_CREDENTIAL_IDS: readonly string[] = [
   "DOKPLOY_PROJECT",
   "DOKPLOY_GITHUB_ID",
   "DOKPLOY_DOMAIN",
+  // J4 — Engram cloud shared-memory server secrets (compose env, never the repo).
+  "ENGRAM_CLOUD_TOKEN",
+  "ENGRAM_JWT_SECRET",
+  "POSTGRES_PASSWORD",
 ] as const;
 
 /**
@@ -205,6 +210,46 @@ export class FlueDeployer {
     const adapter = await FlueAdapter.connect({ baseUrl, agentName });
     onProgress("done");
     return { kind: "connected", adapter, agentName, baseUrl, target, unmapped };
+  }
+
+  /**
+   * Deploy (or idempotently redeploy) the per-org Engram cloud shared-memory
+   * server to Dokploy (J4 — MEM-01/MEM-02). Resolves the Dokploy credentials and
+   * the server secrets from the SecretsStore / operator env (the same #infraCred
+   * lookup as agent deploys) and delegates the compose orchestration to
+   * `deployEngramServer`. Secret VALUES are injected through Dokploy's compose
+   * `env` field — never written to the repo (rule #8).
+   *
+   * Requires DOKPLOY_URL + DOKPLOY_API_KEY, plus ENGRAM_CLOUD_TOKEN,
+   * ENGRAM_JWT_SECRET (non-default) and POSTGRES_PASSWORD.
+   */
+  async deployEngramServer(opts: {
+    orgSlug: string;
+    allowedProjects: string[];
+    onProgress: DeployProgress;
+    onLog?: DeployLog;
+  }): Promise<EngramServerDeployResult> {
+    const onLog = opts.onLog ?? NO_LOG;
+    const dokployUrl = this.#infraCred("DOKPLOY_URL");
+    const dokployKey = this.#infraCred("DOKPLOY_API_KEY");
+    if (!dokployUrl || !dokployKey) {
+      throw new DeployError(
+        "Engram server deploy needs DOKPLOY_URL and DOKPLOY_API_KEY. Set them in Settings → Infrastructure (or export them), then retry.",
+      );
+    }
+    return deployEngramServer({
+      cfg: { url: dokployUrl, key: dokployKey },
+      orgSlug: opts.orgSlug,
+      allowedProjects: opts.allowedProjects,
+      secrets: {
+        cloudToken: this.#infraCred("ENGRAM_CLOUD_TOKEN") ?? "",
+        jwtSecret: this.#infraCred("ENGRAM_JWT_SECRET") ?? "",
+        postgresPassword: this.#infraCred("POSTGRES_PASSWORD") ?? "",
+      },
+      projectName: this.#infraCred("DOKPLOY_PROJECT"),
+      onProgress: opts.onProgress,
+      onLog,
+    });
   }
 
   /** Build a Docker image for the agent and run it on its own host port. */
@@ -1040,7 +1085,14 @@ export async function dokployApi(
 }
 
 type DokployApp = { applicationId: string; name: string; applicationStatus: string; appName?: string };
-type DokployEnv = { name: string; environmentId: string; isDefault: boolean; applications?: DokployApp[] };
+type DokployComposeRef = { composeId: string; name: string; composeStatus?: string };
+type DokployEnv = {
+  name: string;
+  environmentId: string;
+  isDefault: boolean;
+  applications?: DokployApp[];
+  compose?: DokployComposeRef[];
+};
 type DokployProject = { projectId: string; name: string; environments: DokployEnv[] };
 
 /**
@@ -1049,7 +1101,7 @@ type DokployProject = { projectId: string; name: string; environments: DokployEn
  * same project/environment selection rules (DOKPLOY_PROJECT, single-project
  * fallback, isDefault environment).
  */
-async function resolveDokployTarget(
+export async function resolveDokployTarget(
   api: (method: "GET" | "POST", procedure: string, body?: unknown) => Promise<unknown>,
   opts: { agentName: string; projectName?: string },
 ): Promise<{ project: DokployProject; defaultEnv: DokployEnv; existingApp: DokployApp | undefined }> {

@@ -181,7 +181,16 @@ export type ClientRequest =
   /** List live org members (GitHub collaborators). */
   | { type: "org.members" }
   /** Request the current org binding state (responds with org.status). */
-  | { type: "org.status" };
+  | { type: "org.status" }
+  // ── Org shared memory (J4) ──
+  /**
+   * Deploy (or idempotently redeploy) the per-org Engram cloud shared-memory
+   * server to Dokploy. `orgSlug` names the compose `engram-cloud-<orgSlug>`
+   * (defaults to the bound org's slug when omitted). `allowedProjects` is the
+   * project-key allowlist the server enforces (ENGRAM_CLOUD_ALLOWED_PROJECTS).
+   * Secrets are read from the secure store / operator env — never sent here.
+   */
+  | { type: "orgMemory.deployServer"; orgSlug?: string; allowedProjects?: string[] };
 
 // ── Core → Frontend ──────────────────────────────────────────────────────────
 
@@ -290,4 +299,13 @@ export type ServerEvent =
       outputs: Record<string, string>;
     }
   /** K5/D2: responds to workflow.runs requests with the run list, newest first. */
-  | { type: "workflow.runs"; workflowId: string; runs: WorkflowRunSummary[] };
+  | { type: "workflow.runs"; workflowId: string; runs: WorkflowRunSummary[] }
+  // ── Org shared memory (J4) ──
+  /** A step in an in-flight Engram server deploy (same shape as deploy.progress). */
+  | { type: "orgMemory.progress"; step: string; detail?: string }
+  /** Live output lines from the Engram server deploy. */
+  | { type: "orgMemory.log"; lines: string[] }
+  /** The Engram server deploy succeeded. `reused` is true on an idempotent redeploy. */
+  | { type: "orgMemory.deployed"; composeId: string; composeName: string; reused: boolean }
+  /** The Engram server deploy failed (bad secrets, Dokploy error, …). */
+  | { type: "orgMemory.error"; message: string };

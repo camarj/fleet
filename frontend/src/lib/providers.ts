@@ -62,6 +62,10 @@ export const INFRA_CREDENTIAL_IDS: readonly string[] = [
   "DOKPLOY_PROJECT",
   "DOKPLOY_GITHUB_ID",
   "DOKPLOY_DOMAIN",
+  // J4 — Engram cloud shared-memory server secrets (compose env, never the repo).
+  "ENGRAM_CLOUD_TOKEN",
+  "ENGRAM_JWT_SECRET",
+  "POSTGRES_PASSWORD",
 ] as const;
 
 /**
