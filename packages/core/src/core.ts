@@ -74,6 +74,23 @@ export interface GatewayCoreOptions {
   orgRegistry?: OrgRegistry;
 }
 
+// K3: bound each workflow node's output. A verbose agent must not be able to
+// stall the WS connection or freeze the canvas with a multi-megabyte string.
+// The cap applies at the source so every consumer (events, interpolation,
+// outputs_json, UI) inherits it.
+const WORKFLOW_OUTPUT_CAP = Number(process.env.GATEWAY_WORKFLOW_OUTPUT_CAP_BYTES ?? 262_144); // 256 KiB
+const OUTPUT_TRUNCATION_MARKER = "\n…[output truncated by Fleet: exceeded GATEWAY_WORKFLOW_OUTPUT_CAP_BYTES]";
+
+/**
+ * Truncate a workflow node's accumulated output to at most `cap` bytes, appending
+ * a human-readable marker so operators know why the text ends where it does (K3).
+ * Extracted as a pure function so it can be unit-tested independently of the sink.
+ */
+export function capWorkflowOutput(text: string, cap: number): string {
+  if (text.length <= cap) return text;
+  return text.slice(0, cap) + OUTPUT_TRUNCATION_MARKER;
+}
+
 export class GatewayCore {
   readonly #state: GatewayState;
   readonly #agents = new Map<string, RegisteredAgent>();
@@ -505,10 +522,19 @@ export class GatewayCore {
           let text = "";
           const sink: RunSink = {
             onEvent: (e) => {
-              if (e.type === "message.delta" && e.role === "assistant") text += e.content;
-              else if (e.type === "message.completed" && e.role === "assistant") text = e.content;
+              // K3: stop accumulating once the cap is reached; the final cap+marker
+              // is applied at resolution time (covers both the delta overshoot and
+              // the message.completed overwrite path).
+              if (e.type === "message.delta" && e.role === "assistant") {
+                if (text.length < WORKFLOW_OUTPUT_CAP) text += e.content;
+              } else if (e.type === "message.completed" && e.role === "assistant") {
+                text = e.content;
+              }
             },
             onDone: (status, usage) => {
+              // K3: apply the cap once at resolution (covers message.completed overwrites
+              // and the slight delta overshoot when the last chunk pushes text past the cap).
+              text = capWorkflowOutput(text, WORKFLOW_OUTPUT_CAP);
               const costUsd = usage ? computeCostUsd(usage) : null;
               if (usage) this.#state.recordUsage(sessionId, meta?.runId ?? null, usage, costUsd);
               this.#state.endSession(sessionId, status === "aborted" ? "aborted" : "completed");

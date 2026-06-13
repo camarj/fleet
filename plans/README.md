@@ -16,7 +16,7 @@ and update your row when done.
 | 004 | Bridge stdio MCP servers inside the agent container — Node targets (BACKLOG I-PR2 = I2) | P1 | M | 001 | DONE — merged as PR #40 (4f0eebf); ✅ LIVE-VERIFIED docker-local 2026-06-12 (agent wrote+read a file via `mcp__filesystem__*`; supergateway bridged stdio server on :3100) |
 | 005 | Attribute workflow-run usage/cost — runner creates sessions + records usage (BACKLOG K2) | P1 | M | — | TODO |
 | 006 | Workflow run history — read API + Runs panel in canvas (BACKLOG K5, absorbs D2) | P1 | M | — | TODO |
-| 007 | Bound workflow output sizes — cap accumulation + rendering (BACKLOG K3) | P1 | S–M | execute after 005 (same function) | TODO |
+| 007 | Bound workflow output sizes — cap accumulation + rendering (BACKLOG K3) | P1 | S–M | execute after 005 (same function) | DONE — branch feat/k3-output-caps; `capWorkflowOutput` helper + 256 KiB source cap in `#agentRunner`, 4 000-char render cap in canvas (live + Runs panels), 12 unit assertions all green |
 | 008 | Tolerant http-MCP connect — unreachable MCP must not prevent boot (BACKLOG I9, found in live acceptance) | P2 | S | — | TODO |
 
 Plans 005–007 together are BACKLOG slice **K-PR2** (observability). After

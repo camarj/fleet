@@ -376,7 +376,11 @@ export function WorkflowCanvas({ client, agents, connected }: Props): React.JSX.
                 {Object.entries(outputs).map(([id, value]) => (
                   <div key={id} className="wf-output-row">
                     <code>{id}</code>
-                    <pre>{value}</pre>
+                    {/* K3: render cap — a pre-cap run or a very long live output must not freeze
+                        the browser tab. The source cap (GATEWAY_WORKFLOW_OUTPUT_CAP_BYTES) bounds
+                        new outputs; this seatbelt covers historical outputs stored before the cap
+                        was deployed. */}
+                    <pre>{value.length > 4000 ? value.slice(0, 4000) + "\n… (" + (value.length - 4000) + " more chars)" : value}</pre>
                   </div>
                 ))}
               </div>
@@ -406,7 +410,8 @@ export function WorkflowCanvas({ client, agents, connected }: Props): React.JSX.
                             {Object.entries(run.inputs).map(([k, v]) => (
                               <div key={k} className="wf-output-row">
                                 <code>{k}</code>
-                                <pre>{v}</pre>
+                                {/* K3: render cap — historical runs may predate the source cap. */}
+                                <pre>{v.length > 4000 ? v.slice(0, 4000) + "\n… (" + (v.length - 4000) + " more chars)" : v}</pre>
                               </div>
                             ))}
                           </div>
@@ -416,7 +421,8 @@ export function WorkflowCanvas({ client, agents, connected }: Props): React.JSX.
                               {Object.entries(run.outputs).map(([k, v]) => (
                                 <div key={k} className="wf-output-row">
                                   <code>{k}</code>
-                                  <pre>{v}</pre>
+                                  {/* K3: render cap — historical runs may predate the source cap. */}
+                                  <pre>{v.length > 4000 ? v.slice(0, 4000) + "\n… (" + (v.length - 4000) + " more chars)" : v}</pre>
                                 </div>
                               ))}
                             </div>
