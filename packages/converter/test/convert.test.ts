@@ -249,6 +249,13 @@ function main(): void {
     assert(smStart.includes("await setupEngramCloud();"), "node + shared memory: start.mjs invokes setupEngramCloud()");
     assert(smStart.includes('"cloud", "config", "--server", server'), "node + shared memory: setup runs engram cloud config");
     assert(smStart.includes('"cloud", "enroll", "claude-project"'), "node + shared memory: setup enrolls with the deterministic project key (slug)");
+    // The bridged `engram mcp` MUST pin --project to the SAME enrolled key, else the
+    // memory tools write to the cwd-detected project ("app") and autosync blocks every
+    // mutation (project-key mismatch) — shared memory silently never shares.
+    assert(
+      smStart.includes("engram mcp --tools=agent --project claude-project"),
+      "node + shared memory: bridged engram mcp pins --project to the enrolled key",
+    );
     assert(
       smStart.indexOf("await setupEngramCloud();") < smStart.indexOf("const BRIDGES ="),
       "node + shared memory: setup runs BEFORE the sidecar bridges",

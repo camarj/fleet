@@ -42,12 +42,20 @@ const ENGRAM_BIN_PATH = "/usr/local/bin/engram";
 // agent memory profile, ~15 tools). Modeled as a normal stdio server so it rides
 // the generic bridge machinery (sorting, port assignment, start.mjs BRIDGES) with
 // no engram special-casing in emitStartMjs. command/args are quoting-safe.
-const ENGRAM_MCP_SERVER: Extract<McpServerSpec, { kind: "stdio" }> = {
+//
+// `--project <key>` is REQUIRED: without it, `engram mcp` detects the project from
+// cwd (the container's /app → project "app"). The agent's memory tools would then
+// write to "app", but the cloud setup enrolls (and the server allowlists) the
+// shared `engramProjectKey`. The mismatch makes autosync block every mutation
+// ("non_enrolled_pending_mutations") and the server reject the push (403 "project
+// is not allowed") — so shared memory silently never shares. Pinning the MCP's
+// default project to the enrolled key is what makes A's writes visible to B.
+const engramMcpServer = (projectKey: string): Extract<McpServerSpec, { kind: "stdio" }> => ({
   name: "engram",
   kind: "stdio",
   command: "engram",
-  args: ["mcp", "--tools=agent"],
-};
+  args: ["mcp", "--tools=agent", "--project", projectKey],
+});
 
 /** A stdio MCP server that has been assigned an in-container bridge port. */
 type BridgedStdioServer = Extract<McpServerSpec, { kind: "stdio" }> & { port: number };
@@ -77,7 +85,7 @@ export function emitFlueProject(project: ClaudeProject, opts: ConvertOptions = {
   // shared memory is on (Node only), `engram mcp` joins the list as one more stdio
   // server and rides the same bridge machinery (sorted → deterministic ports).
   const stdioServers = project.mcpServers.filter((m): m is Extract<McpServerSpec, { kind: "stdio" }> => m.kind === "stdio");
-  if (sharedMemoryEnabled) stdioServers.push(ENGRAM_MCP_SERVER);
+  if (sharedMemoryEnabled) stdioServers.push(engramMcpServer(engramProjectKey));
   const stdioMcp = stdioServers.sort((a, b) => a.name.localeCompare(b.name));
 
   // Cloudflare + shared memory requested: honest `unmapped` (MEM-09). No binary,
