@@ -1,5 +1,9 @@
 # ADR-8 — Motor de agente: Flue (TypeScript) en lugar de DeepAgents (Python)
 
+> **Status**: accepted — revisado por **ADR-13**. Flue sigue siendo el runtime
+> nativo del agente; deja de ser el *único* wire (A2A se reintroduce como capa
+> de coordinación). La elección Flue-sobre-DeepAgents sigue vigente.
+
 ## Contexto
 
 El motor de agente original era DeepAgents (Python, proyecto Shipyard /
