@@ -47,6 +47,11 @@ export const INFRA_CREDENTIAL_IDS: readonly string[] = [
   "ENGRAM_CLOUD_TOKEN",
   "ENGRAM_JWT_SECRET",
   "POSTGRES_PASSWORD",
+  // J4 — Engram cloud client wiring for deployed agents: the server's public URL
+  // and the shared project key. Setting SERVER + TOKEN turns shared memory on for
+  // newly deployed Node agents; PROJECT is the shared key (absent → agent slug).
+  "ENGRAM_CLOUD_SERVER",
+  "ENGRAM_CLOUD_PROJECT",
 ] as const;
 
 /**
@@ -153,12 +158,25 @@ export class FlueDeployer {
   async deploy(req: DeployRequest, onProgress: DeployProgress, onLog: DeployLog = NO_LOG): Promise<DeployResult> {
     const target: DeployTarget = req.target ?? "docker-local";
 
+    // J4 — shared memory is "on" for this agent when the org has configured an
+    // Engram cloud server + token in the infra creds (the same activation pattern
+    // as Fly's FLY_API_TOKEN or Dokploy's DOKPLOY_*). The converter bridges
+    // `engram mcp` on Node targets and reports it unmapped on Cloudflare (honest
+    // per-target parity). ENGRAM_CLOUD_PROJECT is the SHARED project key — agents
+    // that share it read the same memory; absent, the converter defaults to the
+    // agent slug (each agent keeps its own memory).
+    const engramServer = this.#infraCred("ENGRAM_CLOUD_SERVER");
+    const engramToken = this.#infraCred("ENGRAM_CLOUD_TOKEN");
+    const engramProject = this.#infraCred("ENGRAM_CLOUD_PROJECT");
+    const sharedMemoryRequested = !!(engramServer && engramToken);
+
     // Convert the Claude Code project to a Flue project (deterministic).
     onProgress("converting");
     const project = convert(req.sourceDir, {
       provider: req.provider,
       model: req.model,
       target: target === "cloudflare" ? "cloudflare" : "node",
+      sharedMemory: sharedMemoryRequested ? { enabled: true, projectKey: engramProject || undefined } : undefined,
     });
     const agentName = project.report.agentName;
     const unmapped = project.report.unmapped;
@@ -188,19 +206,30 @@ export class FlueDeployer {
       );
     }
 
+    // Extra env injected into the agent CONTAINER at runtime (never the repo). The
+    // Engram cloud vars ride only the container targets that run start.mjs
+    // (docker-local/fly/dokploy) — start.mjs's setup phase reads SERVER+TOKEN to
+    // config/enroll and ENGRAM_CLOUD_AUTOSYNC=1 turns on background replication.
+    // Cloudflare (no subprocess) and local-process (no Docker, runs dist directly)
+    // don't get them. The token value flows through the same secret-handling path
+    // as the model key (env-file / stdin / Dokploy env) — never written to the repo.
+    const extraEnv: Record<string, string> = sharedMemoryRequested
+      ? { ENGRAM_CLOUD_SERVER: engramServer!, ENGRAM_CLOUD_TOKEN: engramToken!, ENGRAM_CLOUD_AUTOSYNC: "1" }
+      : {};
+
     let baseUrl: string;
     switch (target) {
       case "docker-local":
-        baseUrl = await this.#runDockerLocal(agentName, agentDir, apiKeyEnv, key, onProgress, onLog);
+        baseUrl = await this.#runDockerLocal(agentName, agentDir, apiKeyEnv, key, extraEnv, onProgress, onLog);
         break;
       case "fly":
-        baseUrl = await this.#runFly(agentName, agentDir, apiKeyEnv, key, onProgress, onLog);
+        baseUrl = await this.#runFly(agentName, agentDir, apiKeyEnv, key, extraEnv, onProgress, onLog);
         break;
       case "cloudflare":
         baseUrl = await this.#runCloudflare(agentName, agentDir, apiKeyEnv, key, onProgress, onLog);
         break;
       case "dokploy":
-        baseUrl = await this.#runDokploy(agentName, agentDir, apiKeyEnv, key, req.repoOwner, onProgress, onLog);
+        baseUrl = await this.#runDokploy(agentName, agentDir, apiKeyEnv, key, extraEnv, req.repoOwner, onProgress, onLog);
         break;
       default:
         baseUrl = await this.#runLocalProcess(agentName, agentDir, apiKeyEnv, key, onProgress, onLog);
@@ -258,6 +287,7 @@ export class FlueDeployer {
     agentDir: string,
     apiKeyEnv: string,
     key: string | undefined,
+    extraEnv: Record<string, string>,
     onProgress: DeployProgress,
     onLog: DeployLog,
   ): Promise<string> {
@@ -276,8 +306,9 @@ export class FlueDeployer {
     const hostPort = await freePort();
     onProgress("starting", `container on port ${hostPort}`);
 
-    // Inject the key via a temp --env-file (0600) so it never lands in `ps`/args.
-    const envFile = writeEnvFile(apiKeyEnv, key);
+    // Inject the key (+ Engram cloud vars) via a temp --env-file (0600) so they
+    // never land in `ps`/args.
+    const envFile = writeEnvFile(apiKeyEnv, key, extraEnv);
     try {
       const args = ["run", "-d", "--name", container, "-p", `${hostPort}:${INTERNAL_PORT}`, "--env-file", envFile, image];
       const run = spawnSync("docker", args, { stdio: "pipe", encoding: "utf8" });
@@ -458,6 +489,7 @@ export class FlueDeployer {
     agentDir: string,
     apiKeyEnv: string,
     key: string | undefined,
+    extraEnv: Record<string, string>,
     repoOwner: string | undefined,
     onProgress: DeployProgress,
     onLog: DeployLog,
@@ -477,6 +509,7 @@ export class FlueDeployer {
       agentName,
       apiKeyEnv,
       key,
+      extraEnv,
       owner,
       repo,
       githubId: this.#infraCred("DOKPLOY_GITHUB_ID"),
@@ -581,6 +614,7 @@ export class FlueDeployer {
     agentDir: string,
     apiKeyEnv: string,
     key: string | undefined,
+    extraEnv: Record<string, string>,
     onProgress: DeployProgress,
     onLog: DeployLog,
   ): Promise<string> {
@@ -614,11 +648,13 @@ export class FlueDeployer {
       }
     }
 
-    // Stage the provider key as a Fly secret (applied on the next deploy).
+    // Stage the provider key (+ Engram cloud vars) as Fly secrets, applied on the
+    // next deploy. All staged in one import so a single deploy picks them all up.
     if (key) {
+      const secretLines = [`${apiKeyEnv}=${key}`, ...Object.entries(extraEnv).map(([k, v]) => `${k}=${v}`)];
       const sec = spawnSync("flyctl", ["secrets", "import", "--app", app, "--stage"], {
         cwd: agentDir,
-        input: `${apiKeyEnv}=${key}\n`,
+        input: secretLines.join("\n") + "\n",
         stdio: ["pipe", "pipe", "pipe"],
         encoding: "utf8",
         env: flyEnv,
@@ -777,10 +813,11 @@ function ensureDockerRunning(): void {
 }
 
 /** Write a 0600 temp env file for `docker run --env-file` (keeps secrets out of argv). */
-function writeEnvFile(apiKeyEnv: string, key: string | undefined): string {
+function writeEnvFile(apiKeyEnv: string, key: string | undefined, extraEnv: Record<string, string> = {}): string {
   const file = join(tmpdir(), `fleet-env-${Math.random().toString(36).slice(2)}.env`);
   const lines = ["HOST=0.0.0.0"];
   if (key) lines.push(`${apiKeyEnv}=${key}`);
+  for (const [k, v] of Object.entries(extraEnv)) lines.push(`${k}=${v}`);
   writeFileSync(file, lines.join("\n") + "\n", { mode: 0o600 });
   try {
     chmodSync(file, 0o600);
@@ -1193,6 +1230,8 @@ export async function runDokployOrchestration(opts: {
   agentName: string;
   apiKeyEnv: string;
   key: string | undefined;
+  /** Extra env vars (J4 Engram cloud) injected alongside the model key. */
+  extraEnv?: Record<string, string>;
   owner: string;
   repo: string;
   onProgress: DeployProgress;
@@ -1287,11 +1326,13 @@ export async function runDokployOrchestration(opts: {
     railpackVersion: null,
   });
 
-  // 6. Inject the model provider key as an environment variable
-  onLog(["[dokploy] setting provider environment variable…"]);
+  // 6. Inject the model provider key (+ any Engram cloud vars) as environment
+  //    variables. Values are sent in the API payload, never written to the repo.
+  onLog(["[dokploy] setting environment variables…"]);
+  const envLines = [`${apiKeyEnv}=${key ?? ""}`, ...Object.entries(opts.extraEnv ?? {}).map(([k, v]) => `${k}=${v}`)];
   await api("POST", "application.saveEnvironment", {
     applicationId,
-    env: `${apiKeyEnv}=${key ?? ""}`,
+    env: envLines.join("\n"),
     buildArgs: null,
     buildSecrets: null,
     createEnvFile: false,

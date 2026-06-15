@@ -388,6 +388,53 @@ async function main(): Promise<void> {
       }
       assert(threw, "unknown project name still throws with the available list");
     }
+
+    // ── 10. extraEnv (J4): Engram cloud vars injected alongside the model key ────
+    console.log("\n[10] extraEnv — Engram cloud vars ride application.saveEnvironment");
+    {
+      const { fetch: f10, bodies: b10 } = makeFakeFetch(BASE_RESPONSES);
+      await runDokployOrchestration({
+        cfg: FAKE_CFG,
+        agentName: FAKE_AGENT,
+        apiKeyEnv: "ANTHROPIC_API_KEY",
+        key: "sk-test-key",
+        extraEnv: {
+          ENGRAM_CLOUD_SERVER: "https://engram.example.org",
+          ENGRAM_CLOUD_TOKEN: "org-token-xyz",
+          ENGRAM_CLOUD_AUTOSYNC: "1",
+        },
+        owner: FAKE_PUSH.owner,
+        repo: FAKE_PUSH.repo,
+        onProgress: NO_PROGRESS,
+        onLog: NO_LOG,
+        fetchImpl: f10,
+        pollIntervalMs: 0,
+      });
+      const envBody = (b10["application.saveEnvironment"] as { env: string }).env;
+      assert(envBody.includes("ANTHROPIC_API_KEY=sk-test-key"), "saveEnvironment still carries the model key");
+      assert(envBody.includes("ENGRAM_CLOUD_SERVER=https://engram.example.org"), "saveEnvironment injects ENGRAM_CLOUD_SERVER");
+      assert(envBody.includes("ENGRAM_CLOUD_TOKEN=org-token-xyz"), "saveEnvironment injects ENGRAM_CLOUD_TOKEN");
+      assert(envBody.includes("ENGRAM_CLOUD_AUTOSYNC=1"), "saveEnvironment injects ENGRAM_CLOUD_AUTOSYNC=1");
+
+      // Without extraEnv the payload is exactly the model key (no regression).
+      const { fetch: f10b, bodies: b10b } = makeFakeFetch(BASE_RESPONSES);
+      await runDokployOrchestration({
+        cfg: FAKE_CFG,
+        agentName: FAKE_AGENT,
+        apiKeyEnv: "ANTHROPIC_API_KEY",
+        key: "sk-test-key",
+        owner: FAKE_PUSH.owner,
+        repo: FAKE_PUSH.repo,
+        onProgress: NO_PROGRESS,
+        onLog: NO_LOG,
+        fetchImpl: f10b,
+        pollIntervalMs: 0,
+      });
+      assert(
+        (b10b["application.saveEnvironment"] as { env: string }).env === "ANTHROPIC_API_KEY=sk-test-key",
+        "no extraEnv → saveEnvironment is exactly the model key (no regression)",
+      );
+    }
   } finally {
     // Restore env vars.
     for (const k of envCleanup) {
