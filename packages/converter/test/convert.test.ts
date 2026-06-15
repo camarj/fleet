@@ -220,6 +220,98 @@ function main(): void {
   const cfDockerfile = fileContent(cfOut, "Dockerfile");
   assert(cfDockerfile.includes('CMD ["node", "dist/server.mjs"]'), "cloudflare target: Dockerfile CMD is node dist/server.mjs");
 
+  // ── J4: shared memory OFF ⇒ byte-identical to today (MEM-10 regression guard) ──
+  {
+    const off = JSON.stringify(convert(FIXTURE, { sharedMemory: { enabled: false } }).files);
+    const baseline = JSON.stringify(convert(FIXTURE).files);
+    assert(off === baseline, "shared memory disabled ⇒ output byte-identical to no-flag (no regression)");
+  }
+
+  // ── J4: shared memory ON, Node target ──
+  {
+    const sm = convert(FIXTURE, { sharedMemory: { enabled: true } });
+    assert(sm.report.mcpStdioBridged.includes("engram"), "node + shared memory: engram in report.mcpStdioBridged");
+    // engram sorts before filesystem (e < f) ⇒ deterministic ports: engram=3100, filesystem=3101.
+    const smAgent = fileContent(sm, "src/agents/claude-project.ts");
+    assert(smAgent.includes('tryConnectMcpServer("engram"'), "node + shared memory: engram wired via tolerant tryConnectMcpServer");
+    assert(smAgent.includes("http://127.0.0.1:3100/mcp"), "node + shared memory: engram bridge at deterministic port 3100");
+
+    // Dockerfile multi-stage COPY of the pinned engram binary.
+    const smDocker = fileContent(sm, "Dockerfile");
+    assert(
+      smDocker.includes("COPY --from=ghcr.io/gentleman-programming/engram:1.16.3 /usr/local/bin/engram /usr/local/bin/engram"),
+      "node + shared memory: Dockerfile copies the pinned engram binary (multi-stage)",
+    );
+
+    // start.mjs: tolerant Engram cloud setup, BEFORE the bridges and the server.
+    const smStart = fileContent(sm, "start.mjs");
+    assert(smStart.includes("async function setupEngramCloud()"), "node + shared memory: start.mjs defines setupEngramCloud()");
+    assert(smStart.includes("await setupEngramCloud();"), "node + shared memory: start.mjs invokes setupEngramCloud()");
+    assert(smStart.includes('"cloud", "config", "--server", server'), "node + shared memory: setup runs engram cloud config");
+    assert(smStart.includes('"cloud", "enroll", "claude-project"'), "node + shared memory: setup enrolls with the deterministic project key (slug)");
+    // The bridged `engram mcp` MUST pin --project to the SAME enrolled key, else the
+    // memory tools write to the cwd-detected project ("app") and autosync blocks every
+    // mutation (project-key mismatch) — shared memory silently never shares.
+    assert(
+      smStart.includes("engram mcp --tools=agent --project claude-project"),
+      "node + shared memory: bridged engram mcp pins --project to the enrolled key",
+    );
+    assert(
+      smStart.indexOf("await setupEngramCloud();") < smStart.indexOf("const BRIDGES ="),
+      "node + shared memory: setup runs BEFORE the sidecar bridges",
+    );
+    assert(
+      smStart.indexOf("await setupEngramCloud();") < smStart.indexOf('spawn("node", ["dist/server.mjs"]'),
+      "node + shared memory: setup runs BEFORE the Flue server",
+    );
+    assert(smStart.includes("continuing with local memory"), "node + shared memory: setup is tolerant (warn + continue on failure)");
+
+    // .env.example: the 3 Engram cloud vars, NAMES only (no values — MEM-08 / rule #8).
+    const smEnv = fileContent(sm, ".env.example");
+    assert(smEnv.includes("ENGRAM_CLOUD_SERVER="), ".env.example surfaces ENGRAM_CLOUD_SERVER");
+    assert(smEnv.includes("ENGRAM_CLOUD_TOKEN="), ".env.example surfaces ENGRAM_CLOUD_TOKEN");
+    assert(smEnv.includes("ENGRAM_CLOUD_AUTOSYNC="), ".env.example surfaces ENGRAM_CLOUD_AUTOSYNC");
+    assert(!/ENGRAM_CLOUD_(SERVER|TOKEN|AUTOSYNC)=\S/.test(smEnv), ".env.example carries ENGRAM_CLOUD_* names only, never values (rule #8)");
+
+    // package.json gains supergateway (engram is a bridge) + start.mjs entrypoint.
+    const smPkg = JSON.parse(fileContent(sm, "package.json"));
+    assert(smPkg.scripts["start"] === "node start.mjs", "node + shared memory: start script uses start.mjs (engram bridge present)");
+
+    // determinism with shared memory on.
+    const a2 = JSON.stringify(convert(FIXTURE, { sharedMemory: { enabled: true } }).files);
+    const b2 = JSON.stringify(convert(FIXTURE, { sharedMemory: { enabled: true } }).files);
+    assert(a2 === b2, "node + shared memory: deterministic (same input ⇒ byte-identical)");
+
+    // custom project key flows into the enroll command.
+    const smKey = fileContent(convert(FIXTURE, { sharedMemory: { enabled: true, projectKey: "org/acme/support" } }), "start.mjs");
+    assert(smKey.includes('"cloud", "enroll", "org/acme/support"'), "node + shared memory: explicit projectKey used for enroll (org scoping, DA-06)");
+  }
+
+  // ── J4: shared memory on Cloudflare ⇒ unmapped, no binary, no bridge, no start.mjs ──
+  {
+    const cfSm = convert(FIXTURE, { target: "cloudflare", sharedMemory: { enabled: true } });
+    assert(
+      cfSm.report.unmapped.some((u) => u.kind === "shared-memory" && u.name === "engram"),
+      "cloudflare + shared memory: reported as unmapped (kind shared-memory)",
+    );
+    assert(
+      cfSm.report.unmapped.some((u) => u.kind === "shared-memory" && u.reason.includes("Cloudflare")),
+      "cloudflare + shared memory: unmapped reason mentions Cloudflare",
+    );
+    assert(!cfSm.report.mcpStdioBridged.includes("engram"), "cloudflare + shared memory: engram NOT bridged (no subprocesses)");
+    assert(!cfSm.files.some((x) => x.path === "start.mjs"), "cloudflare + shared memory: no start.mjs emitted");
+    const cfSmDocker = fileContent(cfSm, "Dockerfile");
+    assert(!cfSmDocker.includes("engram"), "cloudflare + shared memory: no engram binary in the Dockerfile");
+    const cfSmEnv = fileContent(cfSm, ".env.example");
+    assert(!cfSmEnv.includes("ENGRAM_CLOUD_"), "cloudflare + shared memory: no autosync vars in .env.example");
+    // "Rest byte-identical": every file except README.md (which honestly mirrors the
+    // new unmapped reason) equals the plain cloudflare conversion.
+    for (const f of cfSm.files) {
+      if (f.path === "README.md") continue;
+      assert(fileContent(cfOut, f.path) === f.content, `cloudflare + shared memory: ${f.path} byte-identical to plain cloudflare`);
+    }
+  }
+
   console.log(process.exitCode ? "\nFAILED" : "\nALL GOOD");
 }
 
