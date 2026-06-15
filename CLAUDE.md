@@ -44,9 +44,10 @@ agent (`packages/converter`, `@inteliside/gateway-converter`), **deploys** it
    repo. Agent configuration carries env var NAMES, never values.
 9. **Don't invent Tauri / React Flow APIs.** Consult the matching
    skill, its `references/`, or the official docs. If it isn't there, ask.
-10. **Orchestration is built ONLY per the handoff's Phase F5** (WU-16…19 in
-    `docs/handoff-implementacion-gaps.md`): DAG-only v1, engine in the Core,
-    canvas edits/visualizes. Until F5 starts, `orchestration/` stays a skeleton.
+10. **Orchestration is live — DAG-only v1** (handoff Phase F5, WU-16…19 in
+    `docs/handoff-implementacion-gaps.md`): engine in the Core (`orchestration/`),
+    canvas edits/visualizes, nodes are `input`/`agent`/`output`, workflows are
+    acyclic. Keep it DAG-only: cycles and non-DAG control flow are out of scope.
 11. **Every `packages/core/src/api.ts` change is mirrored by hand in
     `frontend/src/lib/api.ts`** (the frontend deliberately does not import the
     Node core). Touch one → touch the other, same PR.
