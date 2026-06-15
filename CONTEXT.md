@@ -101,9 +101,15 @@ registrado.
 El entorno aislado y con filesystem escribible donde un Agent ejecuta tareas que
 tocan código (clonar, analizar, modificar). Es **efímero por tarea**: se
 provisiona, hace el trabajo, devuelve el artefacto (diff/PR/logs) y se destruye.
-Vive detrás de la interfaz de servicio del Agent (el proveedor es intercambiable,
-self-hosted).
+Vive detrás de la interfaz de servicio del Agent.
 _Avoid_: confundir el Sandbox (runtime de ejecución) con el Agent (loop de razonamiento)
+
+**SandboxAdapter**:
+La costura pluggable que provee un Sandbox (mismo patrón que el AgentAdapter). El
+**default universal** es un contenedor Docker efímero (con gVisor opcional, sin
+requerir KVM, convive con Dokploy); un **adapter de microVM** (Firecracker/E2B)
+es opcional y se activa solo si el host expone `/dev/kvm`. El default corre en
+cualquier infraestructura — requisito de un proyecto open-source.
 
 ## Conversación
 
