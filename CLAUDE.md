@@ -12,6 +12,16 @@ agent (`packages/converter`, `@inteliside/gateway-converter`), **deploys** it
 (Phase 2) orchestrate it. Fleet is **Flue-only** — A2A and ACP were removed. See
 `ARCHITECTURE.md` for the full picture.
 
+> **PIVOTE EN CURSO → Baton (issue #53, ADR-11…14).** El producto se renombra a
+> **Baton** y vira a orquestación de agentes distribuidos: un **Orchestrator
+> agéntico jerárquico** (ADR-12) y la **reintroducción de A2A** como capa de
+> coordinación que convive con Flue (ADR-13), más un **Sandbox efímero** (ADR-14).
+> Hasta que el pivote aterrice, **las reglas #1 (Flue-only) y #10 (DAG-only) de
+> abajo describen el código ACTUAL**; los ADRs 11–14 describen la dirección
+> acordada. No reescribas esas reglas hasta implementar el pivote. ACP sigue
+> fuera de alcance. Glosario nuevo (Orchestrator, Agent Card, Capability, A2A,
+> Delegation, Sandbox): `CONTEXT.md`.
+
 ## Non-negotiable rules
 
 1. **The Gateway never talks to an agent directly — only through an adapter.**
