@@ -18,10 +18,10 @@ empezar, respeta sus STOP conditions, y actualiza su fila al terminar.
 | 006 | Workflow run history (K5/D2) | P1 | M | — | DONE — merged PR #45 |
 | 007 | Cap de output de workflows (K3) | P1 | S–M | 005 | DONE — merged PR #46 |
 | 008 | Tolerant http-MCP connect (I9) | P2 | S | — | DONE — merged PR #43 |
-| 009 | Correr los 20 tests del core (hoy 6 fuera) | P1 | S | — | TODO |
+| 009 | Correr los 20 tests del core (hoy 6 fuera) | P1 | S | — | DONE — `test` corre los **20**; `deploy`+`preflight` arreglados (dummy key + aislamiento de `GATEWAY_DATA_DIR`) |
 | 010 | Quitar `express` no usado del core | P2 | S | — | TODO |
 | 011 | Botón UI para deploy de memoria compartida (Engram) | P1 | S–M | — | TODO |
-| 012 | CI pipeline (GitHub Actions) | P1 | M | 009 | TODO |
+| 012 | CI pipeline (GitHub Actions) | P1 | M | 009 | DONE — `.github/workflows/ci.yml` + script raíz `verify`; secuencia validada local (exit 0). No ejercitada hasta el primer push |
 | 013 | Test de integración de la Gateway API (WS) | P2 | M | 009 | TODO |
 | 014 | Tests unitarios de `SecretsStore` | P2 | S | 009 | TODO |
 | 015 | SPIKE: diseño de paridad converter (I-PR3/I-PR4) | P2 | M | — | TODO |
@@ -47,6 +47,15 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (con razón) | REJECTED (con 
   `frontend/src/lib/api.ts`; es UI pura (no aplica la regla #11 de espejar API).
 - **015 es spike**: su salida (`docs/converter-parity-design.md`) alimenta dos
   PRs futuros (I-PR3 = I3+I4+I5+I8; I-PR4 = I6+I7), que se planificarán aparte.
+- **009 — los 20 tests corren en la suite principal (y en CI)**: durante 009 se
+  detectó que `deploy.test.ts` y `preflight.test.ts` fallaban por *setup del
+  test* (no por bugs de producción) y se arreglaron en el mismo PR:
+  - `deploy.test.ts`: el deployer ganó un guard *fail-fast* (J4) que exige una key
+    de proveedor antes de construir; el test ahora inyecta una key dummy con
+    `secrets.set` antes del deploy (como `health`/`stop-delete`).
+  - `preflight.test.ts`: ahora aísla `GATEWAY_DATA_DIR` a un dir limpio para que el
+    check "no API key set" sea determinista (antes leía el `~/.fleet/secrets.json`
+    real). No queda ningún `test:integration`.
 
 ## Findings considered and rejected (auditoría 2026-06-14)
 

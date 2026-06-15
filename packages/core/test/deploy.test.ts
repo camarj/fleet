@@ -4,8 +4,9 @@
  * → register. Proves the whole "Deploy agent" engine end-to-end.
  *
  * GATEWAY_DATA_DIR is pointed under packages/core so the deployed agent resolves
- * @flue from the monorepo (no multi-minute npm install). No API key needed — the
- * model only runs on a prompt; deploy/registration does not call it.
+ * @flue from the monorepo (no multi-minute npm install). A dummy provider key is
+ * injected before deploy: the deployer fail-fast-guards a missing provider key
+ * (flue-deployer), so a deploy requires one to be set.
  *
  * Run: pnpm --filter @inteliside/gateway-core exec tsx test/deploy.test.ts
  */
@@ -47,6 +48,8 @@ async function main(): Promise<void> {
   try {
     // Default target keeps this test Docker-free and fast; set
     // FLEET_DEPLOY_TARGET=docker-local to exercise the real container path.
+    // The deployer fail-fast-guards a missing provider key, so set one first.
+    await core.handle({ type: "secrets.set", provider: "anthropic", apiKey: "sk-test-deploy" }, emit);
     const target = (process.env.FLEET_DEPLOY_TARGET as "docker-local" | "local-process") ?? "local-process";
     console.log(`(target: ${target})`);
     await core.handle({ type: "agent.deployFlue", sourceDir: FIXTURE, target }, emit);

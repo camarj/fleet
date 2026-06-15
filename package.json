@@ -19,6 +19,7 @@
     "frontend:build": "pnpm --filter @inteliside/gateway-frontend build",
     "dev": "pnpm --filter @inteliside/gateway-core --filter @inteliside/gateway-frontend --parallel run dev",
     "desktop:dev": "pnpm --filter @inteliside/gateway-desktop dev",
-    "version:set": "node scripts/bump-version.mjs"
+    "version:set": "node scripts/bump-version.mjs",
+    "verify": "pnpm --filter @inteliside/gateway-converter build && pnpm --filter @inteliside/gateway-converter typecheck && pnpm --filter @inteliside/gateway-converter test && pnpm --filter @inteliside/gateway-core typecheck && pnpm --filter @inteliside/gateway-core test && pnpm --filter @inteliside/gateway-frontend build"
   }
 }

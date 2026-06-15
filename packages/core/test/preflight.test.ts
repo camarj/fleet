@@ -13,6 +13,16 @@
  * Run: pnpm --filter @inteliside/gateway-core exec tsx test/preflight.test.ts
  */
 
+import { rmSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Isolate the secrets store to a clean dir so the apiKey check is deterministic
+// (otherwise it reads the developer's real ~/.fleet/secrets.json and ok=true).
+const DATA_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", ".preflight-test");
+process.env.GATEWAY_DATA_DIR = DATA_DIR;
+rmSync(DATA_DIR, { recursive: true, force: true });
+
 const { GatewayCore } = await import("../src/core.js");
 import type { PreflightCheck, ServerEvent } from "../src/api.js";
 
@@ -123,6 +133,7 @@ async function main(): Promise<void> {
     process.exitCode = 1;
   } finally {
     await core.shutdown();
+    rmSync(DATA_DIR, { recursive: true, force: true });
   }
 
   console.log(process.exitCode ? "\nFAILED" : "\nALL GOOD");
