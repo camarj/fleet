@@ -22,16 +22,13 @@
   "dependencies": {
     "@flue/sdk": "0.10.1",
     "@inteliside/gateway-converter": "workspace:*",
-    "ws": "^8.18.0",
-    "zod": "^4.4.3"
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@flue/cli": "0.10.1",
     "@flue/runtime": "0.10.1",
-    "@types/express": "^5.0.6",
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.12",
-    "express": "^5.2.1",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
   }
