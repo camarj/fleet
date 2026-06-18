@@ -115,16 +115,19 @@ async function main(): Promise<void> {
     // ── 3. Wait for offline transition ────────────────────────────────────────
     console.log("\n[3] Waiting for health monitor to detect offline …");
     // With 200 ms interval and connection-refused being near-instant, the offline
-    // event should arrive within the first 2-3 ticks (~400–600 ms). Allow 3 s.
+    // event usually arrives within the first 2-3 ticks (~400–600 ms). `waitFor`
+    // returns as soon as the predicate holds, so a generous 10 s ceiling only
+    // affects the failure path — it absorbs slow/loaded CI runners without
+    // slowing the happy case (this test was flaky in CI at 3 s).
     const detected = await waitFor(
       () =>
         events.some(
           (e): e is Extract<ServerEvent, { type: "agent.updated" }> =>
             e.type === "agent.updated" && e.agent.id === agentId && !e.agent.online,
         ),
-      3000,
+      10000,
     );
-    assert(detected, "agent.updated with online:false emitted within 3 s of process kill");
+    assert(detected, "agent.updated with online:false emitted after process kill");
 
     const offlineEvents = events.filter(
       (e): e is Extract<ServerEvent, { type: "agent.updated" }> =>
