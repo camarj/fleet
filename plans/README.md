@@ -19,7 +19,7 @@ empezar, respeta sus STOP conditions, y actualiza su fila al terminar.
 | 007 | Cap de output de workflows (K3) | P1 | S–M | 005 | DONE — merged PR #46 |
 | 008 | Tolerant http-MCP connect (I9) | P2 | S | — | DONE — merged PR #43 |
 | 009 | Correr los 20 tests del core (hoy 6 fuera) | P1 | S | — | DONE — `test` corre los **20**; `deploy`+`preflight` arreglados (dummy key + aislamiento de `GATEWAY_DATA_DIR`) |
-| 010 | Quitar `express` no usado del core | P2 | S | — | TODO |
+| 010 | Quitar `express` no usado del core | P2 | S | — | SUPERSEDED — absorbido y ampliado por el issue #57 (quita express + @types/express + zod + @xterm) |
 | 011 | Botón UI para deploy de memoria compartida (Engram) | P1 | S–M | — | TODO |
 | 012 | CI pipeline (GitHub Actions) | P1 | M | 009 | DONE — `.github/workflows/ci.yml` + script raíz `verify`; secuencia validada local (exit 0). No ejercitada hasta el primer push |
 | 013 | Test de integración de la Gateway API (WS) | P2 | M | 009 | TODO |
@@ -86,3 +86,29 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (con razón) | REJECTED (con 
   puede apagar desde Fleet. Dokploy ya lo tiene. (No planificado aún.)
 - **Phase 3 — entrega web** (`apps/web` es solo un package.json): requiere
   decidir antes si el Core es remoto o embebido. Esfuerzo L. (No planificado aún.)
+
+## Preparación del pivote a Baton (GitHub Issues, 2026-06-18)
+
+Lote de preparación previo a implementar el pivote (PRD issue #53, ADRs 0011–0014).
+Generado desde una auditoría exhaustiva de limpieza (`improve`) + análisis de
+refactor alineado al rumbo (`improve-codebase-architecture`). Vive como **issues**
+(no como planes en este dir). Principio: "primero ordena la casa, luego haz la
+mudanza" — limpiar y reformar los seams existentes antes de construir Baton encima.
+
+**Limpieza:**
+- #57 — quitar deps sin uso (express + @types/express + zod + @xterm). *Absorbe el plan 010.*
+- #58 — alinear docs al estado actual (deploy targets, xterm, A2A/ACP).
+- #59 — gitignorar scratch (`.agents/`, `.context/`) y quitar PNGs sueltos.
+
+**Refactor (preparar los seams del pivote):**
+- #60 — factory de adapters (prep `A2aAdapter`).
+- #61 — extraer el mapeo Flue→neutral a módulo compartido (prep `A2aAdapter`).
+- #62 — tests de caracterización de `GatewayCore` + `Orchestrator` (red de seguridad). **Prerequisito de #65 y #66.**
+- #63 — extraer `DockerProvisioner` de `flue-deployer` (prep `SandboxAdapter`).
+- #64 — deduplicar los 6 deploy targets (`SecretInjector`/`DeployStrategy`). Deuda preexistente.
+- #65 — descomponer `GatewayCore` (god-object) en managers. *Bloqueado por #62.*
+- #66 — extraer `ExecutionEngine` del `Orchestrator`. *Bloqueado por #62.*
+
+Cómo encadena con el pivote: #60+#61 → A2aAdapter · #62→#65/#66 → orquestador
+agéntico · #63 → Docker sandbox. Las rebanadas del pivote (sin publicar aún)
+se marcarán "bloqueadas por" la prep que les toque.
