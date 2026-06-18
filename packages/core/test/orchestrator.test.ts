@@ -338,6 +338,168 @@ async function main(): Promise<void> {
     );
   }
 
+  // ── characterization gaps (issue #62) ───────────────────────────────────────
+  // The sections below COMPLETE the behaviors not already pinned above, so the
+  // engine can be refactored (ExecutionEngine extraction) without silent drift.
+
+  console.log("\n[12] validation — a structurally valid workflow returns no errors …");
+  {
+    const valid: Workflow = {
+      id: "w",
+      name: "valid",
+      nodes: [
+        node("in", "input", { name: "q" }),
+        node("a", "agent", { agentId: "x", promptTemplate: "{{input.q}}" }),
+        node("out", "output"),
+      ],
+      edges: [
+        { from: "in", to: "a" },
+        { from: "a", to: "out" },
+      ],
+    };
+    assert(validateWorkflow(valid).length === 0, "a valid DAG produces an empty error list");
+  }
+
+  console.log("\n[13] validation — a duplicate node id is rejected …");
+  {
+    const dup: Workflow = {
+      id: "w",
+      name: "dup",
+      nodes: [node("a", "input", { name: "q" }), node("a", "output")],
+      edges: [],
+    };
+    assert(
+      validateWorkflow(dup).some((e) => e.includes("duplicate node id") && e.includes("a")),
+      "two nodes with the same id are rejected naming the id",
+    );
+  }
+
+  console.log("\n[14] output node concatenates upstream outputs sorted by node id …");
+  {
+    // Two agent branches feed ONE output node. The output node joins their
+    // outputs with '\n', sorted by upstream node id for determinism — regardless
+    // of declared edge order. Here edges are declared zeta-before-alpha on purpose.
+    const runner = new FakeRunner();
+    const wf: Workflow = {
+      id: "w",
+      name: "collect",
+      nodes: [
+        node("in", "input", { name: "q" }),
+        node("zeta", "agent", { agentId: "z", promptTemplate: "{{input.q}}" }),
+        node("alpha", "agent", { agentId: "al", promptTemplate: "{{input.q}}" }),
+        node("out", "output"),
+      ],
+      edges: [
+        { from: "in", to: "zeta" },
+        { from: "in", to: "alpha" },
+        { from: "zeta", to: "out" },
+        { from: "alpha", to: "out" },
+      ],
+    };
+    const res = await new Orchestrator(runner).run(wf, { q: "go" });
+    assert(res.status === "completed", "collect workflow completes");
+    // alpha sorts before zeta → alpha's output line comes first, joined by '\n'.
+    assert(res.outputs["out"] === "al:go\nz:go", "output node joins upstream outputs sorted by node id, newline-separated");
+  }
+
+  console.log("\n[15] a pre-aborted signal yields status aborted without running nodes …");
+  {
+    const runner = new FakeRunner();
+    const wf: Workflow = {
+      id: "w",
+      name: "preabort",
+      nodes: [node("in", "input", { name: "q" }), node("a", "agent", { agentId: "x", promptTemplate: "{{input.q}}" })],
+      edges: [{ from: "in", to: "a" }],
+    };
+    const ac = new AbortController();
+    ac.abort(); // already aborted before run starts
+    const res = await new Orchestrator(runner).run(wf, { q: "x" }, {}, ac.signal);
+    assert(res.status === "aborted", "an already-aborted signal yields status aborted");
+    assert(runner.calls.length === 0, "no agent node runs when the signal is pre-aborted");
+  }
+
+  console.log("\n[16] a shared dependency runs exactly once (memoization) …");
+  {
+    // 'src' feeds BOTH 'left' and 'right'. The engine memoizes node promises, so
+    // 'src' must be invoked once even though two downstream nodes depend on it.
+    const runner = new FakeRunner();
+    const wf: Workflow = {
+      id: "w",
+      name: "memo",
+      nodes: [
+        node("in", "input", { name: "q" }),
+        node("src", "agent", { agentId: "src", promptTemplate: "{{input.q}}" }),
+        node("left", "agent", { agentId: "left", promptTemplate: "{{src.output}}" }),
+        node("right", "agent", { agentId: "right", promptTemplate: "{{src.output}}" }),
+        node("out", "output"),
+      ],
+      edges: [
+        { from: "in", to: "src" },
+        { from: "src", to: "left" },
+        { from: "src", to: "right" },
+        { from: "left", to: "out" },
+        { from: "right", to: "out" },
+      ],
+    };
+    const res = await new Orchestrator(runner).run(wf, { q: "x" });
+    assert(res.status === "completed", "diamond workflow completes");
+    assert(runner.calls.filter((c) => c.agentId === "src").length === 1, "the shared dependency ran exactly once");
+  }
+
+  console.log("\n[17] a completed output branch survives in outputs when a sibling fails …");
+  {
+    // 'good' completes and feeds output 'okout'; 'bad' explodes and fails the run.
+    // The run status is failed, but the already-completed output node must still
+    // appear in the partial outputs map (fail-fast preserves what finished).
+    const runner = new FakeRunner({ good: 1, boom: 30 });
+    const wf: Workflow = {
+      id: "w",
+      name: "partial",
+      nodes: [
+        node("in", "input", { name: "q" }),
+        node("good", "agent", { agentId: "good", promptTemplate: "{{input.q}}" }),
+        node("okout", "output"),
+        node("bad", "agent", { agentId: "boom", promptTemplate: "{{input.q}}" }),
+        node("badout", "output"),
+      ],
+      edges: [
+        { from: "in", to: "good" },
+        { from: "good", to: "okout" },
+        { from: "in", to: "bad" },
+        { from: "bad", to: "badout" },
+      ],
+    };
+    const res = await new Orchestrator(runner).run(wf, { q: "x" });
+    assert(res.status === "failed", "the run fails when the 'bad' branch throws");
+    assert(res.outputs["okout"] === "good:x", "the completed output node is preserved in the partial outputs");
+    assert(res.outputs["badout"] === undefined, "the never-completed output node is absent from outputs");
+  }
+
+  console.log("\n[18] onNodeStatus emits running before completed for each node …");
+  {
+    const runner = new FakeRunner();
+    const events: { id: string; s: NodeRunStatus }[] = [];
+    const wf: Workflow = {
+      id: "w",
+      name: "hooks",
+      nodes: [
+        node("in", "input", { name: "q" }),
+        node("a", "agent", { agentId: "x", promptTemplate: "{{input.q}}" }),
+        node("out", "output"),
+      ],
+      edges: [
+        { from: "in", to: "a" },
+        { from: "a", to: "out" },
+      ],
+    };
+    await new Orchestrator(runner).run(wf, { q: "x" }, { onNodeStatus: (id, s) => events.push({ id, s }) });
+    for (const id of ["in", "a", "out"]) {
+      const running = events.findIndex((e) => e.id === id && e.s === "running");
+      const completed = events.findIndex((e) => e.id === id && e.s === "completed");
+      assert(running >= 0 && completed >= 0 && running < completed, `node "${id}" emitted running before completed`);
+    }
+  }
+
   console.log(process.exitCode ? "\nFAILED" : "\nALL GOOD");
   process.exit(process.exitCode ? 1 : 0);
 }
