@@ -14,7 +14,7 @@
     "dev": "GATEWAY_NO_AUTH=1 tsx watch src/server.ts",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
-    "test": "tsx test/core-characterization.test.ts && tsx test/deploy.test.ts && tsx test/deploy-log-db.test.ts && tsx test/deploy-log.test.ts && tsx test/dokploy.test.ts && tsx test/engram-server-deployer.test.ts && tsx test/failed-deploy-log.test.ts && tsx test/flue-instance-id.test.ts && tsx test/flue.test.ts && tsx test/health.test.ts && tsx test/model-override.test.ts && tsx test/orchestrator.test.ts && tsx test/org.test.ts && tsx test/preflight.test.ts && tsx test/pricing.test.ts && tsx test/session-history.test.ts && tsx test/stop-delete.test.ts && tsx test/token.test.ts && tsx test/usage-summary.test.ts && tsx test/workflow-output-cap.test.ts && tsx test/workflow.test.ts"
+    "test": "tsx test/core-characterization.test.ts && tsx test/deploy.test.ts && tsx test/deploy-log-db.test.ts && tsx test/deploy-log.test.ts && tsx test/dokploy.test.ts && tsx test/engram-server-deployer.test.ts && tsx test/failed-deploy-log.test.ts && tsx test/flue-instance-id.test.ts && tsx test/flue.test.ts && tsx test/health.test.ts && tsx test/model-override.test.ts && tsx test/orchestrator.test.ts && tsx test/org.test.ts && tsx test/preflight.test.ts && tsx test/pricing.test.ts && tsx test/sandbox-adapter.test.ts && tsx test/session-history.test.ts && tsx test/stop-delete.test.ts && tsx test/token.test.ts && tsx test/usage-summary.test.ts && tsx test/workflow-output-cap.test.ts && tsx test/workflow.test.ts"
   },
   "engines": {
     "node": ">=22.18"

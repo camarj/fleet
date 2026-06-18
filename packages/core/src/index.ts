@@ -18,6 +18,13 @@ export {
   type RunHandle,
   FlueAdapter,
   type FlueConnectSpec,
+  type SandboxAdapter,
+  type SandboxHandle,
+  type SandboxKind,
+  type SandboxSpec,
+  type SandboxStatus,
+  type SandboxTask,
+  type SandboxArtifact,
 } from "./adapters/index.js";
 export {
   GatewayState,
