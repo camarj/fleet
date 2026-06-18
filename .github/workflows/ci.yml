@@ -5,6 +5,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # `lsof` is not preinstalled on ubuntu-24.04 runners; the subprocess
+      # integration tests (health/stop-delete) use it to kill an agent by port.
+      - run: sudo apt-get update && sudo apt-get install -y lsof
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
