@@ -61,7 +61,11 @@ async function waitFor(pred: () => boolean, timeoutMs: number): Promise<boolean>
  */
 function killPort(port: number): void {
   try {
-    const raw = execSync(`lsof -ti4tcp:${port} -sTCP:LISTEN`, { encoding: "utf8" }).trim();
+    // `tcp:` (no `4`) matches both IPv4 and IPv6 listeners: a Node server
+    // bound without a host listens on `::` (IPv6/dual-stack) on Linux/CI, which
+    // `-i4tcp` (IPv4-only) would miss, leaving the agent alive and never going
+    // offline. `-sTCP:LISTEN` still scopes the kill to the listener only.
+    const raw = execSync(`lsof -ti tcp:${port} -sTCP:LISTEN`, { encoding: "utf8" }).trim();
     for (const line of raw.split("\n")) {
       const pid = Number(line.trim());
       if (pid) process.kill(pid, "SIGKILL");
