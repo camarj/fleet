@@ -21,19 +21,9 @@
  */
 
 import { createFlueClient, type AttachedAgentEvent, type FlueClient, type FlueEvent } from "@flue/sdk";
-import type { RunInput, RunOptions, RunSink, Usage } from "../neutral.js";
+import type { RunInput, RunOptions, RunSink } from "../neutral.js";
 import type { AgentAdapter, AgentInfo, RunHandle } from "./agent-adapter.js";
-
-/**
- * Structural mirror of Flue's `PromptUsage` (the type is declared inside
- * `@flue/sdk` but not exported). Accepting it structurally lets `UsageAccumulator`
- * consume `event.usage` without importing the private type.
- */
-interface FlueUsageLike {
-  input: number;
-  output: number;
-  totalTokens: number;
-}
+import { parseMcpTool, UsageAccumulator } from "./neutral-mapping.js";
 
 export interface FlueConnectSpec {
   /** Where the public Flue app is mounted, e.g. http://localhost:8787 */
@@ -213,41 +203,6 @@ export function mapFlueEvent(ev: FlueEvent | AttachedAgentEvent, sink: RunSink, 
     // run_*, agent_*, turn_start/turn_end, message_*, idle, log → no neutral event.
     default:
       return;
-  }
-}
-
-/** `mcp__<server>__<tool>` → { server, name }; otherwise null. */
-export function parseMcpTool(toolName: string): { server: string; name: string } | null {
-  const m = /^mcp__(.+?)__(.+)$/.exec(toolName);
-  return m ? { server: m[1]!, name: m[2]! } : null;
-}
-
-/**
- * Aggregates Flue PromptUsage across a run into the neutral Usage shape.
- * Flue tokens are `input`/`output` (+ cache + cost); neutral keeps the three
- * core counts plus the model specifier.
- */
-export class UsageAccumulator {
-  #input = 0;
-  #output = 0;
-  #total = 0;
-  #model = "";
-
-  add(usage: FlueUsageLike | undefined): void {
-    if (!usage) return;
-    this.#input += usage.input ?? 0;
-    this.#output += usage.output ?? 0;
-    this.#total += usage.totalTokens ?? 0;
-  }
-
-  /** Record the model/provider seen on a turn as a neutral specifier. */
-  note(model: string | undefined, provider: string | undefined): void {
-    if (!model) return;
-    this.#model = provider ? `${provider}/${model}` : model;
-  }
-
-  total(): Usage {
-    return { inputTokens: this.#input, outputTokens: this.#output, totalTokens: this.#total, model: this.#model };
   }
 }
 
