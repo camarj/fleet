@@ -13,12 +13,17 @@
  */
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { convert, resolveModel, writeFlueProject, type UnmappedItem } from "@inteliside/gateway-converter";
 import { FlueAdapter } from "../adapters/flue.js";
+import { DockerProvisioner } from "./docker-provisioner.js";
+import { DeployError, spawnStreaming } from "./spawn.js";
+
+// Re-exported so existing importers (e.g. engram-server-deployer) keep resolving
+// `DeployError` from this module after it moved to ./spawn.js.
+export { DeployError };
 import { deployEngramServer, type EngramServerDeployResult } from "./engram-server-deployer.js";
 import { deployedDir } from "../paths.js";
 import type { PreflightCheck } from "../api.js";
@@ -133,6 +138,8 @@ export class FlueDeployer {
   /** Maps agentName → child process for local-process deploys. */
   readonly #processes = new Map<string, ChildProcess>();
   readonly #containers = new Set<string>();
+  /** Low-level Docker primitives (build/run/rm + secure env-file). */
+  readonly #docker = new DockerProvisioner();
 
   constructor(secrets: SecretsStore) {
     this.#secrets = secrets;
@@ -291,35 +298,31 @@ export class FlueDeployer {
     onProgress: DeployProgress,
     onLog: DeployLog,
   ): Promise<string> {
-    ensureDockerRunning();
+    this.#docker.ensureRunning();
     const image = `fleet-agent-${agentName}`;
     const container = `fleet-${agentName}`;
 
     onProgress("building", "docker image");
     // Stream the build (npm install + flue build happen inside) so the UI shows progress.
-    const build = await spawnStreaming("docker", ["build", "--progress=plain", "-t", image, agentDir], {}, onLog);
-    if (build.status !== 0) throw new DeployError(`docker build failed:\n${build.output}`);
+    await this.#docker.build(image, agentDir, onLog);
 
     // Replace any previous container of the same agent.
-    spawnSync("docker", ["rm", "-f", container], { stdio: "ignore" });
+    this.#docker.rm(container);
 
     const hostPort = await freePort();
     onProgress("starting", `container on port ${hostPort}`);
 
-    // Inject the key (+ Engram cloud vars) via a temp --env-file (0600) so they
-    // never land in `ps`/args.
-    const envFile = writeEnvFile(apiKeyEnv, key, extraEnv);
-    try {
-      const args = ["run", "-d", "--name", container, "-p", `${hostPort}:${INTERNAL_PORT}`, "--env-file", envFile, image];
-      const run = spawnSync("docker", args, { stdio: "pipe", encoding: "utf8" });
-      if (run.status !== 0) throw new DeployError(`docker run failed:\n${run.stderr || run.stdout}`);
-    } finally {
-      try {
-        unlinkSync(envFile);
-      } catch {
-        /* best-effort */
-      }
-    }
+    // The key (+ Engram cloud vars) are injected by the provisioner through a
+    // 0600 env-file so they never land in `ps`/argv (rule #8). HOST=0.0.0.0 first
+    // preserves the previous env-file ordering.
+    const env: Record<string, string> = { HOST: "0.0.0.0", ...(key ? { [apiKeyEnv]: key } : {}), ...extraEnv };
+    this.#docker.run({
+      image,
+      name: container,
+      ports: [{ host: hostPort, container: INTERNAL_PORT }],
+      env,
+      detached: true,
+    });
     this.#containers.add(container);
 
     const baseUrl = `http://127.0.0.1:${hostPort}`;
@@ -687,7 +690,7 @@ export class FlueDeployer {
   async stopDeployment(agentName: string, target: DeployTarget): Promise<void> {
     if (target === "docker-local") {
       const container = `fleet-${agentName}`;
-      spawnSync("docker", ["rm", "-f", container], { stdio: "ignore" });
+      this.#docker.rm(container);
       this.#containers.delete(container);
     } else if (target === "local-process") {
       const child = this.#processes.get(agentName);
@@ -797,70 +800,10 @@ export class FlueDeployer {
     }
     this.#processes.clear();
     for (const container of this.#containers) {
-      spawnSync("docker", ["rm", "-f", container], { stdio: "ignore" });
+      this.#docker.rm(container);
     }
     this.#containers.clear();
   }
-}
-
-export class DeployError extends Error {}
-
-function ensureDockerRunning(): void {
-  const probe = spawnSync("docker", ["info"], { stdio: "ignore" });
-  if (probe.status !== 0) {
-    throw new DeployError("Docker is not available. Install Docker and start the daemon (Docker Desktop), then retry.");
-  }
-}
-
-/** Write a 0600 temp env file for `docker run --env-file` (keeps secrets out of argv). */
-function writeEnvFile(apiKeyEnv: string, key: string | undefined, extraEnv: Record<string, string> = {}): string {
-  const file = join(tmpdir(), `fleet-env-${Math.random().toString(36).slice(2)}.env`);
-  const lines = ["HOST=0.0.0.0"];
-  if (key) lines.push(`${apiKeyEnv}=${key}`);
-  for (const [k, v] of Object.entries(extraEnv)) lines.push(`${k}=${v}`);
-  writeFileSync(file, lines.join("\n") + "\n", { mode: 0o600 });
-  try {
-    chmodSync(file, 0o600);
-  } catch {
-    /* best-effort */
-  }
-  return file;
-}
-
-/**
- * Run a command, streaming its combined stdout/stderr to `onLog` line-by-line as
- * it arrives (so the UI shows live progress), and resolving with the exit status
- * + full captured output. Never rejects.
- */
-function spawnStreaming(
-  cmd: string,
-  args: string[],
-  opts: { cwd?: string; env?: NodeJS.ProcessEnv },
-  onLog: DeployLog,
-): Promise<{ status: number; output: string }> {
-  return new Promise((resolve) => {
-    const child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env, stdio: ["ignore", "pipe", "pipe"] });
-    let output = "";
-    let buf = "";
-    const onChunk = (data: Buffer): void => {
-      const text = data.toString();
-      output += text;
-      buf += text;
-      const lines = buf.split(/\r?\n/);
-      buf = lines.pop() ?? "";
-      if (lines.length) onLog(lines);
-    };
-    child.stdout?.on("data", onChunk);
-    child.stderr?.on("data", onChunk);
-    child.on("error", (err) => {
-      onLog([err.message]);
-      resolve({ status: 1, output: `${output}\n${err.message}` });
-    });
-    child.on("close", (code) => {
-      if (buf) onLog([buf]);
-      resolve({ status: code ?? 0, output });
-    });
-  });
 }
 
 // ── shared @flue install ────────────────────────────────────────────────────
