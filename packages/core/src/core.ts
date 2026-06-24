@@ -6,15 +6,16 @@
 
 import { randomUUID } from "node:crypto";
 import { createAdapter, createAdapterForStored, sessionInstanceId } from "./adapters/factory.js";
-import type { AgentAdapter, AgentKind, RunHandle } from "./adapters/agent-adapter.js";
+import type { AgentAdapter, AgentKind } from "./adapters/agent-adapter.js";
 import { FlueDeployer, pingAgent, type DeployTarget } from "./deploy/flue-deployer.js";
 import { orgSlugFromName } from "./deploy/engram-server-deployer.js";
 import { SecretsStore } from "./secrets/store.js";
 import { computeCostUsd } from "./pricing/pricing.js";
-import { GatewayState, type StoredAgent, type SessionSummary } from "./state/index.js";
-import type { RunOptions, RunSink } from "./neutral.js";
+import { GatewayState, type StoredAgent } from "./state/index.js";
+import type { RunSink } from "./neutral.js";
 import { Orchestrator, type AgentRunner } from "./orchestration/index.js";
 import { DeployManager } from "./managers/deploy-manager.js";
+import { SessionManager } from "./managers/session-manager.js";
 import type { AgentSummary, ClientRequest, ServerEvent } from "./api.js";
 import { OrgManager, ROUTABLE_TARGETS } from "./org/org-manager.js";
 import { GitHubRegistry } from "./org/github-registry.js";
@@ -87,9 +88,7 @@ export function capWorkflowOutput(text: string, cap: number): string {
 export class GatewayCore {
   readonly #state: GatewayState;
   readonly #agents = new Map<string, RegisteredAgent>();
-  readonly #sessions = new Map<string, RunHandle>();
-  /** Reverse index: agentId → Set of active sessionIds (for bulk-abort on stop/delete). */
-  readonly #agentSessions = new Map<string, Set<string>>();
+  readonly #sessionManager: SessionManager;
   readonly #secrets = new SecretsStore();
   readonly #deployer = new FlueDeployer(this.#secrets);
   readonly #deployManager: DeployManager;
@@ -125,6 +124,10 @@ export class GatewayCore {
       registerLiveAgent: (adapter, baseUrl) => this.#registerLiveAgent(adapter, baseUrl),
       summarize: (stored, online) => this.#summary(stored, online),
     });
+    this.#sessionManager = new SessionManager({
+      state: this.#state,
+      getAdapter: (agentId) => this.#agents.get(agentId)?.adapter,
+    });
     this.#startHealthMonitor(options.healthIntervalMs ?? 15_000);
     // Attempt to reconnect any agents that were persisted from a previous run.
     // Fire-and-forget — construction is synchronous; failures are swallowed and
@@ -158,13 +161,13 @@ export class GatewayCore {
           emit({ type: "secrets.status", providers: this.#secrets.list() });
           return;
         case "session.start":
-          return await this.#startSession(req, emit);
+          return await this.#sessionManager.start(req, emit);
         case "session.abort":
-          return await this.#abortSession(req.sessionId, emit);
+          return await this.#sessionManager.abort(req.sessionId, emit);
         case "sessions.list":
-          return this.#listSessions(req, emit);
+          return this.#sessionManager.list(req, emit);
         case "session.history":
-          return this.#getSessionHistory(req, emit);
+          return this.#sessionManager.history(req, emit);
         case "config.set":
           return this.#setConfig(req, emit);
         case "deploy.preflight":
@@ -242,7 +245,7 @@ export class GatewayCore {
     }
     await this.#deployer.shutdown().catch(() => {});
     this.#agents.clear();
-    this.#agentSessions.clear();
+    this.#sessionManager.clear();
     this.#emitters.clear();
     this.#state.close();
   }
@@ -508,12 +511,7 @@ export class GatewayCore {
     }
 
     // Abort every in-flight session for this agent.
-    const sessionIds = [...(this.#agentSessions.get(agentId) ?? [])];
-    for (const sessionId of sessionIds) {
-      const handle = this.#sessions.get(sessionId);
-      if (handle) await handle.abort().catch(() => {});
-    }
-    this.#agentSessions.delete(agentId);
+    await this.#sessionManager.abortAgentSessions(agentId);
   }
 
   /** Stop an agent's runtime, keep its registration (it can be redeployed). */
@@ -552,78 +550,6 @@ export class GatewayCore {
     this.#state.deleteAgent(req.agentId);
     emit({ type: "agent.updated", agent: summary });
     emit({ type: "agent.removed", agentId: req.agentId });
-  }
-
-  // ── Sessions ───────────────────────────────────────────────────────────────
-
-  async #startSession(req: Extract<ClientRequest, { type: "session.start" }>, emit: Emit): Promise<void> {
-    const reg = this.#agents.get(req.agentId);
-    if (!reg) {
-      emit({ type: "error", message: `agent "${req.agentId}" is not connected`, requestType: req.type });
-      return;
-    }
-
-    const sessionId = this.#state.createSession(req.agentId, req.message);
-    emit({ type: "session.started", sessionId, agentId: req.agentId });
-
-    // No per-run options in v1: the model is fixed at convert time (see RunOptions).
-    const options: RunOptions = {};
-    let seq = 0;
-
-    const sink: RunSink = {
-      onEvent: (event) => {
-        const currentSeq = seq++;
-        this.#state.appendSessionEvent(sessionId, currentSeq, JSON.stringify(event));
-        emit({ type: "session.event", sessionId, seq: currentSeq, event });
-      },
-      onUsage: (usage) => emit({ type: "session.usage", sessionId, usage, costUsd: computeCostUsd(usage) }),
-      onDone: (status, usage) => {
-        const costUsd = usage ? computeCostUsd(usage) : null;
-        if (usage) this.#state.recordUsage(sessionId, null, usage, costUsd);
-        this.#state.endSession(sessionId, status === "aborted" ? "aborted" : "completed");
-        emit({ type: "session.done", sessionId, status, usage: usage ?? null, costUsd });
-        this.#sessions.delete(sessionId);
-        this.#agentSessions.get(req.agentId)?.delete(sessionId);
-      },
-      onError: (code, message) => {
-        this.#state.endSession(sessionId, "error");
-        emit({ type: "session.error", sessionId, error: { code, message } });
-        this.#sessions.delete(sessionId);
-        this.#agentSessions.get(req.agentId)?.delete(sessionId);
-      },
-    };
-
-    const handle = reg.adapter.run({ messages: [{ role: "user", content: req.message }] }, options, sink);
-    this.#sessions.set(sessionId, handle);
-    // Register under the reverse agent→sessions index for bulk-abort on stop/delete.
-    if (!this.#agentSessions.has(req.agentId)) this.#agentSessions.set(req.agentId, new Set());
-    this.#agentSessions.get(req.agentId)!.add(sessionId);
-  }
-
-  async #abortSession(sessionId: string, emit: Emit): Promise<void> {
-    const handle = this.#sessions.get(sessionId);
-    if (!handle) {
-      emit({ type: "error", message: `no active session "${sessionId}"`, requestType: "session.abort" });
-      return;
-    }
-    await handle.abort();
-  }
-
-  #listSessions(req: Extract<ClientRequest, { type: "sessions.list" }>, emit: Emit): void {
-    const sessions: SessionSummary[] = this.#state.listSessions(req.agentId);
-    emit({ type: "sessions", agentId: req.agentId, sessions });
-  }
-
-  #getSessionHistory(req: Extract<ClientRequest, { type: "session.history" }>, emit: Emit): void {
-    const events = this.#state.getSessionEvents(req.sessionId);
-    const stored = this.#state.getSessionUsage(req.sessionId);
-    emit({
-      type: "session.history",
-      sessionId: req.sessionId,
-      events,
-      usage: stored?.usage ?? null,
-      costUsd: stored?.costUsd ?? null,
-    });
   }
 
   /**
@@ -898,11 +824,7 @@ export class GatewayCore {
         }
         // Drain sessions (mirrors #teardownAgent — abort each active session and
         // eagerly remove it from the session map so no ghost sessions remain).
-        for (const sessionId of (this.#agentSessions.get(id) ?? [])) {
-          await this.#sessions.get(sessionId)?.abort().catch(() => {});
-          this.#sessions.delete(sessionId);
-        }
-        this.#agentSessions.delete(id);
+        await this.#sessionManager.abortAgentSessions(id);
       }
       if (this.#orgManager) {
         await this.#orgManager.leave();
