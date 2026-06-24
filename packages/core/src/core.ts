@@ -4,18 +4,15 @@
  * operations the WebSocket server relays to the frontend.
  */
 
-import { randomUUID } from "node:crypto";
 import { createAdapter, createAdapterForStored, sessionInstanceId } from "./adapters/factory.js";
 import type { AgentAdapter, AgentKind } from "./adapters/agent-adapter.js";
 import { FlueDeployer, pingAgent, type DeployTarget } from "./deploy/flue-deployer.js";
 import { orgSlugFromName } from "./deploy/engram-server-deployer.js";
 import { SecretsStore } from "./secrets/store.js";
-import { computeCostUsd } from "./pricing/pricing.js";
 import { GatewayState, type StoredAgent } from "./state/index.js";
-import type { RunSink } from "./neutral.js";
-import { Orchestrator, type AgentRunner } from "./orchestration/index.js";
 import { DeployManager } from "./managers/deploy-manager.js";
 import { SessionManager } from "./managers/session-manager.js";
+import { WorkflowManager } from "./managers/workflow-manager.js";
 import type { AgentSummary, ClientRequest, ServerEvent } from "./api.js";
 import { OrgManager, ROUTABLE_TARGETS } from "./org/org-manager.js";
 import { GitHubRegistry } from "./org/github-registry.js";
@@ -68,22 +65,9 @@ export interface GatewayCoreOptions {
   orgRegistry?: OrgRegistry;
 }
 
-// K3: bound each workflow node's output. A verbose agent must not be able to
-// stall the WS connection or freeze the canvas with a multi-megabyte string.
-// The cap applies at the source so every consumer (events, interpolation,
-// outputs_json, UI) inherits it.
-const WORKFLOW_OUTPUT_CAP = Number(process.env.GATEWAY_WORKFLOW_OUTPUT_CAP_BYTES ?? 262_144); // 256 KiB
-const OUTPUT_TRUNCATION_MARKER = "\n…[output truncated by Fleet: exceeded GATEWAY_WORKFLOW_OUTPUT_CAP_BYTES]";
-
-/**
- * Truncate a workflow node's accumulated output to at most `cap` bytes, appending
- * a human-readable marker so operators know why the text ends where it does (K3).
- * Extracted as a pure function so it can be unit-tested independently of the sink.
- */
-export function capWorkflowOutput(text: string, cap: number): string {
-  if (text.length <= cap) return text;
-  return text.slice(0, cap) + OUTPUT_TRUNCATION_MARKER;
-}
+// `capWorkflowOutput` (K3 output cap) moved to managers/workflow-manager.ts;
+// re-exported so existing importers (workflow-output-cap.test.ts) keep resolving it.
+export { capWorkflowOutput } from "./managers/workflow-manager.js";
 
 export class GatewayCore {
   readonly #state: GatewayState;
@@ -98,11 +82,7 @@ export class GatewayCore {
   readonly #onlineCache = new Map<string, boolean>();
   #healthInterval: ReturnType<typeof setInterval> | null = null;
   #healthTickInFlight = false;
-  /** Active workflow runs → their abort controller (for workflow.abort). */
-  readonly #workflowRuns = new Map<string, AbortController>();
-  /** K6: one active run per workflow — workflowId → runId of the run in flight. */
-  readonly #activeWorkflowRuns = new Map<string, string>();
-  readonly #orchestrator: Orchestrator;
+  readonly #workflowManager: WorkflowManager;
   // ── Org registry (G1) ─────────────────────────────────────────────────────
   readonly #orgStore: OrgStore;
   #orgManager: OrgManager | null = null;
@@ -115,8 +95,9 @@ export class GatewayCore {
     this.#state.reconcileOrphanedWorkflowRuns();
     this.#orgStore = new OrgStore();
     this.#orgRegistryOverride = options.orgRegistry;
-    this.#orchestrator = new Orchestrator(this.#agentRunner(), {
-      nodeTimeoutMs: Number(process.env.GATEWAY_WORKFLOW_NODE_TIMEOUT_MS ?? 600_000),
+    this.#workflowManager = new WorkflowManager({
+      state: this.#state,
+      getAdapter: (agentId) => this.#agents.get(agentId)?.adapter,
     });
     this.#deployManager = new DeployManager({
       deployer: this.#deployer,
@@ -181,24 +162,17 @@ export class GatewayCore {
         case "usage.summary":
           return this.#usageSummary(req, emit);
         case "workflow.save":
-          this.#state.saveWorkflow(req.workflow);
-          emit({ type: "workflows", workflows: this.#state.listWorkflows() });
-          return;
+          return this.#workflowManager.save(req, emit);
         case "workflow.list":
-          emit({ type: "workflows", workflows: this.#state.listWorkflows() });
-          return;
+          return this.#workflowManager.list(emit);
         case "workflow.delete":
-          this.#state.deleteWorkflow(req.workflowId);
-          emit({ type: "workflows", workflows: this.#state.listWorkflows() });
-          return;
+          return this.#workflowManager.delete(req, emit);
         case "workflow.run":
-          return await this.#runWorkflow(req, emit);
+          return await this.#workflowManager.run(req, emit);
         case "workflow.abort":
-          this.#workflowRuns.get(req.runId)?.abort();
-          return;
+          return this.#workflowManager.abort(req.runId);
         case "workflow.runs":
-          emit({ type: "workflow.runs", workflowId: req.workflowId, runs: this.#state.listWorkflowRuns(req.workflowId, req.limit ?? 20) });
-          return;
+          return this.#workflowManager.runs(req, emit);
         // ── Org registry (G1) ────────────────────────────────────────────────
         case "org.create":
           return await this.#orgCreate(req, emit);
@@ -237,9 +211,7 @@ export class GatewayCore {
       this.#healthInterval = null;
     }
     // Abort any in-flight workflow runs so their agent calls stop.
-    for (const controller of this.#workflowRuns.values()) controller.abort();
-    this.#workflowRuns.clear();
-    this.#activeWorkflowRuns.clear();
+    this.#workflowManager.abortAll();
     for (const reg of this.#agents.values()) {
       await reg.adapter.close().catch(() => {});
     }
@@ -359,121 +331,6 @@ export class GatewayCore {
         unpricedRuns: rows.reduce((a, r) => a + r.unpricedRuns, 0),
       },
     });
-  }
-
-  /**
-   * Enumerate the GitHub owners the authenticated gh user can push repos to:
-   * the user's own login first, then org logins (one per line from `gh api user/orgs`).
-   * Returns an empty list when gh is unavailable or not authenticated — never throws.
-   */
-  // ── Orchestration (workflows) ───────────────────────────────────────────────
-
-  /**
-   * The AgentRunner the Orchestrator uses to run one prompt against one agent.
-   * Accumulates the assistant's streamed text (Flue emits message.delta) and
-   * resolves with the final text. Never touches the engine's internals — this is
-   * the injection seam that keeps the engine adapter-agnostic.
-   *
-   * K2: each node run now creates a session row and records usage on completion
-   * so the Usage tab (B3/PR #21) sees tokens spent by workflows. Before this fix,
-   * no session was created and the usage payload from onDone was silently dropped.
-   * These sessions are recording artifacts only — no session.* events are emitted
-   * so the frontend's interactive session UI never sees them.
-   */
-  #agentRunner(): AgentRunner {
-    return {
-      run: (agentId, prompt, signal, meta) => {
-        const reg = this.#agents.get(agentId);
-        if (!reg) return Promise.reject(new Error(`agent "${agentId}" is not connected`));
-        // Create the session row before starting the adapter run so the session
-        // id is available in every sink callback without a closure ordering risk.
-        const sessionId = this.#state.createSession(agentId, prompt, meta?.runId ?? null);
-        return new Promise<string>((resolve, reject) => {
-          let text = "";
-          const sink: RunSink = {
-            onEvent: (e) => {
-              // K3: stop accumulating once the cap is reached; the final cap+marker
-              // is applied at resolution time (covers both the delta overshoot and
-              // the message.completed overwrite path).
-              if (e.type === "message.delta" && e.role === "assistant") {
-                if (text.length < WORKFLOW_OUTPUT_CAP) text += e.content;
-              } else if (e.type === "message.completed" && e.role === "assistant") {
-                text = e.content;
-              }
-            },
-            onDone: (status, usage) => {
-              // K3: apply the cap once at resolution (covers message.completed overwrites
-              // and the slight delta overshoot when the last chunk pushes text past the cap).
-              text = capWorkflowOutput(text, WORKFLOW_OUTPUT_CAP);
-              const costUsd = usage ? computeCostUsd(usage) : null;
-              if (usage) this.#state.recordUsage(sessionId, meta?.runId ?? null, usage, costUsd);
-              this.#state.endSession(sessionId, status === "aborted" ? "aborted" : "completed");
-              if (status === "aborted") reject(new Error("aborted"));
-              else resolve(text);
-            },
-            onError: (_code, message) => {
-              this.#state.endSession(sessionId, "error");
-              reject(new Error(message));
-            },
-          };
-          const handle = reg.adapter.run({ messages: [{ role: "user", content: prompt }] }, {}, sink);
-          if (signal.aborted) void handle.abort();
-          else signal.addEventListener("abort", () => void handle.abort(), { once: true });
-        });
-      },
-    };
-  }
-
-  async #runWorkflow(req: Extract<ClientRequest, { type: "workflow.run" }>, emit: Emit): Promise<void> {
-    const wf = this.#state.getWorkflow(req.workflowId);
-    if (!wf) {
-      emit({ type: "error", message: `workflow "${req.workflowId}" not found`, requestType: req.type });
-      return;
-    }
-    // Every agent node must reference a currently-connected agent (the engine
-    // validates structure; agent availability is the Core's call).
-    const missing = [
-      ...new Set(
-        wf.nodes
-          .filter((n) => n.kind === "agent" && (!n.agentId || !this.#agents.has(n.agentId)))
-          .map((n) => n.agentId ?? n.id),
-      ),
-    ];
-    if (missing.length > 0) {
-      emit({ type: "error", message: `workflow needs these agents online: ${missing.join(", ")}`, requestType: req.type });
-      return;
-    }
-
-    // K6: reject a second concurrent run of the same workflow — concurrent runs
-    // interleave against the same agents and double cost with no benefit in v1.
-    const activeRun = this.#activeWorkflowRuns.get(req.workflowId);
-    if (activeRun) {
-      emit({ type: "error", message: `workflow is already running (run ${activeRun}) — abort it or wait`, requestType: req.type });
-      return;
-    }
-
-    const runId = `wfr_${randomUUID()}`;
-    const controller = new AbortController();
-    this.#workflowRuns.set(runId, controller);
-    this.#activeWorkflowRuns.set(req.workflowId, runId);
-    this.#state.createWorkflowRun(runId, req.workflowId, req.inputs);
-    emit({ type: "workflow.run.started", runId, workflowId: req.workflowId });
-
-    const result = await this.#orchestrator.run(
-      wf,
-      req.inputs,
-      {
-        onNodeStatus: (nodeId, status, info) =>
-          emit({ type: "workflow.node.status", runId, nodeId, status, output: info?.output, error: info?.error }),
-      },
-      controller.signal,
-      { runId },
-    );
-
-    this.#state.finishWorkflowRun(runId, result.status, result.outputs);
-    this.#workflowRuns.delete(runId);
-    this.#activeWorkflowRuns.delete(req.workflowId);
-    emit({ type: "workflow.run.done", runId, status: result.status, outputs: result.outputs });
   }
 
   // ── Stop / Delete ─────────────────────────────────────────────────────────
