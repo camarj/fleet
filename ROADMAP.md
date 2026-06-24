@@ -14,7 +14,7 @@ per-agent config + own state.
 - [x] Pricing (tokens → cost)
 - [x] Gateway API + `GatewayCore` + WebSocket server (sidecar)
 - [x] Core smoke tests (direct + real sidecar WS) — all green
-- [x] Frontend: Sidebar + TerminalPanel (xterm.js) + WorkflowCanvas stub
+- [x] Frontend: Sidebar + TerminalPanel (React transcript) + WorkflowCanvas stub
 - [x] Tauri v2 shell scaffold (sidecar wiring, esbuild + Node SEA packaging) — **build needs Rust**
 - [x] Skills + references + docs
 - [ ] End-to-end against a REAL Flue agent (needs a deployed agent + API key)

@@ -17,7 +17,8 @@ product; there is no per-package versioning.
 
 While the major is `0`, the public API is still settling. Treat **MINOR** as the
 "something changed, possibly breaking" signal and **PATCH** as "safe fix". We move
-to `1.0.0` when the Gateway API and the A2A/ACP adapters are considered stable.
+to `1.0.0` when the Gateway API and the Flue adapter are considered stable (the
+A2A coordination layer is post-pivot direction, ADR-13 — it does not gate 1.0.0).
 
 ## Releasing
 
