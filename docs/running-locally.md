@@ -6,10 +6,10 @@ it adds nothing to the Gateway's behavior. For testing, run the Core + Frontend
 and use the **browser**. No Rust toolchain required.
 
 ```
-┌────────────┐  Gateway API (WS)  ┌──────────┐  A2A / ACP  ┌─────────┐
-│  Frontend  │ ◀────────────────▶ │   Core   │ ◀─────────▶ │  Agent  │
-│  :1420     │   ws://…:4179      │  :4179   │             │  :8080  │
-└────────────┘                    └──────────┘             └─────────┘
+┌────────────┐  Gateway API (WS)  ┌──────────┐  Flue (HTTP+WS) ┌─────────┐
+│  Frontend  │ ◀────────────────▶ │   Core   │ ◀─────────────▶ │  Agent  │
+│  :1420     │   ws://…:4179      │  :4179   │   FlueAdapter   │  :8080  │
+└────────────┘                    └──────────┘                 └─────────┘
 ```
 
 ## 1. Launch Core + Frontend
@@ -31,42 +31,48 @@ GATEWAY_DB=/tmp/gateway.db pnpm dev
 
 Open **http://localhost:1420** in your browser.
 
-## 2. Launch an agent to talk to
+## 2. Get a Flue agent to talk to
 
-A working A2A test agent (the `soporte-facturacion` example, main agent only —
-the subagent is disabled pending the Component 1 fix) lives at `/tmp/soporte-e2e`:
+Fleet is **Flue-only**: every agent is a Flue agent reached through `FlueAdapter`.
+There are two ways to get one, both from the browser UI:
 
-```bash
-cd /tmp/soporte-e2e
-source .venv/bin/activate
-python -m runtime.a2a_server          # serves A2A on http://127.0.0.1:8080
-```
+- **Deploy** a local Claude Code project — Fleet converts it to a Flue agent and
+  deploys it. The default target is `docker-local` (needs Docker running); other
+  targets are `fly`, `cloudflare`, `github`, and `dokploy`. This is the usual path
+  and needs no separate server.
+- **Connect** to a Flue agent that is **already running** somewhere, by its URL.
 
-Its `.env` already carries `ANTHROPIC_API_KEY` (sending a message makes a real,
-paid Anthropic call).
+Set the provider API key first (**Settings → API keys**, e.g. `ANTHROPIC_API_KEY`).
+Sending a message makes a real, paid model call.
 
 ## 3. Use it
 
 In the browser UI:
 
-1. **Sidebar → "Connect A2A agent"** → enter `http://127.0.0.1:8080` → **Add**.
-   The agent appears in the fleet with an `a2a` badge and `online`.
-2. Select it. The **Terminal** panel shows its name + model.
-3. Type a message (e.g. *"Tengo la factura INV-1001, ¿puedo pedir un reembolso?"*)
-   and press Enter.
+1. **Deploy:** Sidebar → **"+ Deploy agent"** → pick the Claude Code project folder
+   and a target (default `docker-local`) → run the pre-deploy checks → **Deploy**.
+   When it finishes, the agent appears in the fleet as `online`.
+
+   **Or connect:** Sidebar → **"⟳ Connect agent"** ("Connect a Flue agent") → enter
+   the agent's base URL + agent name (+ token if it's protected) → **Connect**.
+2. Select the agent. The **Terminal** panel shows its name + model.
+3. Type a message and press Enter.
 4. Watch the streamed reply, then the usage/cost line on completion. **Abort**
    cancels an in-flight run.
 
-To connect any **other** A2A agent, just use its base URL. For a **local ACP**
-agent, use "Launch ACP agent" with the path to the agent.
+> **A2A is not wired up yet.** Reintroducing A2A as a coordination layer alongside
+> Flue is the direction of the Baton pivot (ADR-13), not a current feature — there
+> is no "Connect A2A agent" action in the UI today. ACP is out of scope.
 
 ## 4. Stop everything
 
 ```bash
 # Core + Frontend: Ctrl-C in the `pnpm dev` terminal
-# Agent:
-kill "$(cat /tmp/soporte-e2e/a2a.pid)"
 ```
+
+A deployed agent is torn down from the UI (**Stop** / **Delete** in the sidebar);
+the Core stops its `docker-local` container / `local-process` subprocess. A
+**connected** agent runs independently — stop it wherever it is hosted.
 
 ---
 

@@ -21,6 +21,10 @@ apps/desktop/.sidecar-build/
 
 # Local skill-registry (leaks absolute paths / personal skills)
 .atl/
+# Local agent/skill scratch (same role as .atl/ — may leak absolute paths)
+.agents/
+# Local Engram artifacts (atl/) — local churn, not versioned
+.context/
 
 # Playwright MCP smoke-test artifacts
 .playwright-mcp/

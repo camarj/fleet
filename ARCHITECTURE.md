@@ -61,7 +61,7 @@ drive the convert → deploy → connect flow.
 
 ## Deploy targets
 
-`packages/core/src/deploy/flue-deployer.ts` manages four production-ready deploy
+`packages/core/src/deploy/flue-deployer.ts` manages five production-ready deploy
 targets:
 
 | Target | Description | Requirement |
@@ -70,6 +70,7 @@ targets:
 | `fly` | Deploy to Fly.io | `FLY_API_TOKEN` env var |
 | `cloudflare` | Deploy to Cloudflare Workers | `CLOUDFLARE_API_TOKEN` env var |
 | `github` | Push a Git repo with its Dockerfile — user self-deploys on Coolify/Dokploy | Git + remote repo |
+| `dokploy` | Deploy to a self-hosted Dokploy instance via its REST API | `DOKPLOY_URL` + `DOKPLOY_API_KEY` env vars |
 
 A `local-process` target also exists for Docker-free tests; it is **not** offered
 in the UI and is not considered a production deploy path.
@@ -118,7 +119,7 @@ toolchain.
 | 1 | Agent wire standard | Flue (HTTP+WebSocket); `FlueAdapter` is the only adapter |
 | 2 | Connection model | Neutral `AgentAdapter` interface with `FlueAdapter` |
 | 3 | Convert → Deploy → Connect | Converter produces Flue agent; deployer pushes to target; Core registers and connects |
-| 4 | Deploy targets | `docker-local`, `fly`, `cloudflare`, `github`; `local-process` for tests only |
+| 4 | Deploy targets | `docker-local`, `fly`, `cloudflare`, `github`, `dokploy`; `local-process` for tests only |
 | 5 | Per-agent config | `RunOptions.model` neutral override per session (MVP) |
 | 6 | Core on desktop | TS/Node sidecar launched by Tauri; WS to frontend |
 | — | SQLite | Built-in `node:sqlite` (better-sqlite3 failed to compile) |
@@ -127,7 +128,7 @@ toolchain.
 
 ```
 adapters/      AgentAdapter interface + FlueAdapter (HTTP+WebSocket)
-deploy/        flue-deployer.ts — docker-local / fly / cloudflare / github targets
+deploy/        flue-deployer.ts — docker-local / fly / cloudflare / github / dokploy targets
 state/         SQLite store (node:sqlite)
 pricing/       tokens → cost
 orchestration/ Phase 2 skeleton
