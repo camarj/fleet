@@ -15,12 +15,14 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { convert, resolveModel, writeFlueProject, type UnmappedItem } from "@inteliside/gateway-converter";
 import { createAdapter } from "../adapters/factory.js";
 import type { AgentAdapter } from "../adapters/agent-adapter.js";
 import { DockerProvisioner } from "./docker-provisioner.js";
 import { DeployError, spawnStreaming } from "./spawn.js";
+import { ensureDeps, findBin } from "./deps.js";
+import { FlySecretInjector, WranglerSecretInjector } from "./secret-injector.js";
 
 // Re-exported so existing importers (e.g. engram-server-deployer) keep resolving
 // `DeployError` from this module after it moved to ./spawn.js.
@@ -341,7 +343,18 @@ export class FlueDeployer {
     onLog: DeployLog,
   ): Promise<string> {
     const base = deployedDir();
-    await ensureSharedFlue(base, onProgress, onLog);
+    await ensureDeps(
+      base,
+      {
+        dependencies: { "@flue/runtime": FLUE_VERSION },
+        devDependencies: { "@flue/cli": FLUE_VERSION },
+        requiredBins: ["flue"],
+        installLabel: "Flue runtime (first deploy — this can take a minute)",
+        errorWhat: "the Flue runtime",
+      },
+      (label) => onProgress("installing", label),
+      onLog,
+    );
 
     onProgress("building");
     const flueBin = findBin(base, "flue");
@@ -550,7 +563,18 @@ export class FlueDeployer {
       );
     }
     const base = deployedDir();
-    await ensureCloudflareDeps(base, onProgress, onLog);
+    await ensureDeps(
+      base,
+      {
+        dependencies: { "@flue/runtime": FLUE_VERSION, agents: AGENTS_VERSION },
+        devDependencies: { "@flue/cli": FLUE_VERSION, wrangler: WRANGLER_VERSION },
+        requiredBins: ["flue", "wrangler"],
+        installLabel: "Cloudflare build tools (first cloudflare deploy — this can take a minute)",
+        errorWhat: "the Cloudflare build tools",
+      },
+      (label) => onProgress("installing", label),
+      onLog,
+    );
 
     onProgress("building", "cloudflare worker");
     const flueBin = findBin(base, "flue");
@@ -588,18 +612,9 @@ export class FlueDeployer {
     }
 
     // Store the model provider key as a Worker secret (stdin → never in argv/repo).
-    // Also from the project root so the same deploy-config redirect targets the worker.
+    // Run from the project root so the same deploy-config redirect targets the worker.
     if (key) {
-      const secret = spawnSync(wranglerBin, ["secret", "put", apiKeyEnv], {
-        cwd: agentDir,
-        input: key,
-        stdio: ["pipe", "pipe", "pipe"],
-        encoding: "utf8",
-        env: cfEnv,
-      });
-      if (secret.status !== 0) {
-        throw new DeployError(`wrangler secret put ${apiKeyEnv} failed:\n${secret.stderr || secret.stdout}`);
-      }
+      new WranglerSecretInjector(wranglerBin, agentDir, cfEnv).inject({ [apiKeyEnv]: key });
     }
 
     await waitReady(baseUrl);
@@ -655,15 +670,7 @@ export class FlueDeployer {
     // Stage the provider key (+ Engram cloud vars) as Fly secrets, applied on the
     // next deploy. All staged in one import so a single deploy picks them all up.
     if (key) {
-      const secretLines = [`${apiKeyEnv}=${key}`, ...Object.entries(extraEnv).map(([k, v]) => `${k}=${v}`)];
-      const sec = spawnSync("flyctl", ["secrets", "import", "--app", app, "--stage"], {
-        cwd: agentDir,
-        input: secretLines.join("\n") + "\n",
-        stdio: ["pipe", "pipe", "pipe"],
-        encoding: "utf8",
-        env: flyEnv,
-      });
-      if (sec.status !== 0) throw new DeployError(`flyctl secrets import failed:\n${sec.stderr || sec.stdout}`);
+      new FlySecretInjector(app, flyEnv, agentDir).inject({ [apiKeyEnv]: key, ...extraEnv });
     }
 
     onProgress("deploying", "flyctl deploy");
@@ -807,81 +814,7 @@ export class FlueDeployer {
   }
 }
 
-// ── shared @flue install ────────────────────────────────────────────────────
-
-/**
- * Deployed agents resolve `@flue/runtime` (and the build resolves `@flue/cli`) by
- * walking up to `<base>/node_modules`. If that's already resolvable — the
- * monorepo dev tree, or a previous deploy — skip the install. Otherwise write a
- * tiny package.json next to the agents and `npm install` once.
- */
-async function ensureSharedFlue(base: string, onProgress: DeployProgress, onLog: DeployLog): Promise<void> {
-  if (canResolveFlue(base)) return;
-  onProgress("installing", "Flue runtime (first deploy — this can take a minute)");
-  writeFileSync(
-    join(base, "package.json"),
-    JSON.stringify(
-      {
-        name: "fleet-deployed",
-        private: true,
-        dependencies: { "@flue/runtime": FLUE_VERSION },
-        devDependencies: { "@flue/cli": FLUE_VERSION },
-      },
-      null,
-      2,
-    ),
-  );
-  const install = await spawnStreaming("npm", ["install"], { cwd: base }, onLog);
-  if (install.status !== 0) throw new DeployError(`installing the Flue runtime failed:\n${install.output}`);
-}
-
-/**
- * A reachable `flue` CLI shim up the tree implies @flue/runtime is installed in
- * the same node_modules — enough to skip the install. (We can't `require.resolve`
- * @flue/runtime: it is ESM-only and has no CJS "require" export.)
- */
-function canResolveFlue(base: string): boolean {
-  return findBin(base, "flue") !== null;
-}
-
-/** Find a CLI shim (`flue`, `wrangler`, …) in any node_modules/.bin up the tree from `base`. */
-function findBin(base: string, name: string): string | null {
-  let dir = base;
-  for (;;) {
-    const bin = join(dir, "node_modules", ".bin", name);
-    if (existsSync(bin)) return bin;
-    const parent = dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-}
-
-// ── Cloudflare build deps + GitHub helpers ────────────────────────────────────
-
-/**
- * Cloudflare builds run on the HOST (not in Docker), so the build deps must be
- * resolvable from `<base>`: @flue, the `agents` peer (CF Worker entry imports it),
- * and `wrangler` (deploy + secrets). Installed once; skipped if already present.
- */
-async function ensureCloudflareDeps(base: string, onProgress: DeployProgress, onLog: DeployLog): Promise<void> {
-  if (findBin(base, "flue") && findBin(base, "wrangler")) return;
-  onProgress("installing", "Cloudflare build tools (first cloudflare deploy — this can take a minute)");
-  writeFileSync(
-    join(base, "package.json"),
-    JSON.stringify(
-      {
-        name: "fleet-deployed",
-        private: true,
-        dependencies: { "@flue/runtime": FLUE_VERSION, agents: AGENTS_VERSION },
-        devDependencies: { "@flue/cli": FLUE_VERSION, wrangler: WRANGLER_VERSION },
-      },
-      null,
-      2,
-    ),
-  );
-  const install = await spawnStreaming("npm", ["install"], { cwd: base }, onLog);
-  if (install.status !== 0) throw new DeployError(`installing the Cloudflare build tools failed:\n${install.output}`);
-}
+// ── Cloudflare build output + GitHub helpers ──────────────────────────────────
 
 /** Find the `flue build --target cloudflare` output dir (the one holding wrangler.json). */
 function findCfOutputDir(distDir: string): string | null {
