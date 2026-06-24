@@ -5,7 +5,6 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
 import { createAdapter, createAdapterForStored, sessionInstanceId } from "./adapters/factory.js";
 import type { AgentAdapter, AgentKind, RunHandle } from "./adapters/agent-adapter.js";
 import { FlueDeployer, pingAgent, type DeployTarget } from "./deploy/flue-deployer.js";
@@ -15,6 +14,7 @@ import { computeCostUsd } from "./pricing/pricing.js";
 import { GatewayState, type StoredAgent, type SessionSummary } from "./state/index.js";
 import type { RunOptions, RunSink } from "./neutral.js";
 import { Orchestrator, type AgentRunner } from "./orchestration/index.js";
+import { DeployManager } from "./managers/deploy-manager.js";
 import type { AgentSummary, ClientRequest, ServerEvent } from "./api.js";
 import { OrgManager, ROUTABLE_TARGETS } from "./org/org-manager.js";
 import { GitHubRegistry } from "./org/github-registry.js";
@@ -33,17 +33,9 @@ function orgErrorMessage(err: unknown): string {
   return (err as Error)?.message ?? "Unknown org error";
 }
 
-/**
- * Split a `"provider/model-id"` specifier on its FIRST slash so model ids that
- * themselves contain slashes (e.g. openrouter-style) stay intact. Returns null
- * for an empty/malformed specifier (no provider or no model part).
- */
-export function splitSpecifier(specifier: string | null): { provider: string; model: string } | null {
-  if (!specifier) return null;
-  const slash = specifier.indexOf("/");
-  if (slash <= 0 || slash === specifier.length - 1) return null;
-  return { provider: specifier.slice(0, slash), model: specifier.slice(slash + 1) };
-}
+// `splitSpecifier` moved to model-specifier.ts; re-exported so existing importers
+// (e.g. model-override.test.ts) keep resolving it from core.
+export { splitSpecifier } from "./model-specifier.js";
 
 interface RegisteredAgent {
   adapter: AgentAdapter;
@@ -100,6 +92,7 @@ export class GatewayCore {
   readonly #agentSessions = new Map<string, Set<string>>();
   readonly #secrets = new SecretsStore();
   readonly #deployer = new FlueDeployer(this.#secrets);
+  readonly #deployManager: DeployManager;
   /** Registered emit functions for server-pushed events (e.g. health monitor transitions). */
   readonly #emitters = new Set<Emit>();
   /** Last-broadcast online state per agentId — suppresses duplicate agent.updated events. */
@@ -126,6 +119,12 @@ export class GatewayCore {
     this.#orchestrator = new Orchestrator(this.#agentRunner(), {
       nodeTimeoutMs: Number(process.env.GATEWAY_WORKFLOW_NODE_TIMEOUT_MS ?? 600_000),
     });
+    this.#deployManager = new DeployManager({
+      deployer: this.#deployer,
+      state: this.#state,
+      registerLiveAgent: (adapter, baseUrl) => this.#registerLiveAgent(adapter, baseUrl),
+      summarize: (stored, online) => this.#summary(stored, online),
+    });
     this.#startHealthMonitor(options.healthIntervalMs ?? 15_000);
     // Attempt to reconnect any agents that were persisted from a previous run.
     // Fire-and-forget — construction is synchronous; failures are swallowed and
@@ -144,9 +143,9 @@ export class GatewayCore {
         case "agent.connectFlue":
           return await this.#connectFlue(req, emit);
         case "agent.deployFlue":
-          return await this.#deployFlue(req, emit);
+          return await this.#deployManager.deployFlue(req, emit);
         case "agent.redeploy":
-          return await this.#redeploy(req, emit);
+          return await this.#deployManager.redeploy(req, emit);
         case "agent.stop":
           return await this.#stopAgent(req, emit);
         case "agent.delete":
@@ -169,11 +168,11 @@ export class GatewayCore {
         case "config.set":
           return this.#setConfig(req, emit);
         case "deploy.preflight":
-          return await this.#deployPreflight(req, emit);
+          return await this.#deployManager.preflight(req, emit);
         case "deploy.githubOwners":
-          return await this.#githubOwners(emit);
+          return await this.#deployManager.githubOwners(emit);
         case "deploy.lastLog":
-          return this.#getLastDeployLog(req, emit);
+          return this.#deployManager.getLastDeployLog(req, emit);
         case "deploy.lastFailedLog":
           return emit({ type: "deploy.lastFailedLog", failed: this.#state.getLastFailedDeploy() });
         case "usage.summary":
@@ -303,11 +302,20 @@ export class GatewayCore {
     emit({ type: "agent.registered", agent: this.#summary(stored, true) });
   }
 
-  async #deployFlue(req: Extract<ClientRequest, { type: "agent.deployFlue" }>, emit: Emit): Promise<void> {
-    await this.#runDeploy(
-      { sourceDir: req.sourceDir, provider: req.provider, model: req.model, target: req.target ?? "docker-local", repoOwner: req.repoOwner },
-      emit,
-    );
+  /**
+   * Register a freshly connected agent's live adapter in the central agent map
+   * and persist its identity (J1 instanceId). Returns the StoredAgent so callers
+   * (DeployManager) can build the registered summary and persist deploy state.
+   * The `#agents` map and agent-summary logic still live here; a later #65 slice
+   * may move them into a dedicated AgentRegistry.
+   */
+  #registerLiveAgent(adapter: AgentAdapter, baseUrl: string): StoredAgent {
+    const stored = this.#state.upsertAgent(adapter.info(), adapter.kind, baseUrl);
+    this.#agents.set(stored.id, { adapter, kind: adapter.kind, sourceRef: baseUrl, hasToken: false });
+    // J1: a (re)deploy is a fresh lifecycle epoch — adopt the adapter's instanceId.
+    const iid = sessionInstanceId(adapter);
+    if (iid) this.#state.setAgentFlueInstanceId(stored.id, iid);
+    return stored;
   }
 
   /**
@@ -328,129 +336,6 @@ export class GatewayCore {
     const requiresRedeploy =
       !!req.modelSpecifier && req.modelSpecifier !== current && this.#state.hasDeploy(req.agentId);
     emit({ type: "config.updated", agentId: req.agentId, requiresRedeploy });
-  }
-
-  /**
-   * Redeploy an agent using the params persisted from its original deploy,
-   * overlaying any pending model override from its config (the honest path for
-   * applying a model change — Flue fixes the model at convert time).
-   */
-  async #redeploy(req: Extract<ClientRequest, { type: "agent.redeploy" }>, emit: Emit): Promise<void> {
-    // ORG-12 guard: org agents are connect-only — redeploy is the owner's responsibility.
-    if (this.#state.isOrgAgent(req.agentId)) {
-      const orgRow = this.#state.getOrgAgent(req.agentId);
-      emit({ type: "deploy.error", message: `Agent is managed by the org (shared by ${orgRow?.sharedBy ?? "org"}) — connect-only; redeploy is not allowed` });
-      return;
-    }
-    const params = this.#state.getDeploy(req.agentId);
-    if (!params) {
-      emit({ type: "deploy.error", message: `Agent "${req.agentId}" has no stored deploy to repeat.` });
-      return;
-    }
-    // Overlay the config model override (provider/model) when set, so a saved
-    // model change is what actually gets rebuilt and re-persisted by #runDeploy.
-    const cfg = this.#state.getConfig(req.agentId);
-    const override = splitSpecifier(cfg?.modelSpecifier ?? null);
-    const effective = override ? { ...params, provider: override.provider, model: override.model } : params;
-    // Pass the pre-known agentId so the log can be persisted even on error.
-    await this.#runDeploy(effective, emit, req.agentId);
-  }
-
-  /**
-   * Shared convert+deploy+connect flow for both first deploy and redeploy.
-   *
-   * @param knownAgentId  The agentId we're redeploying (if known). On error the
-   *   partial log is persisted on that agent's deploy row. For a first deploy
-   *   the agentId only becomes known after the agent registers, so a failure is
-   *   persisted as the global last-failed-deploy snapshot instead.
-   */
-  async #runDeploy(
-    params: { sourceDir: string; provider?: string | null; model?: string | null; target: string; repoOwner?: string | null },
-    emit: Emit,
-    knownAgentId?: string,
-  ): Promise<void> {
-    const logBuffer: string[] = [];
-    try {
-      const result = await this.#deployer.deploy(
-        {
-          sourceDir: params.sourceDir,
-          provider: params.provider ?? undefined,
-          model: params.model ?? undefined,
-          target: params.target as DeployTarget,
-          repoOwner: params.repoOwner ?? undefined,
-        },
-        (step, detail) => emit({ type: "deploy.progress", step, detail }),
-        (lines) => {
-          logBuffer.push(...lines);
-          emit({ type: "deploy.log", lines });
-        },
-      );
-      // Surface any source features that did not convert (hooks, MCP stdio, …).
-      // Informational — never blocks the deploy.
-      if (result.unmapped.length > 0) {
-        emit({ type: "deploy.unmapped", items: result.unmapped });
-      }
-      // `github` yields an artifact (a published repo), not a running agent.
-      if (result.kind === "artifact") {
-        // The last deploy outcome is no longer a failure — drop the snapshot.
-        this.#state.clearLastFailedDeploy();
-        emit({ type: "deploy.artifact", target: result.target, url: result.url, message: result.message });
-        return;
-      }
-      const stored = this.#state.upsertAgent(result.adapter.info(), result.adapter.kind, result.baseUrl);
-      this.#agents.set(stored.id, { adapter: result.adapter, kind: result.adapter.kind, sourceRef: result.baseUrl, hasToken: false });
-      // J1: a (re)deploy is a fresh lifecycle epoch — adopt the adapter's instanceId.
-      const iid = sessionInstanceId(result.adapter);
-      if (iid) this.#state.setAgentFlueInstanceId(stored.id, iid);
-      // Persist the inputs so this agent can be redeployed in one click later.
-      this.#state.setDeploy(stored.id, {
-        sourceDir: params.sourceDir,
-        provider: params.provider ?? null,
-        model: params.model ?? null,
-        target: params.target,
-        repoOwner: params.repoOwner ?? null,
-      });
-      // Persist the accumulated log (overwrites any previous log — one per agent in v1).
-      this.#state.setDeployLog(stored.id, logBuffer.join("\n"));
-      // The last deploy outcome is no longer a failure — drop the snapshot.
-      this.#state.clearLastFailedDeploy();
-      emit({ type: "agent.registered", agent: this.#summary(stored, true) });
-    } catch (err) {
-      const message = (err as Error).message;
-      if (knownAgentId) {
-        // Redeploy of a known agent — persist the partial log on its deploy row.
-        if (logBuffer.length > 0) this.#state.setDeployLog(knownAgentId, logBuffer.join("\n"));
-      } else {
-        // First deploy — no agent row exists yet to key the log by, so keep it
-        // as the global last-failed-deploy snapshot (deploy.lastFailedLog).
-        this.#state.setLastFailedDeploy({
-          sourceDir: params.sourceDir,
-          provider: params.provider ?? null,
-          model: params.model ?? null,
-          target: params.target,
-          message,
-          log: logBuffer.join("\n"),
-          failedAt: new Date().toISOString(),
-        });
-      }
-      emit({ type: "deploy.error", message });
-    }
-  }
-
-  /** Run preflight checks and emit a deploy.preflight event with the results. */
-  async #deployPreflight(req: Extract<ClientRequest, { type: "deploy.preflight" }>, emit: Emit): Promise<void> {
-    const checks = await this.#deployer.preflight({
-      provider: req.provider,
-      model: req.model,
-      target: req.target as DeployTarget,
-    });
-    emit({ type: "deploy.preflight", checks });
-  }
-
-  /** Return the last deploy log for an agent, or null if none has been stored yet. */
-  #getLastDeployLog(req: Extract<ClientRequest, { type: "deploy.lastLog" }>, emit: Emit): void {
-    const log = this.#state.getDeployLog(req.agentId);
-    emit({ type: "deploy.lastLog", agentId: req.agentId, log });
   }
 
   /** Aggregate usage per agent+model (optionally since an ISO timestamp) plus grand totals. */
@@ -478,30 +363,6 @@ export class GatewayCore {
    * the user's own login first, then org logins (one per line from `gh api user/orgs`).
    * Returns an empty list when gh is unavailable or not authenticated — never throws.
    */
-  async #githubOwners(emit: Emit): Promise<void> {
-    const loginRes = spawnSync("gh", ["api", "user", "--jq", ".login"], {
-      stdio: "pipe",
-      encoding: "utf8",
-    });
-    if (loginRes.status !== 0) {
-      emit({ type: "deploy.githubOwners", owners: [] });
-      return;
-    }
-    const login = loginRes.stdout?.trim();
-    if (!login) {
-      emit({ type: "deploy.githubOwners", owners: [] });
-      return;
-    }
-    const orgsRes = spawnSync("gh", ["api", "user/orgs", "--jq", ".[].login"], {
-      stdio: "pipe",
-      encoding: "utf8",
-    });
-    const orgs = orgsRes.status === 0
-      ? (orgsRes.stdout ?? "").split("\n").map((s) => s.trim()).filter(Boolean)
-      : [];
-    emit({ type: "deploy.githubOwners", owners: [login, ...orgs] });
-  }
-
   // ── Orchestration (workflows) ───────────────────────────────────────────────
 
   /**
