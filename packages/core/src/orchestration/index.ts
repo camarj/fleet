@@ -12,6 +12,8 @@
  * the per-agent RunEvents stay internal (that is a later concern).
  */
 
+import { ExecutionEngine, type EngineTask } from "./execution-engine.js";
+
 export type NodeKind = "input" | "agent" | "output";
 
 export interface WorkflowNode {
@@ -155,13 +157,6 @@ export function interpolate(
   });
 }
 
-class AbortError extends Error {
-  constructor() {
-    super("aborted");
-    this.name = "AbortError";
-  }
-}
-
 export interface OrchestratorOptions {
   /** Max wall-clock per agent node. A node exceeding it fails (and fail-fast
    * aborts the run). Input/output nodes are instantaneous and not subject to it. */
@@ -172,11 +167,14 @@ const DEFAULT_NODE_TIMEOUT_MS = 600_000; // 10 minutes — generous for real age
 
 export class Orchestrator {
   readonly #runner: AgentRunner;
-  readonly #nodeTimeoutMs: number;
+  readonly #engine: ExecutionEngine<string>;
 
   constructor(runner: AgentRunner, options: OrchestratorOptions = {}) {
     this.#runner = runner;
-    this.#nodeTimeoutMs = options.nodeTimeoutMs ?? DEFAULT_NODE_TIMEOUT_MS;
+    this.#engine = new ExecutionEngine<string>({
+      taskTimeoutMs: options.nodeTimeoutMs ?? DEFAULT_NODE_TIMEOUT_MS,
+      timeoutMessage: (id, ms) => `agent node "${id}" timed out after ${ms}ms`,
+    });
   }
 
   /**
@@ -184,6 +182,9 @@ export class Orchestrator {
    * independent branches run in parallel. Any node failure fails the whole run
    * and aborts in-flight nodes (no retries). An external `signal` abort yields
    * status "aborted".
+   *
+   * Validation and `{{...}}` interpolation are the DAG's concern; topological
+   * execution, timeout, abort and fail-fast are delegated to `ExecutionEngine`.
    */
   async run(
     wf: Workflow,
@@ -195,87 +196,41 @@ export class Orchestrator {
     const errors = validateWorkflow(wf);
     if (errors.length > 0) return { status: "failed", outputs: {}, error: errors.join("; ") };
 
-    const nodeById = new Map(wf.nodes.map((n) => [n.id, n]));
     const deps = new Map<string, string[]>(wf.nodes.map((n) => [n.id, []]));
     for (const e of wf.edges) deps.get(e.to)!.push(e.from);
 
-    const outputs: Record<string, string> = {};
-    const controller = new AbortController();
-    const onExternalAbort = (): void => controller.abort();
-    if (signal) {
-      if (signal.aborted) controller.abort();
-      else signal.addEventListener("abort", onExternalAbort, { once: true });
-    }
-
-    const memo = new Map<string, Promise<string>>();
-    const runNode = (id: string): Promise<string> => {
-      const existing = memo.get(id);
-      if (existing) return existing;
-      const node = nodeById.get(id)!;
-      const promise = (async () => {
-        // Wait for every dependency to finish; their outputs are now in `outputs`.
-        await Promise.all(deps.get(id)!.map(runNode));
-        if (controller.signal.aborted) throw new AbortError();
-
-        hooks.onNodeStatus?.(id, "running");
-        try {
-          let out: string;
-          if (node.kind === "input") {
-            out = inputs[node.name ?? id] ?? "";
-          } else if (node.kind === "agent") {
-            const prompt = interpolate(node.promptTemplate ?? "", inputs, outputs);
-            // K1: bound each agent node with a wall-clock deadline. The node gets its own
-            // controller chained to the run controller, so fail-fast/external abort still
-            // cancel it, while a timeout cancels ONLY this node's run (fail-fast then
-            // propagates through the normal failure path).
-            const nodeCtl = new AbortController();
-            const onRunAbort = (): void => nodeCtl.abort();
-            controller.signal.addEventListener("abort", onRunAbort, { once: true });
-            const timer = setTimeout(() => nodeCtl.abort(), this.#nodeTimeoutMs);
-            try {
-              out = await this.#runner.run(node.agentId!, prompt, nodeCtl.signal, { runId: meta?.runId, nodeId: id });
-            } catch (err) {
-              // Distinguish "this node timed out" from "the run was aborted/failed elsewhere".
-              if (nodeCtl.signal.aborted && !controller.signal.aborted) {
-                throw new Error(`agent node "${id}" timed out after ${this.#nodeTimeoutMs}ms`);
-              }
-              throw err;
-            } finally {
-              clearTimeout(timer);
-              controller.signal.removeEventListener("abort", onRunAbort);
-            }
-          } else {
-            // output: concatenate upstream outputs (sorted by node id for determinism).
-            out = deps
-              .get(id)!
-              .slice()
-              .sort()
-              .map((d) => outputs[d] ?? "")
-              .join("\n");
-          }
-          outputs[id] = out;
-          hooks.onNodeStatus?.(id, "completed", { output: out });
-          return out;
-        } catch (err) {
-          hooks.onNodeStatus?.(id, "failed", { error: (err as Error).message });
-          throw err;
+    // Adapt each node to a generic engine task. The DAG owns what each node MEANS
+    // (input value / interpolated agent prompt / concatenated upstream outputs);
+    // the engine owns HOW they run (deps, timeout, abort, fail-fast).
+    const tasks: EngineTask<string>[] = wf.nodes.map((node) => ({
+      id: node.id,
+      deps: deps.get(node.id)!,
+      timed: node.kind === "agent",
+      run: ({ results, signal: taskSignal }) => {
+        if (node.kind === "input") {
+          return Promise.resolve(inputs[node.name ?? node.id] ?? "");
         }
-      })();
-      memo.set(id, promise);
-      return promise;
-    };
+        if (node.kind === "agent") {
+          const prompt = interpolate(node.promptTemplate ?? "", inputs, results);
+          return this.#runner.run(node.agentId!, prompt, taskSignal, { runId: meta?.runId, nodeId: node.id });
+        }
+        // output: concatenate upstream outputs (sorted by node id for determinism).
+        const out = deps
+          .get(node.id)!
+          .slice()
+          .sort()
+          .map((d) => results[d] ?? "")
+          .join("\n");
+        return Promise.resolve(out);
+      },
+    }));
 
-    try {
-      await Promise.all(wf.nodes.map((n) => runNode(n.id)));
-      return { status: "completed", outputs: this.#collectOutputs(wf, outputs) };
-    } catch (err) {
-      // Fail fast: cancel any in-flight agent runs.
-      controller.abort();
-      const status: WorkflowRunStatus = signal?.aborted ? "aborted" : "failed";
-      return { status, outputs: this.#collectOutputs(wf, outputs), error: (err as Error).message };
-    } finally {
-      if (signal) signal.removeEventListener("abort", onExternalAbort);
-    }
+    const result = await this.#engine.run(
+      tasks,
+      { onTaskStatus: (id, status, info) => hooks.onNodeStatus?.(id, status, info && { output: info.result, error: info.error }) },
+      signal,
+    );
+    return { status: result.status, outputs: this.#collectOutputs(wf, result.results), error: result.error };
   }
 
   #collectOutputs(wf: Workflow, outputs: Record<string, string>): Record<string, string> {
