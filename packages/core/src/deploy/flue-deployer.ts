@@ -18,7 +18,8 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { convert, resolveModel, writeFlueProject, type UnmappedItem } from "@inteliside/gateway-converter";
-import { FlueAdapter } from "../adapters/flue.js";
+import { createAdapter } from "../adapters/factory.js";
+import type { AgentAdapter } from "../adapters/agent-adapter.js";
 import { deployEngramServer, type EngramServerDeployResult } from "./engram-server-deployer.js";
 import { deployedDir } from "../paths.js";
 import type { PreflightCheck } from "../api.js";
@@ -103,7 +104,7 @@ const NO_LOG: DeployLog = () => {};
 /** A deployed, connected agent the Core can talk to. */
 export interface DeployedAgent {
   kind: "connected";
-  adapter: FlueAdapter;
+  adapter: AgentAdapter;
   agentName: string;
   baseUrl: string;
   target: DeployTarget;
@@ -236,7 +237,7 @@ export class FlueDeployer {
     }
 
     onProgress("connecting");
-    const adapter = await FlueAdapter.connect({ baseUrl, agentName });
+    const adapter = await createAdapter({ kind: "flue", baseUrl, agentName });
     onProgress("done");
     return { kind: "connected", adapter, agentName, baseUrl, target, unmapped };
   }

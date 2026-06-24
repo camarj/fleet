@@ -6,7 +6,7 @@
 
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { FlueAdapter } from "./adapters/flue.js";
+import { createAdapter, createAdapterForStored, sessionInstanceId } from "./adapters/factory.js";
 import type { AgentAdapter, AgentKind, RunHandle } from "./adapters/agent-adapter.js";
 import { FlueDeployer, pingAgent, type DeployTarget } from "./deploy/flue-deployer.js";
 import { orgSlugFromName } from "./deploy/engram-server-deployer.js";
@@ -287,13 +287,14 @@ export class GatewayCore {
   async #registerConnectedAgent(baseUrl: string, agentName: string, token?: string, instanceId?: string): Promise<StoredAgent> {
     // Reuse the persisted instanceId (J1) unless the caller explicitly provided one.
     const prior = this.#state.getAgent(agentName);
-    const adapter = await FlueAdapter.connect({
-      baseUrl, agentName, token,
+    const adapter = await createAdapter({
+      kind: "flue", baseUrl, agentName, token,
       instanceId: instanceId ?? prior?.flueInstanceId ?? undefined,
     });
-    const stored = this.#state.upsertAgent(adapter.info(), "flue", baseUrl);
-    if (stored.flueInstanceId !== adapter.instanceId) this.#state.setAgentFlueInstanceId(stored.id, adapter.instanceId);
-    this.#agents.set(stored.id, { adapter, kind: "flue", sourceRef: baseUrl, hasToken: !!token });
+    const stored = this.#state.upsertAgent(adapter.info(), adapter.kind, baseUrl);
+    const iid = sessionInstanceId(adapter);
+    if (iid && stored.flueInstanceId !== iid) this.#state.setAgentFlueInstanceId(stored.id, iid);
+    this.#agents.set(stored.id, { adapter, kind: adapter.kind, sourceRef: baseUrl, hasToken: !!token });
     return stored;
   }
 
@@ -396,10 +397,11 @@ export class GatewayCore {
         emit({ type: "deploy.artifact", target: result.target, url: result.url, message: result.message });
         return;
       }
-      const stored = this.#state.upsertAgent(result.adapter.info(), "flue", result.baseUrl);
-      this.#agents.set(stored.id, { adapter: result.adapter, kind: "flue", sourceRef: result.baseUrl, hasToken: false });
+      const stored = this.#state.upsertAgent(result.adapter.info(), result.adapter.kind, result.baseUrl);
+      this.#agents.set(stored.id, { adapter: result.adapter, kind: result.adapter.kind, sourceRef: result.baseUrl, hasToken: false });
       // J1: a (re)deploy is a fresh lifecycle epoch — adopt the adapter's instanceId.
-      this.#state.setAgentFlueInstanceId(stored.id, result.adapter.instanceId);
+      const iid = sessionInstanceId(result.adapter);
+      if (iid) this.#state.setAgentFlueInstanceId(stored.id, iid);
       // Persist the inputs so this agent can be redeployed in one click later.
       this.#state.setDeploy(stored.id, {
         sourceDir: params.sourceDir,
@@ -840,15 +842,16 @@ export class GatewayCore {
           // Re-check #agents in case reconnect-on-boot completed while we were pinging.
           if (!this.#agents.has(stored.id)) {
             try {
-              const adapter = await FlueAdapter.connect({ baseUrl: stored.sourceRef, agentName: stored.name, instanceId: stored.flueInstanceId ?? undefined });
+              const adapter = await createAdapterForStored(stored);
               if (this.#agents.has(stored.id)) {
                 // Reconnect-on-boot won the race while we were connecting — keep
                 // its adapter and discard ours so neither leaks.
                 await adapter.close().catch(() => {});
                 continue;
               }
-              this.#agents.set(stored.id, { adapter, kind: "flue", sourceRef: stored.sourceRef, hasToken: false });
-              if (!stored.flueInstanceId) this.#state.setAgentFlueInstanceId(stored.id, adapter.instanceId);
+              this.#agents.set(stored.id, { adapter, kind: adapter.kind, sourceRef: stored.sourceRef, hasToken: false });
+              const iid = sessionInstanceId(adapter);
+              if (iid && !stored.flueInstanceId) this.#state.setAgentFlueInstanceId(stored.id, iid);
               const wasOnline = this.#onlineCache.get(stored.id) ?? false;
               this.#onlineCache.set(stored.id, true);
               if (!wasOnline) {
@@ -917,11 +920,12 @@ export class GatewayCore {
       const stored = this.#state.getAgent(orgRow.agentId);
       if (!stored?.sourceRef) continue;
       try {
-        const adapter = await FlueAdapter.connect({ baseUrl: stored.sourceRef, agentName: stored.name, instanceId: stored.flueInstanceId ?? undefined });
+        const adapter = await createAdapterForStored(stored);
         if (!this.#agents.has(orgRow.agentId)) {
           // No token for org agents (G1 — shared entries never carry tokens, ADR-4/rule #8).
-          this.#agents.set(orgRow.agentId, { adapter, kind: "flue", sourceRef: stored.sourceRef, hasToken: false });
-          if (!stored.flueInstanceId) this.#state.setAgentFlueInstanceId(stored.id, adapter.instanceId);
+          this.#agents.set(orgRow.agentId, { adapter, kind: adapter.kind, sourceRef: stored.sourceRef, hasToken: false });
+          const iid = sessionInstanceId(adapter);
+          if (iid && !stored.flueInstanceId) this.#state.setAgentFlueInstanceId(stored.id, iid);
         } else {
           await adapter.close().catch(() => {});
         }
@@ -1182,15 +1186,16 @@ export class GatewayCore {
         this.#onlineCache.set(stored.id, false);
       }
       try {
-        const adapter = await FlueAdapter.connect({ baseUrl: stored.sourceRef, agentName: stored.name, instanceId: stored.flueInstanceId ?? undefined });
+        const adapter = await createAdapterForStored(stored);
         if (this.#agents.has(stored.id)) {
           // A health tick connected this agent while we were awaiting — keep
           // its adapter and discard ours so neither leaks.
           await adapter.close().catch(() => {});
           continue;
         }
-        this.#agents.set(stored.id, { adapter, kind: "flue", sourceRef: stored.sourceRef, hasToken: false });
-        if (!stored.flueInstanceId) this.#state.setAgentFlueInstanceId(stored.id, adapter.instanceId);
+        this.#agents.set(stored.id, { adapter, kind: adapter.kind, sourceRef: stored.sourceRef, hasToken: false });
+        const iid = sessionInstanceId(adapter);
+        if (iid && !stored.flueInstanceId) this.#state.setAgentFlueInstanceId(stored.id, iid);
         this.#onlineCache.set(stored.id, true);
         // No broadcast here — there are typically no connected clients at boot time.
         // The first agents.list response will reflect the correct online state.
