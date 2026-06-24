@@ -11,7 +11,8 @@
  * Run: pnpm --filter @inteliside/gateway-core exec tsx test/flue.test.ts
  */
 
-import { mapFlueEvent, parseMcpTool, UsageAccumulator } from "../src/adapters/flue.js";
+import { mapFlueEvent } from "../src/adapters/flue.js";
+import { parseMcpTool, UsageAccumulator } from "../src/adapters/neutral-mapping.js";
 import type { FlueEvent } from "@flue/sdk";
 import type { RunEvent } from "../src/neutral.js";
 
