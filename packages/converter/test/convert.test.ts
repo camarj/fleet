@@ -92,6 +92,50 @@ function main(): void {
   for (const f of ["flue.config.ts", "package.json", "Dockerfile", ".env.example", "README.md", "wrangler.jsonc", ".github/workflows/deploy.yml"]) {
     assert(out.files.some((x) => x.path === f), `scaffold file ${f} emitted`);
   }
+
+  // ── A2A Agent Card (pivote B1, #68) ──
+  // Conformant to the @a2a-js/sdk 0.3.13 JSON AgentCard shape (required fields present);
+  // derives capabilities from skills/subagents/MCP and identity/runtime from name/model.
+  {
+    assert(out.files.some((x) => x.path === "agent-card.json"), "agent-card.json emitted alongside the Flue files");
+    const card = JSON.parse(fileContent(out, "agent-card.json"));
+    // identity/runtime
+    assert(card.name === "claude-project", "card name = agent slug");
+    assert(card.protocolVersion === "0.3.0", "card declares the A2A protocolVersion");
+    assert(typeof card.version === "string" && card.version.length > 0, "card has an agent version");
+    assert(card.description.includes("anthropic/claude-sonnet-4-6"), "card description carries the runtime model specifier");
+    assert(card.description.includes("customer-support"), "card description derived from the agent's instructions");
+    // required A2A AgentCard fields present (conformance)
+    for (const k of ["name", "description", "version", "protocolVersion", "url", "capabilities", "defaultInputModes", "defaultOutputModes", "skills"]) {
+      assert(k in card, `card has required A2A field "${k}"`);
+    }
+    // endpoint NOT baked at emit time — left for the registrar/deployer (B2)
+    assert(card.url === "", "card url is an empty placeholder (endpoint assigned at deploy, never baked)");
+    assert(!JSON.stringify(card).includes("https://api.example.com"), "card bakes no MCP/agent endpoint URLs");
+    // capabilities — Flue agents stream
+    assert(card.capabilities.streaming === true, "card advertises streaming (Flue served agents stream)");
+    // skills derived from the agent definition
+    const skills = card.skills;
+    assert(Array.isArray(skills) && skills.length > 0, "card has a non-empty skills array");
+    assert(
+      skills.every((s) => typeof s.id === "string" && typeof s.name === "string" && typeof s.description === "string" && Array.isArray(s.tags) && s.tags.length > 0),
+      "every card skill has id/name/description and at least one tag",
+    );
+    const byId = (id) => skills.find((s) => s.id === id);
+    assert(!!byId("general"), "card has a baseline 'general' skill for the core agent");
+    assert(byId("subagent-issue-classifier")?.tags.includes("subagent"), "subagent → card skill tagged 'subagent'");
+    assert(
+      byId("subagent-issue-classifier")?.description.includes("Classifies"),
+      "subagent card skill carries the subagent's real description",
+    );
+    assert(byId("skill-refund-policy")?.tags.includes("skill"), "skill → card skill tagged 'skill'");
+    assert(
+      byId("skill-refund-policy")?.description.includes("refund policy"),
+      "skill card skill carries the SKILL.md description",
+    );
+    assert(byId("mcp-inventory")?.tags.includes("tools"), "http MCP → card skill tagged 'tools'");
+    assert(!!byId("mcp-filesystem"), "bridged stdio MCP → card skill (it is a usable tool on node targets)");
+  }
   // start.mjs — emitted when bridges are present
   assert(out.files.some((x) => x.path === "start.mjs"), "start.mjs emitted when stdio bridges are present");
   const startMjs = fileContent(out, "start.mjs");
@@ -167,6 +211,8 @@ function main(): void {
   const swappedAgent = fileContent(swapped, "src/agents/claude-project.ts");
   assert(swappedAgent.includes('model: "openai/gpt-5.5"'), "swapped main model emitted");
   assert(!swappedAgent.includes("anthropic/claude-haiku"), "subagent anthropic model dropped on swap");
+  const swappedCard = JSON.parse(fileContent(swapped, "agent-card.json"));
+  assert(swappedCard.description.includes("openai/gpt-5.5"), "card description reflects the swapped model");
   assert(
     swapped.report.unmapped.some((u) => u.kind === "subagent-model"),
     "swap reports dropped subagent model overrides",
@@ -219,6 +265,10 @@ function main(): void {
   assert(cfPkg.scripts["start"] === "node dist/server.mjs", "cloudflare target: start script is node dist/server.mjs (no bridge)");
   const cfDockerfile = fileContent(cfOut, "Dockerfile");
   assert(cfDockerfile.includes('CMD ["node", "dist/server.mjs"]'), "cloudflare target: Dockerfile CMD is node dist/server.mjs");
+  // cloudflare: filesystem stdio MCP is unmapped (no bridge) → it must NOT appear as a card tool
+  const cfCard = JSON.parse(fileContent(cfOut, "agent-card.json"));
+  assert(!cfCard.skills.some((s) => s.id === "mcp-filesystem"), "cloudflare target: unmapped filesystem MCP is not advertised in the card");
+  assert(cfCard.skills.some((s) => s.id === "mcp-inventory"), "cloudflare target: http MCP inventory still advertised in the card");
 
   // ── J4: shared memory OFF ⇒ byte-identical to today (MEM-10 regression guard) ──
   {

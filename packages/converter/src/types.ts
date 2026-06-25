@@ -48,6 +48,8 @@ export interface ClaudeSubagent {
 export interface ClaudeSkill {
   /** Skill directory name. */
   name: string;
+  /** SKILL.md frontmatter `description`, if any — used to describe the skill in the Agent Card. */
+  description?: string;
   /** Every file under the skill dir, path relative to the skill dir. */
   files: SkillFile[];
 }
