@@ -10,7 +10,7 @@
 
 import type { RunInput, RunOptions, RunSink } from "../neutral.js";
 
-export type AgentKind = "flue";
+export type AgentKind = "flue" | "a2a";
 
 export interface AgentInfo {
   id: string;

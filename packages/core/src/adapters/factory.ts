@@ -12,6 +12,8 @@
 import type { StoredAgent } from "../state/index.js";
 import type { AgentAdapter, AgentKind } from "./agent-adapter.js";
 import { FlueAdapter } from "./flue.js";
+import { A2aAdapter } from "./foreign/a2a.js";
+import { HttpA2aClient } from "./foreign/a2a-http-client.js";
 
 /** Everything needed to connect an adapter, independent of where it came from. */
 export interface AdapterConnectParams {
@@ -39,6 +41,11 @@ export async function createAdapter(params: AdapterConnectParams): Promise<Agent
         instanceId: params.instanceId,
         token: params.token,
       });
+    case "a2a":
+      return A2aAdapter.connect(
+        { baseUrl: params.baseUrl, agentName: params.agentName, token: params.token },
+        (spec) => new HttpA2aClient(spec),
+      );
     default: {
       // When `AgentKind` gains a new member, TypeScript flags this line until a
       // matching `case` is added above — the compiler enforces the single seam.
