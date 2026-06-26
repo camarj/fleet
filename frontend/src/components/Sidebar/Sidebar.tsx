@@ -84,6 +84,8 @@ export function Sidebar({
           <span className="agent-name-text">
             {a.name}
             {a.version && <span className="agent-version">v{a.version}</span>}
+            {/* A2: distinguish third-party A2A agents from native Flue agents. */}
+            {a.kind === "a2a" && <span className="agent-kind" title="Third-party agent (A2A)">A2A</span>}
           </span>
           <span className={`badge ${a.online ? "online" : ""}`}>{a.online ? "online" : "offline"}</span>
         </div>

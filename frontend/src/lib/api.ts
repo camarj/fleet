@@ -54,8 +54,8 @@ export interface Workflow {
   edges: WorkflowEdge[];
 }
 
-/** The agent kind. Fleet is Flue-only. */
-export type AgentKind = "flue";
+/** The agent kind. Flue is the native runtime; "a2a" is a registered third-party agent (A2). */
+export type AgentKind = "flue" | "a2a";
 
 // ── Org registry types — mirror of packages/core/src/org/registry.ts ──
 
@@ -259,6 +259,8 @@ export type ClientRequest =
   | { type: "capabilities.list" }
   /** Connect a served Flue agent over its HTTP+WebSocket API. */
   | { type: "agent.connectFlue"; baseUrl: string; agentName: string; instanceId?: string; token?: string }
+  /** Register a third-party A2A agent by its (publicly routable) endpoint URL (pivote A2). */
+  | { type: "agent.connectA2a"; baseUrl: string; agentName: string; token?: string }
   /** Convert a local Claude Code project to a Flue agent, deploy it, and connect. */
   | { type: "agent.deployFlue"; sourceDir: string; provider?: string; model?: string; target?: DeployTarget; repoOwner?: string }
   | { type: "agent.redeploy"; agentId: string }

@@ -6,6 +6,7 @@
 
 import { createAdapter, createAdapterForStored, sessionInstanceId } from "./adapters/factory.js";
 import type { AgentAdapter, AgentKind } from "./adapters/agent-adapter.js";
+import { isRoutableUrl } from "./adapters/foreign/routability.js";
 import { FlueDeployer, pingAgent, type DeployTarget } from "./deploy/flue-deployer.js";
 import { SecretsStore } from "./secrets/store.js";
 import { GatewayState, type StoredAgent } from "./state/index.js";
@@ -115,6 +116,8 @@ export class GatewayCore {
           return this.#listCapabilities(emit);
         case "agent.connectFlue":
           return await this.#connectFlue(req, emit);
+        case "agent.connectA2a":
+          return await this.#connectA2a(req, emit);
         case "agent.deployFlue":
           return await this.#deployManager.deployFlue(req, emit);
         case "agent.redeploy":
@@ -279,6 +282,27 @@ export class GatewayCore {
 
   async #connectFlue(req: Extract<ClientRequest, { type: "agent.connectFlue" }>, emit: Emit): Promise<void> {
     const stored = await this.#registerConnectedAgent(req.baseUrl, req.agentName, req.token, req.instanceId);
+    emit({ type: "agent.registered", agent: this.#summary(stored, true) });
+  }
+
+  /**
+   * Register a third-party A2A agent by its endpoint URL (pivote A2, ADR-13). The
+   * routability guard runs first: a remotely-orchestrable agent must be reachable
+   * by a public URL, so a local/private host is refused (CONTEXT.md "Routable").
+   * The adapter is built through the same factory seam as Flue (kind "a2a"); its
+   * identity comes from the agent's Agent Card, falling back to the given name when
+   * the card route is unavailable. No deploy row → it lists as an attached-by-URL
+   * agent (target null), distinguished from Flue agents by `kind`.
+   */
+  async #connectA2a(req: Extract<ClientRequest, { type: "agent.connectA2a" }>, emit: Emit): Promise<void> {
+    const routable = isRoutableUrl(req.baseUrl);
+    if (!routable.ok) {
+      emit({ type: "error", message: routable.reason, requestType: req.type });
+      return;
+    }
+    const adapter = await createAdapter({ kind: "a2a", baseUrl: req.baseUrl, agentName: req.agentName, token: req.token });
+    const stored = this.#state.upsertAgent(adapter.info(), adapter.kind, req.baseUrl);
+    this.#agents.set(stored.id, { adapter, kind: adapter.kind, sourceRef: req.baseUrl, hasToken: !!req.token });
     emit({ type: "agent.registered", agent: this.#summary(stored, true) });
   }
 
