@@ -148,6 +148,29 @@ body {
   color: var(--muted);
   opacity: 0.8;
 }
+
+/* B2: capability chips — what an agent can do, from its Agent Card. */
+.agent-capabilities {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.capability-chip {
+  font-size: 10px;
+  line-height: 15px;
+  padding: 0 6px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--surface-2, rgba(127, 127, 127, 0.12));
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.25));
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .agent-actions {
   display: flex;
   flex-wrap: wrap;

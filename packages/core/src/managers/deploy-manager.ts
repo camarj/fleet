@@ -16,7 +16,7 @@ import { spawnSync } from "node:child_process";
 import type { FlueDeployer, DeployTarget } from "../deploy/flue-deployer.js";
 import type { GatewayState, StoredAgent } from "../state/index.js";
 import type { AgentAdapter } from "../adapters/agent-adapter.js";
-import type { AgentSummary, ClientRequest, ServerEvent } from "../api.js";
+import type { AgentSummary, Capability, ClientRequest, ServerEvent } from "../api.js";
 import { splitSpecifier } from "../model-specifier.js";
 
 type Emit = (event: ServerEvent) => void;
@@ -27,9 +27,10 @@ export interface DeployManagerDeps {
   /**
    * Register a freshly connected agent's live adapter in the Core's agent map and
    * persist its identity. Returns the StoredAgent so the manager can build the
-   * registered summary and persist deploy params/logs against it.
+   * registered summary and persist deploy params/logs against it. `capabilities`
+   * (from the converted agent's Agent Card, B2) are persisted against the agent.
    */
-  registerLiveAgent(adapter: AgentAdapter, baseUrl: string): StoredAgent;
+  registerLiveAgent(adapter: AgentAdapter, baseUrl: string, capabilities: Capability[]): StoredAgent;
   /** Build an AgentSummary (the shared agent-summary logic stays in the Core). */
   summarize(stored: StoredAgent, online: boolean): AgentSummary;
 }
@@ -37,7 +38,7 @@ export interface DeployManagerDeps {
 export class DeployManager {
   readonly #deployer: FlueDeployer;
   readonly #state: GatewayState;
-  readonly #registerLiveAgent: (adapter: AgentAdapter, baseUrl: string) => StoredAgent;
+  readonly #registerLiveAgent: (adapter: AgentAdapter, baseUrl: string, capabilities: Capability[]) => StoredAgent;
   readonly #summarize: (stored: StoredAgent, online: boolean) => AgentSummary;
 
   constructor(deps: DeployManagerDeps) {
@@ -121,7 +122,7 @@ export class DeployManager {
         emit({ type: "deploy.artifact", target: result.target, url: result.url, message: result.message });
         return;
       }
-      const stored = this.#registerLiveAgent(result.adapter, result.baseUrl);
+      const stored = this.#registerLiveAgent(result.adapter, result.baseUrl, result.capabilities);
       // Persist the inputs so this agent can be redeployed in one click later.
       this.#state.setDeploy(stored.id, {
         sourceDir: params.sourceDir,

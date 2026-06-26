@@ -70,6 +70,27 @@ export interface AgentSummary {
   sharedBy: string | null;
 }
 
+/**
+ * One declared **Capability** of an Agent (pivote B2). Derived from the Agent
+ * Card's skills — for Flue converted agents, the `agent-card.json` the converter
+ * emits (#68); for A2A agents, the remote Agent Card (#71). The Orchestrator
+ * (series D) consults these to decide delegations; the UI shows "what each agent
+ * can do". Shape mirrors the A2A `AgentSkill` subset (id/name/description/tags).
+ */
+export interface Capability {
+  id: string;
+  name: string;
+  description: string;
+  tags: string[];
+}
+
+/** An agent and its declared capabilities — one entry of the `capabilities` catalog. */
+export interface AgentCapabilities {
+  agentId: string;
+  agentName: string;
+  capabilities: Capability[];
+}
+
 /** Compact summary of a past session returned by `sessions.list`. */
 export interface SessionSummary {
   id: string;
@@ -120,6 +141,8 @@ export interface UsageTotals {
 
 export type ClientRequest =
   | { type: "agents.list" }
+  /** List every registered agent and its declared capabilities (the fleet catalog, B2). */
+  | { type: "capabilities.list" }
   /** Connect a served Flue agent over its HTTP+WebSocket API. */
   | { type: "agent.connectFlue"; baseUrl: string; agentName: string; instanceId?: string; token?: string }
   /** Convert a local Claude Code project to a Flue agent, deploy it, and connect. */
@@ -196,6 +219,8 @@ export type ClientRequest =
 
 export type ServerEvent =
   | { type: "agents"; agents: AgentSummary[] }
+  /** The fleet capability catalog: every registered agent and what it can do (B2). */
+  | { type: "capabilities"; agents: AgentCapabilities[] }
   | { type: "agent.registered"; agent: AgentSummary }
   /** An agent's summary changed (e.g. it went offline after stop). */
   | { type: "agent.updated"; agent: AgentSummary }

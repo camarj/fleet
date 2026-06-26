@@ -5,7 +5,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { GatewayClient } from "./lib/gatewayClient";
-import type { AgentSummary, FailedDeploy, OrgMember, OrgStatus, PreflightCheck, ServerEvent } from "./lib/api";
+import type { AgentSummary, Capability, FailedDeploy, OrgMember, OrgStatus, PreflightCheck, ServerEvent } from "./lib/api";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { TerminalPanel } from "./components/TerminalPanel/TerminalPanel";
 import { WorkflowCanvas } from "./components/WorkflowCanvas/WorkflowCanvas";
@@ -45,6 +45,8 @@ export function App(): React.JSX.Element {
 
   const [connected, setConnected] = useState(false);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
+  // B2: agentId → declared capabilities (the fleet catalog).
+  const [capabilities, setCapabilities] = useState<Record<string, Capability[]>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [view, setView] = useState<"terminal" | "canvas">("terminal");
   const [secretsProviders, setSecretsProviders] = useState<string[]>([]);
@@ -154,12 +156,17 @@ export function App(): React.JSX.Element {
       if (e.type === "agents") {
         setAgents(e.agents);
         setSelectedId((cur) => cur ?? e.agents[0]?.id ?? null);
+      } else if (e.type === "capabilities") {
+        // B2: rebuild the agentId → capabilities map from the fleet catalog.
+        setCapabilities(Object.fromEntries(e.agents.map((a) => [a.agentId, a.capabilities])));
       } else if (e.type === "agent.registered") {
         setAgents((prev) => upsertAgent(prev, e.agent));
         setSelectedId((cur) => cur ?? e.agent.id);
         setDeployStatus(null); // a deploy that just finished
         setDeployError(null);
         setDeployArtifact(null);
+        // B2: a new agent may have brought capabilities — refresh the catalog.
+        client.send({ type: "capabilities.list" });
         // Close the connect modal on successful registration (covers both deploy and connect paths).
         if (connectPendingRef.current) {
           connectPendingRef.current = false;
@@ -170,6 +177,8 @@ export function App(): React.JSX.Element {
         setAgents((prev) => upsertAgent(prev, e.agent));
       } else if (e.type === "agent.removed") {
         setAgents((prev) => prev.filter((a) => a.id !== e.agentId));
+        // B2: keep the catalog in sync after a removal.
+        client.send({ type: "capabilities.list" });
       } else if (e.type === "secrets.status") {
         setSecretsProviders(e.providers);
       } else if (e.type === "usage.summary") {
@@ -247,6 +256,7 @@ export function App(): React.JSX.Element {
       setConnected(c);
       if (c) {
         client.send({ type: "agents.list" });
+        client.send({ type: "capabilities.list" });
         client.send({ type: "secrets.list" });
         client.send({ type: "org.status" });
       }
@@ -309,6 +319,7 @@ export function App(): React.JSX.Element {
     <div className="app">
       <Sidebar
         agents={agents}
+        capabilities={capabilities}
         selectedId={selectedId}
         connected={connected}
         secretsProviders={secretsProviders}
