@@ -5,7 +5,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { GatewayClient } from "./lib/gatewayClient";
-import type { AgentSummary, Capability, FailedDeploy, OrgMember, OrgStatus, PreflightCheck, ServerEvent } from "./lib/api";
+import type { AgentKind, AgentSummary, Capability, FailedDeploy, OrgMember, OrgStatus, PreflightCheck, ServerEvent } from "./lib/api";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { TerminalPanel } from "./components/TerminalPanel/TerminalPanel";
 import { WorkflowCanvas } from "./components/WorkflowCanvas/WorkflowCanvas";
@@ -144,9 +144,12 @@ export function App(): React.JSX.Element {
     if (!sent) setDeployError("Not connected to the Core — reconnecting. Try again in a moment.");
   }
 
-  function handleConnect(baseUrl: string, agentName: string, token?: string): boolean {
+  function handleConnect(kind: AgentKind, baseUrl: string, agentName: string, token?: string): boolean {
     setConnectError(null);
-    const sent = client.send({ type: "agent.connectFlue", baseUrl, agentName, token });
+    const sent =
+      kind === "a2a"
+        ? client.send({ type: "agent.connectA2a", baseUrl, agentName, token })
+        : client.send({ type: "agent.connectFlue", baseUrl, agentName, token });
     if (sent) connectPendingRef.current = true;
     return sent;
   }

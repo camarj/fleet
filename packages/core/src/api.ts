@@ -145,6 +145,13 @@ export type ClientRequest =
   | { type: "capabilities.list" }
   /** Connect a served Flue agent over its HTTP+WebSocket API. */
   | { type: "agent.connectFlue"; baseUrl: string; agentName: string; instanceId?: string; token?: string }
+  /**
+   * Register a third-party agent that speaks A2A by its endpoint URL (pivote A2).
+   * The Core builds an `A2aAdapter` (kind "a2a") via the factory and reads identity
+   * from the agent's well-known Agent Card. `baseUrl` MUST be a publicly routable
+   * URL — a non-routable host (localhost/private) is rejected (CONTEXT.md "Routable").
+   */
+  | { type: "agent.connectA2a"; baseUrl: string; agentName: string; token?: string }
   /** Convert a local Claude Code project to a Flue agent, deploy it, and connect. */
   | { type: "agent.deployFlue"; sourceDir: string; provider?: string; model?: string; target?: DeployTargetWire; repoOwner?: string }
   /** Repeat an agent's original deploy (e.g. after adding its provider API key). */
