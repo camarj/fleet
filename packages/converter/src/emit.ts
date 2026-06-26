@@ -10,6 +10,7 @@
  * against supergateway 3.4.3); the rest are reported as unmapped.
  */
 
+import { buildAgentCard } from "./agent-card.js";
 import { resolveModel } from "./providers.js";
 import type { ClaudeProject, ConvertOptions, FlueFile, FlueProject, McpServerSpec, UnmappedItem } from "./types.js";
 
@@ -152,6 +153,14 @@ export function emitFlueProject(project: ClaudeProject, opts: ConvertOptions = {
   files.push({ path: ".github/workflows/deploy.yml", content: DEPLOY_WORKFLOW });
   files.push({ path: ".env.example", content: emitEnvExample(provider.apiKeyEnv, httpMcp, stdioMcp, project.env, sharedMemoryEnabled) });
   files.push({ path: ".gitignore", content: "dist/\ndata/\nnode_modules/\n.env\n" });
+  // ── A2A Agent Card (capability descriptor for the Baton Orchestrator, ADR-13) ──
+  // Tools = wired MCP only (httpMcp + bridged); unmapped servers are not advertised.
+  const agentCard = buildAgentCard(project, {
+    modelSpecifier: specifier,
+    httpMcp: httpMcp.map((m) => m.name),
+    bridgedMcp: bridged.map((m) => m.name),
+  });
+  files.push({ path: "agent-card.json", content: `${JSON.stringify(agentCard, null, 2)}\n` });
   files.push({
     path: "README.md",
     content: emitReadme(project, specifier, provider.apiKeyEnv, httpMcp, bridged, unmapped, nodeSandbox),

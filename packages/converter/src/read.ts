@@ -117,7 +117,11 @@ function readSkills(skillsDir: string): ClaudeSkill[] {
         return { relPath, content: relPath === "SKILL.md" ? normalizeSkillFrontmatter(content) : content };
       })
       .sort((a, b) => a.relPath.localeCompare(b.relPath));
-    if (files.some((f) => f.relPath === "SKILL.md")) out.push({ name: slugify(entry), files });
+    const skillMd = files.find((f) => f.relPath === "SKILL.md");
+    if (skillMd) {
+      const desc = parseFrontmatter(skillMd.content).data["description"];
+      out.push({ name: slugify(entry), description: typeof desc === "string" ? desc : undefined, files });
+    }
   }
   return out;
 }
