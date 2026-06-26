@@ -13,7 +13,7 @@ import { DeployManager } from "./managers/deploy-manager.js";
 import { SessionManager } from "./managers/session-manager.js";
 import { WorkflowManager } from "./managers/workflow-manager.js";
 import { OrgCoordinator, type OrgHost } from "./managers/org-coordinator.js";
-import type { AgentSummary, ClientRequest, ServerEvent } from "./api.js";
+import type { AgentSummary, Capability, ClientRequest, ServerEvent } from "./api.js";
 import type { OrgRegistry } from "./org/registry.js";
 
 export type Emit = (event: ServerEvent) => void;
@@ -89,7 +89,7 @@ export class GatewayCore {
     this.#deployManager = new DeployManager({
       deployer: this.#deployer,
       state: this.#state,
-      registerLiveAgent: (adapter, baseUrl) => this.#registerLiveAgent(adapter, baseUrl),
+      registerLiveAgent: (adapter, baseUrl, capabilities) => this.#registerLiveAgent(adapter, baseUrl, capabilities),
       summarize: (stored, online) => this.#summary(stored, online),
     });
     this.#sessionManager = new SessionManager({
@@ -111,6 +111,8 @@ export class GatewayCore {
       switch (req.type) {
         case "agents.list":
           return this.#listAgents(emit);
+        case "capabilities.list":
+          return this.#listCapabilities(emit);
         case "agent.connectFlue":
           return await this.#connectFlue(req, emit);
         case "agent.deployFlue":
@@ -241,6 +243,22 @@ export class GatewayCore {
   }
 
   /**
+   * Emit the fleet capability catalog (B2): every registered agent and its declared
+   * capabilities (from its Agent Card). Reflects the live store, so it is naturally
+   * up to date as agents are registered (capabilities persisted at deploy) or removed
+   * (their row, and thus their capabilities, are gone). The Orchestrator (series D)
+   * consults this to decide delegations; the UI shows what each agent can do.
+   */
+  #listCapabilities(emit: Emit): void {
+    const agents = this.#state.listAgents().map((a) => ({
+      agentId: a.id,
+      agentName: a.name,
+      capabilities: a.capabilities,
+    }));
+    emit({ type: "capabilities", agents });
+  }
+
+  /**
    * Connect to a Flue agent, upsert its agent row, and register the live adapter.
    * Shared internal path used by both manual `agent.connectFlue` and org sync.
    * Returns the stored agent row so callers can build summaries or emit events.
@@ -271,8 +289,11 @@ export class GatewayCore {
    * The `#agents` map and agent-summary logic still live here; a later #65 slice
    * may move them into a dedicated AgentRegistry.
    */
-  #registerLiveAgent(adapter: AgentAdapter, baseUrl: string): StoredAgent {
+  #registerLiveAgent(adapter: AgentAdapter, baseUrl: string, capabilities: Capability[] = []): StoredAgent {
     const stored = this.#state.upsertAgent(adapter.info(), adapter.kind, baseUrl);
+    // B2: persist the capabilities derived from the agent's Agent Card. Only on the
+    // deploy path (a connect carries no card) — never overwrite a known set with [].
+    if (capabilities.length > 0) this.#state.setAgentCapabilities(stored.id, capabilities);
     this.#agents.set(stored.id, { adapter, kind: adapter.kind, sourceRef: baseUrl, hasToken: false });
     // J1: a (re)deploy is a fresh lifecycle epoch — adopt the adapter's instanceId.
     const iid = sessionInstanceId(adapter);

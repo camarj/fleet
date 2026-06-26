@@ -6,7 +6,7 @@
  */
 
 import { useState } from "react";
-import type { AgentSummary } from "../../lib/api";
+import type { AgentSummary, Capability } from "../../lib/api";
 import { Modal } from "../Modal/Modal";
 import { INFRA_CREDENTIAL_IDS } from "../../lib/providers";
 
@@ -15,6 +15,8 @@ const REMOTE_KEEPS_RUNNING: ReadonlySet<string> = new Set(["fly", "cloudflare", 
 
 interface Props {
   agents: AgentSummary[];
+  /** B2: agentId → declared capabilities (what each agent can do). */
+  capabilities: Record<string, Capability[]>;
   selectedId: string | null;
   connected: boolean;
   secretsProviders: string[];
@@ -31,6 +33,7 @@ interface Props {
 
 export function Sidebar({
   agents,
+  capabilities,
   selectedId,
   connected,
   secretsProviders,
@@ -101,6 +104,16 @@ export function Sidebar({
           )}
           {a.model && <span className="agent-model">{a.model}</span>}
         </div>
+        {/* B2: what this agent can do — capabilities derived from its Agent Card. */}
+        {(capabilities[a.id]?.length ?? 0) > 0 && (
+          <ul className="agent-capabilities" aria-label={`Capabilities of ${a.name}`}>
+            {capabilities[a.id]!.map((c) => (
+              <li key={c.id} className="capability-chip" title={c.description || c.name}>
+                {c.name}
+              </li>
+            ))}
+          </ul>
+        )}
         {/* Org agents are connect-only — Stop / Delete / Redeploy / Config are
             blocked at the Core level (ORG-12) and not offered in the UI. */}
         {!isOrg && (

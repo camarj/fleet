@@ -9,6 +9,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import type { AgentInfo, AgentKind } from "../adapters/agent-adapter.js";
+import type { Capability } from "../api.js";
 import type { ModelParameters, RunEvent, Usage } from "../neutral.js";
 import type { Workflow } from "../orchestration/index.js";
 import type { SharedAgentEntry } from "../org/registry.js";
@@ -37,6 +38,8 @@ export interface StoredAgent {
   /** Stable Flue instanceId — persisted so Flue's server-side SessionData
    * (keyed by instanceId) survives Core restarts and reconnects (J1). */
   flueInstanceId: string | null;
+  /** Declared capabilities (from the agent's Agent Card, B2). Empty until known. */
+  capabilities: Capability[];
   updatedAt: string;
 }
 
@@ -101,6 +104,7 @@ CREATE TABLE IF NOT EXISTS agents (
   kind        TEXT NOT NULL,
   source_ref       TEXT NOT NULL,
   flue_instance_id TEXT,
+  capabilities_json TEXT NOT NULL DEFAULT '[]',
   created_at       TEXT NOT NULL,
   updated_at       TEXT NOT NULL
 );
@@ -215,6 +219,8 @@ export class GatewayState {
     this.#addColumnIfMissing(`ALTER TABLE agents ADD COLUMN flue_instance_id TEXT`);
     // B3: usage.summary filters by recorded_at — keep it off the full-scan path.
     this.#db.exec(`CREATE INDEX IF NOT EXISTS idx_usage_recorded_at ON usage(recorded_at)`);
+    // B2: declared capabilities per agent (from its Agent Card), stored as a JSON array.
+    this.#addColumnIfMissing(`ALTER TABLE agents ADD COLUMN capabilities_json TEXT NOT NULL DEFAULT '[]'`);
   }
 
   /**
@@ -256,6 +262,17 @@ export class GatewayState {
     const stored = this.getAgent(info.id);
     if (!stored) throw new Error(`failed to persist agent ${info.id}`);
     return stored;
+  }
+
+  /**
+   * Persist an agent's declared capabilities (B2). Replaces any prior set. Kept
+   * off the `upsertAgent` path so re-connecting an agent (which carries no card)
+   * never wipes capabilities captured at deploy time.
+   */
+  setAgentCapabilities(agentId: string, capabilities: Capability[]): void {
+    this.#db
+      .prepare(`UPDATE agents SET capabilities_json = ? WHERE id = ?`)
+      .run(JSON.stringify(capabilities), agentId);
   }
 
   getAgent(id: string): StoredAgent | null {
@@ -756,6 +773,7 @@ interface AgentDbRow {
   kind: string;
   source_ref: string;
   flue_instance_id: string | null;
+  capabilities_json: string;
   created_at: string;
   updated_at: string;
 }
@@ -805,8 +823,20 @@ function rowToAgent(row: AgentDbRow): StoredAgent {
     kind: row.kind as AgentKind,
     sourceRef: row.source_ref,
     flueInstanceId: row.flue_instance_id ?? null,
+    capabilities: parseCapabilities(row.capabilities_json),
     updatedAt: row.updated_at,
   };
+}
+
+/** Tolerant parse of the stored capabilities JSON — a malformed/legacy value yields []. */
+function parseCapabilities(json: string | null | undefined): Capability[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? (parsed as Capability[]) : [];
+  } catch {
+    return [];
+  }
 }
 
 interface OrgAgentDbRow {

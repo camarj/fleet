@@ -29,7 +29,7 @@ import { FlySecretInjector, WranglerSecretInjector } from "./secret-injector.js"
 export { DeployError };
 import { deployEngramServer, type EngramServerDeployResult } from "./engram-server-deployer.js";
 import { deployedDir } from "../paths.js";
-import type { PreflightCheck } from "../api.js";
+import type { Capability, PreflightCheck } from "../api.js";
 import type { SecretsStore } from "../secrets/store.js";
 
 const FLUE_VERSION = "0.10.1";
@@ -117,6 +117,8 @@ export interface DeployedAgent {
   target: DeployTarget;
   /** Features of the source project that did not convert to Flue (surfaced to the user). */
   unmapped: UnmappedItem[];
+  /** Capabilities derived from the converted agent's Agent Card (B2). */
+  capabilities: Capability[];
 }
 
 /** A produced artifact that is not (yet) a running agent — e.g. a published repo. */
@@ -190,6 +192,9 @@ export class FlueDeployer {
     });
     const agentName = project.report.agentName;
     const unmapped = project.report.unmapped;
+    // B2: capabilities come from the Agent Card the converter emitted (#68). Reusing
+    // the card (not re-deriving from the report) keeps #68 the single source of truth.
+    const capabilities = capabilitiesFromCard(project.files);
     const agentDir = join(deployedDir(), agentName);
     rmSync(agentDir, { recursive: true, force: true });
     writeFlueProject(project, agentDir);
@@ -248,7 +253,7 @@ export class FlueDeployer {
     onProgress("connecting");
     const adapter = await createAdapter({ kind: "flue", baseUrl, agentName });
     onProgress("done");
-    return { kind: "connected", adapter, agentName, baseUrl, target, unmapped };
+    return { kind: "connected", adapter, agentName, baseUrl, target, unmapped, capabilities };
   }
 
   /**
@@ -825,6 +830,32 @@ function findCfOutputDir(distDir: string): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Extract the agent's capabilities from the `agent-card.json` the converter emits
+ * (#68). The card's A2A `skills` ARE the capabilities (id/name/description/tags).
+ * Tolerant: a missing/malformed card yields no capabilities rather than failing
+ * the deploy. The endpoint `url` in the card is intentionally empty at this stage.
+ */
+function capabilitiesFromCard(files: { path: string; content: string }[]): Capability[] {
+  const card = files.find((f) => f.path === "agent-card.json");
+  if (!card) return [];
+  try {
+    const parsed = JSON.parse(card.content) as { skills?: unknown };
+    if (!Array.isArray(parsed.skills)) return [];
+    return parsed.skills
+      .filter((s): s is Record<string, unknown> => !!s && typeof s === "object")
+      .map((s) => ({
+        id: String(s.id ?? ""),
+        name: String(s.name ?? ""),
+        description: String(s.description ?? ""),
+        tags: Array.isArray(s.tags) ? s.tags.map((t) => String(t)) : [],
+      }))
+      .filter((c) => c.id !== "");
+  } catch {
+    return [];
+  }
 }
 
 /** Assert a CLI is on PATH (`cmd --version` succeeds). */

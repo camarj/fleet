@@ -124,6 +124,24 @@ export interface AgentSummary {
   sharedBy: string | null;
 }
 
+/**
+ * One declared Capability of an agent (B2) — mirror of the Core wire type. Derived
+ * from the agent's Agent Card skills (id/name/description/tags).
+ */
+export interface Capability {
+  id: string;
+  name: string;
+  description: string;
+  tags: string[];
+}
+
+/** An agent and its declared capabilities — one entry of the `capabilities` catalog (B2). */
+export interface AgentCapabilities {
+  agentId: string;
+  agentName: string;
+  capabilities: Capability[];
+}
+
 export interface Usage {
   inputTokens: number;
   outputTokens: number;
@@ -237,6 +255,8 @@ export type DeployTarget = "docker-local" | "fly" | "github" | "cloudflare" | "d
 
 export type ClientRequest =
   | { type: "agents.list" }
+  /** List every registered agent and its declared capabilities (the fleet catalog, B2). */
+  | { type: "capabilities.list" }
   /** Connect a served Flue agent over its HTTP+WebSocket API. */
   | { type: "agent.connectFlue"; baseUrl: string; agentName: string; instanceId?: string; token?: string }
   /** Convert a local Claude Code project to a Flue agent, deploy it, and connect. */
@@ -309,6 +329,8 @@ export type ClientRequest =
 
 export type ServerEvent =
   | { type: "agents"; agents: AgentSummary[] }
+  /** The fleet capability catalog: every registered agent and what it can do (B2). */
+  | { type: "capabilities"; agents: AgentCapabilities[] }
   | { type: "agent.registered"; agent: AgentSummary }
   /** An agent's summary changed (e.g. it went offline after stop). */
   | { type: "agent.updated"; agent: AgentSummary }

@@ -66,6 +66,28 @@ async function main(): Promise<void> {
     assert(registered?.agent.name === "claude-minimal", "deployed agent name = converted project name");
     assert(registered?.agent.online === true, "deployed agent is online");
 
+    // ── B2: capability registry (derived from the converted agent's Agent Card) ──
+    const agentId = registered!.agent.id;
+    events.length = 0;
+    await core.handle({ type: "capabilities.list" }, emit);
+    const cat = [...events].reverse().find((e): e is Extract<ServerEvent, { type: "capabilities" }> => e.type === "capabilities");
+    assert(!!cat, "capabilities.list → capabilities event");
+    const entry = cat?.agents.find((a) => a.agentId === agentId);
+    assert(!!entry, "deployed agent appears in the capability catalog");
+    assert((entry?.capabilities.length ?? 0) > 0, "agent has at least one capability (the baseline from its Agent Card)");
+    assert(entry?.capabilities.some((c) => c.id === "general") === true, "baseline 'general' capability present");
+    assert(
+      entry?.capabilities.every((c) => typeof c.id === "string" && typeof c.name === "string" && Array.isArray(c.tags)) === true,
+      "every capability has id/name/tags",
+    );
+
+    // The registry updates when an agent is removed.
+    events.length = 0;
+    await core.handle({ type: "agent.delete", agentId }, emit);
+    await core.handle({ type: "capabilities.list" }, emit);
+    const afterDelete = [...events].reverse().find((e): e is Extract<ServerEvent, { type: "capabilities" }> => e.type === "capabilities");
+    assert(afterDelete?.agents.some((a) => a.agentId === agentId) === false, "deleted agent is gone from the capability catalog");
+
     // secrets store roundtrip (ids only, never values)
     await core.handle({ type: "secrets.set", provider: "anthropic", apiKey: "sk-test-xxx" }, emit);
     const status = [...events].reverse().find((e): e is Extract<ServerEvent, { type: "secrets.status" }> => e.type === "secrets.status");
